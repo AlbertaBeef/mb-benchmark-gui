@@ -17,7 +17,10 @@
 // the SDK's contract, and the conversion is done once at load, not per frame.
 #include "memx/accl/MxAccl.h"
 
+#include <unistd.h>
+
 #include <atomic>
+#include <cstdlib>
 #include <condition_variable>
 #include <cstdint>
 #include <memory>
@@ -31,12 +34,46 @@
 
 namespace {
 
+// Same search order as Probes' telemetry helper: an explicit override, then the
+// conventional venv location.
+std::string find_memryx_python() {
+    if (const char* e = std::getenv("MB_MEMRYX_PYTHON")) {
+        if (::access(e, X_OK) == 0) return e;
+    }
+    if (const char* home = std::getenv("HOME")) {
+        const std::string p = std::string(home) + "/mb-edgeai/memryx-env/bin/python";
+        if (::access(p.c_str(), X_OK) == 0) return p;
+    }
+    return {};
+}
+
 class MemryXBenchRunner : public BenchRunner {
 public:
     explicit MemryXBenchRunner(ApiMode mode)
         : depth_(mode == ApiMode::Sync ? 1 : kAsyncDepth), mode_(mode) {}
 
     ~MemryXBenchRunner() override { shutdown(); }
+
+    // set_mpu_frequency lives only in the Python `mxa` module — neither memx.h
+    // nor MxAccl exposes it — so this is a one-shot interpreter call at load
+    // time rather than an API call. ~4 s of Python startup, once per run,
+    // alongside model loading; not in the timed loop.
+    void configure(const BenchItem& item) override {
+        if (item.freq_mhz <= 0) return;
+        const std::string py = find_memryx_python();
+        if (py.empty()) return;
+        const std::string script =
+            "import sys\n"
+            "from memryx import mxa\n"
+            "f=int(sys.argv[1])\n"
+            "n=int(mxa.get_total_chip_count(0))\n"
+            "[mxa.set_mpu_frequency(0,g,f) for g in range(n)]\n";
+        const std::string cmd = "timeout 30 " + py + " -c '" + script + "' " +
+                                std::to_string(item.freq_mhz) + " >/dev/null 2>&1";
+        if (std::system(cmd.c_str()) != 0) { /* best effort — the
+            clock stays where it was, and the Frequency graph will
+            show that plainly rather than us pretending it changed */ }
+    }
 
     void load(const std::vector<BenchMember>& members) override {
         for (const auto& m : members) {

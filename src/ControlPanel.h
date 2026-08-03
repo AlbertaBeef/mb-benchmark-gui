@@ -10,6 +10,7 @@
 #include <gtkmm/box.h>
 #include <gtkmm/button.h>
 #include <gtkmm/checkbutton.h>
+#include <gtkmm/comboboxtext.h>
 #include <gtkmm/label.h>
 #include <gtkmm/listbox.h>
 #include <gtkmm/notebook.h>
@@ -39,6 +40,10 @@ public:
     // Which of the vendors' two inference APIs to drive.
     ApiMode api_mode() const;
 
+    // Per-accelerator settings from the card tabs.
+    int memryx_freq_mhz() const;   // MPU clock to request before a run
+    int axelera_streams() const;   // concurrent model instances on the Metis
+
     // Flip the button between Start and Stop and lock the selection while a
     // run is in flight (changing models mid-run would mix two measurements).
     void set_running(bool running);
@@ -64,11 +69,19 @@ private:
     Gtk::ListBox model_list_, pipeline_list_;
     std::vector<SubjectRow*> rows_;  // every row, both tabs, for repainting
 
-    Gtk::CheckButton max_speed_{"Max speed"};
+    Gtk::CheckButton max_speed_{"Max"};
     Gtk::SpinButton fps_spin_;
 
-    Gtk::CheckButton sync_radio_{"Sync API"};
-    Gtk::CheckButton async_radio_{"Async API"};
+    // Labelled just "Sync"/"Async"; the adjacent "API" label supplies the noun.
+    Gtk::CheckButton sync_radio_{"Sync"};
+    Gtk::CheckButton async_radio_{"Async"};
+
+    // Per-accelerator controls, one tab each. Empty scaffolding for now — the
+    // enable/disable checkboxes live in the Inference frame, since they choose
+    // what a run targets rather than configuring a card.
+    Gtk::Notebook accel_notebook_;
+    Gtk::ComboBoxText memryx_freq_;   // MemryX tab: MPU clock
+    Gtk::SpinButton axelera_streams_; // Axelera tab: concurrent streams
 
     Gtk::CheckButton* accel_check_[kAccelCount] = {nullptr, nullptr, nullptr, nullptr};
     // What the user last asked for, per card, independent of whether the

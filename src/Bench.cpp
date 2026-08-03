@@ -40,6 +40,7 @@ struct BenchEngine::Worker {
         if (!runner) { set_failed(err.empty() ? "backend unavailable" : err); return; }
 
         try {
+            runner->configure(item);
             runner->load(item.members);
         } catch (const std::exception& e) {
             set_failed(e.what());

@@ -21,7 +21,7 @@
 
 // Accelerators this GUI can drive. The order fixes the series order in every
 // graph and indexes the per-accelerator arrays below.
-enum class Accel { Hailo, DeepX, Axelera, MemryX };
+enum class Accel { Hailo, MemryX, DeepX, Axelera };
 inline constexpr int kAccelCount = 4;
 
 inline int accel_index(Accel a) { return static_cast<int>(a); }
@@ -101,6 +101,9 @@ struct BenchItem {
     std::string label;  // "YOLOv8s"
     Accel accel = Accel::Hailo;
     std::vector<BenchMember> members;
+    // Per-card settings from the accelerator tabs. Defaults mean "leave alone".
+    int streams = 1;    // Axelera: concurrent model instances
+    int freq_mhz = 0;   // MemryX: MPU clock to request, 0 = don't touch it
 };
 
 class Catalog {

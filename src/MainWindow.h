@@ -56,7 +56,8 @@ private:
                                       GraphArea*& graph_out,
                                       std::vector<Gtk::Label*>& value_labels_out,
                                       const char* empty_note,
-                                      std::vector<AggEntry>* agg_out = nullptr);
+                                      std::vector<AggEntry>* agg_out = nullptr,
+                                      double min_axis_max = 10.0);
 
     // --- benchmark sections (one series per accelerator) ---
 
@@ -99,4 +100,8 @@ private:
     GraphArea* temp_graph_ = nullptr;
     std::vector<Gtk::Label*> temp_values_;
     std::vector<AggEntry> temp_avg_labels_;
+
+    GraphArea* freq_graph_ = nullptr;
+    std::vector<Gtk::Label*> freq_values_;
+    std::vector<AggEntry> freq_avg_labels_;
 };

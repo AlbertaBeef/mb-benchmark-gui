@@ -48,6 +48,12 @@ std::string fmt_temp_axis(double v) {
     std::snprintf(b, sizeof(b), "%.0f°C", v);
     return b;
 }
+std::string fmt_freq(double v) {
+    if (std::isnan(v)) return "—";
+    char b[24];
+    std::snprintf(b, sizeof(b), "%.0f MHz", v);
+    return b;
+}
 std::string fmt_fps(double v) {
     char b[24];
     std::snprintf(b, sizeof(b), "%.1f", v);
@@ -62,7 +68,11 @@ std::string fmt_eff(double v) {
 
 MainWindow::MainWindow() {
     set_title(kTitle);
-    set_default_size(1400, 960);
+    // Width tracks the Paned position: the controls take 680 (was 340), so the
+    // window grows by the same 340 to leave the graph column the ~1060 it had
+    // before. Height is unchanged — the graph column scrolls, and two of the six
+    // sections ship collapsed.
+    set_default_size(1740, 960);
 
     // Teal title bar (brand Primary), white title text — same chrome as the
     // sibling power monitor, so the two read as one family of tools.
@@ -129,6 +139,14 @@ MainWindow::MainWindow() {
         };
         index_devs(probes_.temp_metrics());
         index_devs(probes_.power_metrics());
+        index_devs(probes_.freq_metrics());
+
+        // Fixed colour per accelerator, before the alias pass — a mapped
+        // INA228 then inherits its card's colour rather than a palette slot.
+        for (int i = 0; i < nd; ++i) {
+            Gdk::RGBA c;
+            if (util::device_accent(dname[i], c)) device_palette_[i] = c;
+        }
         for (int i = 0; i < nd; ++i) {
             if (dalias[i].empty()) continue;
             for (int j = 0; j < nd; ++j)
@@ -137,17 +155,12 @@ MainWindow::MainWindow() {
                     break;
                 }
         }
-        // Bind each accelerator to the color Probes already gave that card, so
-        // a card's frame-rate trace and its power trace are the same color. A
-        // card with no telemetry at all falls back to its own accent.
-        const auto fallback = util::make_palette(kAccelCount);
+        // Same fixed colours for the benchmark graphs, so a card's frame-rate
+        // trace matches its power trace — and still draws correctly even if
+        // Probes never discovered that card.
         for (int a = 0; a < kAccelCount; ++a) {
-            accel_color_[a] = fallback[a];
-            for (int i = 0; i < nd; ++i) {
-                if (dname[i] == accel_name(accel_at(a))) {
-                    accel_color_[a] = device_palette_[i];
-                    break;
-                }
+            if (!util::device_accent(accel_name(accel_at(a)), accel_color_[a])) {
+                accel_color_[a] = util::make_palette(kAccelCount)[a];
             }
         }
     }
@@ -155,7 +168,7 @@ MainWindow::MainWindow() {
 
     // ---- layout: controls | graphs ----
     auto* paned = Gtk::make_managed<Gtk::Paned>(Gtk::Orientation::HORIZONTAL);
-    paned->set_position(340);
+    paned->set_position(680);
     set_child(*paned);
 
     controls_ = Gtk::make_managed<ControlPanel>(catalog_);
@@ -163,6 +176,11 @@ MainWindow::MainWindow() {
         sigc::mem_fun(*this, &MainWindow::on_start_stop));
     paned->set_start_child(*controls_);
     paned->set_resize_start_child(false);
+    // Never allocate the controls less than their minimum: GTK4's default
+    // shrink-start-child lets the handle squeeze a child below its size
+    // request, and a widget rendered under its minimum anchors its contents
+    // unpredictably instead of staying flush left.
+    paned->set_shrink_start_child(false);
 
     auto* graphs = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 6);
     graphs->set_margin(12);
@@ -195,6 +213,24 @@ MainWindow::MainWindow() {
                              /*fixed_temp_axis=*/true, fmt_temp, temp_graph_,
                              temp_values_, "No temperature sensors detected.",
                              &temp_avg_labels_)));
+
+    // Clock, right after temperature because the two are read together: a
+    // frequency that sags while a die heats is thermal throttling, and seeing
+    // them adjacent is the whole point. Collapsed by default — it is diagnostic
+    // rather than something to watch every run.
+    graphs->append(make_section(
+        "Frequency (MHz)",
+        build_metric_section(probes_.freq_metrics(),
+                             colors_for(probes_.freq_metrics()),
+                             /*fixed_temp_axis=*/false, fmt_freq, freq_graph_,
+                             freq_values_,
+                             "No accelerator here reports a core clock. All "
+                             "four can: Hailo via the extended device "
+                             "information, DeepX per NPU via dxrt-cli, MemryX "
+                             "per chip via the SDK, and Axelera per AI core via "
+                             "axcmd --clock-all-actual.",
+                             &freq_avg_labels_, /*min_axis_max=*/1000.0),
+        /*expanded=*/false));
 
     fps_ = build_accel_section(fmt_fps, /*min_axis_max=*/30.0);
     graphs->append(make_section("Frame Rate (fps)", *fps_.root));
@@ -351,7 +387,7 @@ Gtk::Widget& MainWindow::build_metric_section(
     const std::vector<MetricInfo>& metrics, const std::vector<Gdk::RGBA>& colors,
     bool temp_axis, std::function<std::string(double)> value_fmt,
     GraphArea*& graph_out, std::vector<Gtk::Label*>& value_labels_out,
-    const char* empty_note, std::vector<AggEntry>* agg_out) {
+    const char* empty_note, std::vector<AggEntry>* agg_out, double min_axis_max) {
     auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 8);
     box->set_vexpand(true);
 
@@ -363,8 +399,10 @@ Gtk::Widget& MainWindow::build_metric_section(
         graph->set_fixed_max(kTempAxisMax);
         graph->set_value_formatter(fmt_temp_axis);
     } else {
-        graph->set_min_axis_max(10.0);
-        graph->set_value_formatter([](double v) { return fmt_power(v); });
+        // Auto-scaling with a floor. The formatter passed in decides the unit,
+        // so this same branch serves both the power and the frequency graphs.
+        graph->set_min_axis_max(min_axis_max);
+        graph->set_value_formatter(value_fmt);
     }
     graph->set_series(std::vector<Gdk::RGBA>(colors.begin(), colors.begin() + n));
     box->append(*graph);
@@ -572,6 +610,22 @@ bool MainWindow::on_tick() {
                 if (!std::isnan(tv[k])) { sum += tv[k]; ++cnt; }
             }
             a.label->set_text(cnt ? "avg " + fmt_temp(sum / cnt) : "avg —");
+        }
+    }
+
+    const auto& fv = probes_.freq_values();
+    if (!fv.empty() && static_cast<int>(fv.size()) == freq_graph_->series_count()) {
+        freq_graph_->push(fv);
+        for (size_t i = 0; i < freq_values_.size() && i < fv.size(); ++i)
+            freq_values_[i]->set_text(fmt_freq(fv[i]));
+        for (const auto& a : freq_avg_labels_) {
+            double sum = 0.0;
+            int cnt = 0;
+            for (int k = a.start;
+                 k < a.start + a.count && k < static_cast<int>(fv.size()); ++k) {
+                if (!std::isnan(fv[k])) { sum += fv[k]; ++cnt; }
+            }
+            a.label->set_text(cnt ? "avg " + fmt_freq(sum / cnt) : "avg —");
         }
     }
 

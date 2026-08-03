@@ -45,6 +45,10 @@ class BenchRunner {
 public:
     virtual ~BenchRunner() = default;
 
+    // Per-card settings from the accelerator tabs (Axelera streams, MemryX
+    // clock). Applied before load(); default is "leave the device alone".
+    virtual void configure(const BenchItem&) {}
+
     // Open the device and load every stage. Throws std::runtime_error on
     // failure (message goes to the UI verbatim).
     virtual void load(const std::vector<BenchMember>& members) = 0;

@@ -48,12 +48,17 @@ public:
     const std::vector<double>& temp_values() const { return temp_values_; }
     const std::vector<MetricInfo>& power_metrics() const { return power_metrics_; }
     const std::vector<double>& power_values() const { return power_values_; }
+    // Core clock, MHz. Only some cards expose one — see Probes.cpp.
+    const std::vector<MetricInfo>& freq_metrics() const { return freq_metrics_; }
+    const std::vector<double>& freq_values() const { return freq_values_; }
 
 protected:
     std::vector<MetricInfo> temp_metrics_;
     std::vector<double> temp_values_;
     std::vector<MetricInfo> power_metrics_;
     std::vector<double> power_values_;
+    std::vector<MetricInfo> freq_metrics_;
+    std::vector<double> freq_values_;
     std::string bdf_;
     std::string note_;
     std::string color_alias_;
@@ -73,6 +78,10 @@ public:
     const std::vector<double>& temp_values() const { return temp_values_; }
     const std::vector<MetricInfo>& power_metrics() const { return power_metrics_; }
     const std::vector<double>& power_values() const { return power_values_; }
+    // Core clock (MHz). Follows discovery order, like temperature. Empty for
+    // cards whose SDK exposes no clock — today Hailo and Axelera.
+    const std::vector<MetricInfo>& freq_metrics() const { return freq_metrics_; }
+    const std::vector<double>& freq_values() const { return freq_values_; }
 
     int device_count() const { return static_cast<int>(devices_.size()); }
 
@@ -91,7 +100,7 @@ private:
     int pcie_merge_target(size_t k) const;
 
     std::vector<std::unique_ptr<DeviceProbe>> devices_;
-    std::vector<MetricInfo> temp_metrics_, power_metrics_;
-    std::vector<double> temp_values_, power_values_;
+    std::vector<MetricInfo> temp_metrics_, power_metrics_, freq_metrics_;
+    std::vector<double> temp_values_, power_values_, freq_values_;
     std::vector<size_t> power_dev_order_;  // devices_ indices, power emission order
 };

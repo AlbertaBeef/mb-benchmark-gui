@@ -2,9 +2,11 @@
 
 #include <gtkmm/adjustment.h>
 #include <gtkmm/frame.h>
+#include <gtkmm/grid.h>
 #include <gtkmm/scrolledwindow.h>
 
 #include <glibmm/markup.h>
+#include <pangomm/layout.h>
 
 namespace {
 constexpr int kDefaultFps = 30;
@@ -18,26 +20,35 @@ constexpr int kMaxFps = 1000;
 class ControlPanel::SubjectRow : public Gtk::ListBoxRow {
 public:
     explicit SubjectRow(const BenchSubject& s) : subject(&s) {
-        auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 1);
-        box->set_margin_top(4);
-        box->set_margin_bottom(4);
+        // One line per entry: name, what it is, which cards can run it. Fixed
+        // character widths on the first two keep the columns aligned down the
+        // list rather than ragged.
+        auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 10);
+        box->set_margin_top(3);
+        box->set_margin_bottom(3);
         box->set_margin_start(6);
         box->set_margin_end(6);
 
         auto* name = Gtk::make_managed<Gtk::Label>();
         name->set_markup("<b>" + Glib::Markup::escape_text(s.name) + "</b>");
         name->set_xalign(0.0);
+        name->set_width_chars(24);
+        name->set_ellipsize(Pango::EllipsizeMode::END);
         box->append(*name);
 
         auto* detail = Gtk::make_managed<Gtk::Label>();
         detail->set_markup("<small>" + Glib::Markup::escape_text(s.detail) +
                            "</small>");
         detail->set_xalign(0.0);
+        detail->set_width_chars(30);
+        detail->set_ellipsize(Pango::EllipsizeMode::END);
         detail->add_css_class("dim-label");
         box->append(*detail);
 
         cards_ = Gtk::make_managed<Gtk::Label>();
         cards_->set_xalign(0.0);
+        cards_->set_hexpand(true);
+        cards_->set_ellipsize(Pango::EllipsizeMode::END);
         cards_->add_css_class("dim-label");
         box->append(*cards_);
 
@@ -72,7 +83,11 @@ private:
 ControlPanel::ControlPanel(const Catalog& catalog)
     : Gtk::Box(Gtk::Orientation::VERTICAL, 8), catalog_(catalog) {
     set_margin(4);
-    set_size_request(320, -1);
+    // 640 is the *minimum*; the panel fills whatever the divider gives it and
+    // its contents stay flush left. Spelled out rather than left to defaults.
+    set_size_request(640, -1);
+    set_halign(Gtk::Align::FILL);
+    set_valign(Gtk::Align::FILL);
 
     // ---- what to run ----
     populate(model_list_, catalog_.models());
@@ -98,45 +113,24 @@ ControlPanel::ControlPanel(const Catalog& catalog)
     conns_.push_back(notebook_.signal_switch_page().connect(
         [this](Gtk::Widget*, guint) { refresh_accel_sensitivity(); }));
 
-    // ---- frame rate ----
+    // ---- inference: how to drive it, and how fast ----
     {
-        auto* frame = Gtk::make_managed<Gtk::Frame>("Frame rate");
-        auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 4);
+        auto* frame = Gtk::make_managed<Gtk::Frame>("Inference");
+        auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 6);
         box->set_margin(8);
 
-        max_speed_.set_active(true);
-        max_speed_.set_tooltip_text(
-            "Run the inference loop flat out — the frame rate reported is the "
-            "card's ceiling for this model.");
-        box->append(max_speed_);
+        // Matching label widths so the two rows' controls line up.
+        constexpr int kLabelChars = 12;
+        auto row_label = [](const char* text) {
+            auto* l = Gtk::make_managed<Gtk::Label>(text);
+            l->set_xalign(0.0);
+            l->set_width_chars(kLabelChars);
+            return l;
+        };
 
-        auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
-        auto* lbl = Gtk::make_managed<Gtk::Label>("Target");
-        lbl->set_xalign(0.0);
-        row->append(*lbl);
-        fps_spin_.set_adjustment(
-            Gtk::Adjustment::create(kDefaultFps, 1, kMaxFps, 1, 10));
-        fps_spin_.set_numeric(true);
-        fps_spin_.set_sensitive(false);
-        fps_spin_.set_tooltip_text(
-            "Pace the loop to this rate. A card that cannot reach it simply "
-            "runs as fast as it can.");
-        row->append(fps_spin_);
-        row->append(*Gtk::make_managed<Gtk::Label>("fps"));
-        box->append(*row);
-
-        max_speed_.signal_toggled().connect(
-            [this] { fps_spin_.set_sensitive(!max_speed_.get_active()); });
-
-        frame->set_child(*box);
-        append(*frame);
-    }
-
-    // ---- inference API ----
-    {
-        auto* frame = Gtk::make_managed<Gtk::Frame>("Inference API");
-        auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 2);
-        box->set_margin(8);
+        // --- API ---
+        auto* api_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
+        api_row->append(*row_label("API"));
         async_radio_.set_group(sync_radio_);
         // Async by default: it is what the hardware can actually do (4-5x on
         // Hailo and DeepX), so it is the fairer first impression of a card.
@@ -150,28 +144,42 @@ ControlPanel::ControlPanel(const Catalog& catalog)
             "(run_async), DeepX (RunAsync/Wait) and MemryX (connect_stream); "
             "Axelera has no async API, so it falls back to the runtime's own "
             "double buffering.");
-        box->append(sync_radio_);
-        box->append(async_radio_);
+        api_row->append(sync_radio_);
+        api_row->append(async_radio_);
+        box->append(*api_row);
 
-        auto* note = Gtk::make_managed<Gtk::Label>();
-        note->set_markup(
-            "<small>Not every SDK offers both; the frame-rate legend "
-            "flags a card whose mode is emulated.</small>");
-        note->set_xalign(0.0);
-        note->set_wrap(true);
-        note->add_css_class("dim-label");
-        note->set_margin_top(4);
-        box->append(*note);
+        // --- frame rate ---
+        auto* rate_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
+        rate_row->append(*row_label("Frame Rate"));
+        max_speed_.set_active(true);
+        max_speed_.set_tooltip_text(
+            "Run the inference loop flat out — the frame rate reported is the "
+            "card's ceiling for this model.");
+        rate_row->append(max_speed_);
 
-        frame->set_child(*box);
-        append(*frame);
-    }
+        auto* target = Gtk::make_managed<Gtk::Label>("Fixed");
+        target->set_xalign(0.0);
+        rate_row->append(*target);
+        fps_spin_.set_adjustment(
+            Gtk::Adjustment::create(kDefaultFps, 1, kMaxFps, 1, 10));
+        fps_spin_.set_numeric(true);
+        fps_spin_.set_sensitive(false);
+        fps_spin_.set_tooltip_text(
+            "Pace the loop to this rate. A card that cannot reach it simply "
+            "runs as fast as it can.");
+        rate_row->append(fps_spin_);
+        rate_row->append(*Gtk::make_managed<Gtk::Label>("fps"));
+        max_speed_.signal_toggled().connect(
+            [this] { fps_spin_.set_sensitive(!max_speed_.get_active()); });
+        box->append(*rate_row);
 
-    // ---- accelerators ----
-    {
-        auto* frame = Gtk::make_managed<Gtk::Frame>("Accelerators");
-        auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 2);
-        box->set_margin(8);
+        // --- which cards to run on ---
+        // A Grid, not a Box: wraps past four, same rule as the graph legends.
+        auto* accel_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
+        accel_row->append(*row_label("Accelerators"));
+        auto* accel_grid = Gtk::make_managed<Gtk::Grid>();
+        accel_grid->set_column_spacing(16);
+        accel_grid->set_row_spacing(2);
         for (int i = 0; i < kAccelCount; ++i) {
             const Accel a = accel_at(i);
             auto* cb = Gtk::make_managed<Gtk::CheckButton>(accel_name(a));
@@ -186,10 +194,73 @@ ControlPanel::ControlPanel(const Catalog& catalog)
                 if (!syncing_accels_) accel_wanted_[i] = cb->get_active();
             });
             accel_check_[i] = cb;
-            box->append(*cb);
+            accel_grid->attach(*cb, i % 4, i / 4, 1, 1);
         }
+        accel_row->append(*accel_grid);
+        box->append(*accel_row);
+
         frame->set_child(*box);
         append(*frame);
+    }
+
+    // ---- per-accelerator controls, one tab each ----
+    // No enclosing Frame: the tab strip already delimits it, and the checkboxes
+    // that used to need the "Accelerators" heading now live under Inference.
+    {
+        for (int i = 0; i < kAccelCount; ++i) {
+            const Accel a = accel_at(i);
+            auto* page = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 4);
+            page->set_margin(8);
+            auto* note = Gtk::make_managed<Gtk::Label>();
+            const char* why = accel_unavailable_reason(a);
+            note->set_markup(
+                "<small>" +
+                Glib::Markup::escape_text(
+                    *why ? std::string(accel_name(a)) + ": " + why
+                         : std::string("No ") + accel_name(a) +
+                               "-specific controls yet.") +
+                "</small>");
+            note->set_xalign(0.0);
+            note->set_wrap(true);
+            note->add_css_class("dim-label");
+
+            // Per-card controls. Only two cards have anything to configure
+            // today; the rest keep the placeholder note alone.
+            if (a == Accel::MemryX) {
+                auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+                auto* lbl = Gtk::make_managed<Gtk::Label>("Core frequency");
+                lbl->set_xalign(0.0);
+                row->append(*lbl);
+                for (int mhz : {200, 300, 400, 450, 500, 600, 700, 750, 800, 850})
+                    memryx_freq_.append(std::to_string(mhz));
+                memryx_freq_.set_active_text("600");  // 14 TOPS default
+                memryx_freq_.set_tooltip_text(
+                    "MPU clock requested before the run starts. 600 is the "
+                    "14 TOPS default, 850 the 20 TOPS mode — which the part "
+                    "cannot hold thermally for long.");
+                row->append(memryx_freq_);
+                row->append(*Gtk::make_managed<Gtk::Label>("MHz"));
+                page->append(*row);
+            } else if (a == Accel::Axelera) {
+                auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+                auto* lbl = Gtk::make_managed<Gtk::Label>("Streams");
+                lbl->set_xalign(0.0);
+                row->append(*lbl);
+                axelera_streams_.set_adjustment(Gtk::Adjustment::create(1, 1, 4, 1, 1));
+                axelera_streams_.set_numeric(true);
+                axelera_streams_.set_tooltip_text(
+                    "Concurrent model instances. One stream leaves three of the "
+                    "four AI cores idle at 50 MHz — visible in the Frequency "
+                    "graph — which is why a single-stream run falls well short "
+                    "of the vendor pipeline.");
+                row->append(axelera_streams_);
+                page->append(*row);
+            }
+
+            page->append(*note);
+            accel_notebook_.append_page(*page, accel_name(a));
+        }
+        append(accel_notebook_);
     }
 
     // ---- run ----
@@ -302,6 +373,8 @@ std::vector<BenchItem> ControlPanel::selection() const {
         it.label = s->name;
         it.accel = a;
         it.members = s->members[i];
+        if (a == Accel::MemryX) it.freq_mhz = memryx_freq_mhz();
+        if (a == Accel::Axelera) it.streams = axelera_streams();
         out.push_back(std::move(it));
     }
     return out;
@@ -315,6 +388,15 @@ ApiMode ControlPanel::api_mode() const {
     return async_radio_.get_active() ? ApiMode::Async : ApiMode::Sync;
 }
 
+int ControlPanel::memryx_freq_mhz() const {
+    const std::string s = memryx_freq_.get_active_text();
+    try { return std::stoi(s); } catch (...) { return 0; }  // 0 = leave alone
+}
+
+int ControlPanel::axelera_streams() const {
+    return static_cast<int>(axelera_streams_.get_value());
+}
+
 void ControlPanel::set_running(bool running) {
     running_ = running;
     run_button_.set_label(running ? "Stop benchmark" : "Start benchmark");
@@ -325,6 +407,8 @@ void ControlPanel::set_running(bool running) {
     async_radio_.set_sensitive(!running);
     max_speed_.set_sensitive(!running);
     fps_spin_.set_sensitive(!running && !max_speed_.get_active());
+    memryx_freq_.set_sensitive(!running);
+    axelera_streams_.set_sensitive(!running);
     refresh_accel_sensitivity();
 }
 

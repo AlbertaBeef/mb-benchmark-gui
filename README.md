@@ -19,18 +19,39 @@ accelerators to run it on, choose a target frame rate (or max speed), and press
 Start. One worker thread per card loops inference on its own device; the graphs
 update once a second.
 
-Five stacked graphs, each a scrolling 60-second window:
+Six stacked graphs, each a scrolling 60-second window:
 
 | Graph | What it shows |
 | ----- | ------------- |
 | **Power (W)** | Live draw per card — on-die sensors and external INA228 shunts. |
 | **Temperature (°C)** | Per-sensor die temperatures. |
-| **Frame Rate (fps)** | Achieved rate per card, plus the model, its input geometry and a running frame count. An idle card sits at 0. |
+| **Frequency (MHz)** | Core clock per NPU. Sits right below temperature because a clock sagging while a die heats *is* thermal throttling. Collapsed by default. |
+| **Frame Rate (fps)** | Achieved rate per card. An idle card sits at 0. |
 | **Efficiency (fps/W)** | *Instantaneous*: this second's frame rate divided by this second's watts. |
 | **Energy (mJ/frame)** | This second's watts divided by this second's frame rate — the raw energy cost of a frame. **Lower is better** — the only graph here where that is true. Collapsed by default. |
 
-Power and temperature come first because they are live whether or not a
-benchmark is running; the three below them only mean anything during a run.
+Power, temperature and frequency come first because they are live whether or not
+a benchmark is running; the three below them only mean anything during a run.
+
+All four cards report a clock, each from a different place:
+
+| Card | Series | Source | Idle → load |
+| ---- | ------ | ------ | ----------- |
+| Hailo-8 | `CLK` | `hailo_extended_device_information_t` | 400 (fixed) |
+| DeepX M1 | `C0`–`C2` | `dxrt-cli -s`, same line as the temperature | 1000 (fixed) |
+| MemryX MX3 | `C0`–`C3` | SDK `get_frequency_effective()` | **300 → 600** |
+| Axelera Metis | `C0`–`C3` | `axcmd --clock-all-actual` | **50 → 800** |
+
+Two of them are DVFS-managed and visibly move, which is the point of the graph:
+MemryX idles at half its configured 600 MHz, and Axelera's AI cores idle at
+50 MHz against a configured 800. For both, use the *actual/effective* reading —
+`get_frequency()` and `--get-ck-profile` return the configured target and would
+sit flat however hot the part got.
+
+The Axelera trace also exposes something the frame-rate graph cannot: at one
+stream **only `C0` ramps to 800 MHz while `C1`–`C3` stay at 50 MHz**, i.e. three
+of the four AI cores are idle. Raising **Streams** in the Axelera tab wakes them
+one at a time — see [Per-accelerator controls](#per-accelerator-controls).
 
 **The graphs are never cleared.** Starting or stopping a run does not wipe the
 traces, so consecutive runs stay on one axis and can be read against each other
@@ -49,18 +70,30 @@ An idle card reads 0 mJ/frame. On a lower-is-better axis that could be misread
 as perfect efficiency — it means "not running", and the frame rate beside it is
 0 too.
 
-Every graph uses **one color per card**, the same color throughout, so a trace on
-the frame-rate graph and its trace on the power graph are visibly the same
-device.
+Every graph uses **one fixed colour per card**, the same everywhere and in the
+sibling `mb-powermon-gui`, so a trace is recognisable without reading the legend:
+
+| Hailo | MemryX | DeepX | Axelera | Qualcomm |
+| :---: | :----: | :---: | :-----: | :------: |
+| Coral `#d9694f` | Sage `#8aa67e` | Slate Blue `#4e7ca1` | Amber `#e0a24b` | Plum `#7e6699` |
+
+Cards appear in the order **Hailo · MemryX · DeepX · Axelera** throughout. An
+external INA228 mapped onto a card inherits that card's colour; anything else
+(unmapped bridges, the board ambient sensor) falls back to a cycling palette.
+
+The legends are a single compact row of swatches and values and carry no
+explanatory text; what is running, which cards are emulated in the current API
+mode, and any load failure all go to the **status line** under the Start button
+— so a card sitting at 0 always has a reason visible somewhere.
 
 ## Supported accelerators
 
 | Card | Sync inference | Async inference | Power | Temperature |
 | ---- | -------------- | --------------- | ----- | ----------- |
-| **Hailo-8** | `InferVStreams::infer()` | `InferModel::run_async()` | firmware `POW` + INA228 | `TS0` / `TS1` |
-| **DeepX M1** | `InferenceEngine::Run()` | `RunAsync()` / `Wait()` | — (none exposed) | `T0`–`T2` |
-| **Axelera Metis** | `axr_run_model_instance()` | **none** — `double_buffer` only | INA228 | `SYS` / `AI0`–`AI3` (needs a live collector) |
-| **MemryX MX3** | **none** — 1 frame in flight | `connect_stream()` | MemryX SDK | `T0`–`T3` |
+| **Hailo-8** | `InferVStreams::infer()` | `InferModel::run_async()` | firmware `POW` + INA228 | `TS0` / `TS1`, clock `CLK` |
+| **DeepX M1** | `InferenceEngine::Run()` | `RunAsync()` / `Wait()` | INA228 (no on-die sensor) | `T0`–`T2`, clock `C0`–`C2` |
+| **Axelera Metis** | `axr_run_model_instance()` | **none** — `double_buffer` only | INA228 | `SYS` / `AI0`–`AI3` (needs a live collector), clock `C0`–`C3` |
+| **MemryX MX3** | **none** — 1 frame in flight | `connect_stream()` | MemryX SDK + INA228 | `T0`–`T3`, clock `C0`–`C3` |
 
 Each backend is **optional and auto-detected at build time**. A card whose SDK is
 absent still appears in the UI, greyed out with the reason, and its telemetry
@@ -112,6 +145,32 @@ one.
 
 **Compare within a mode, never across.** A sync number and an async number are
 answers to different questions.
+
+## Per-accelerator controls
+
+Below the `Inference` frame is a tab per card, for settings that configure the
+*device* rather than the run:
+
+- **MemryX — Core frequency** (200–850 MHz, default 600). 600 is the 14 TOPS
+  mode, 850 the 20 TOPS one. Applied before the run starts. There is no C++
+  setter — `set_mpu_frequency` exists only in the Python `mxa` module, absent
+  from both `memx.h` and `MxAccl` — so this is a one-shot interpreter call at
+  load time, never in the timed loop.
+- **Axelera — Streams** (1–4). Concurrent model instances, one host thread each.
+
+**Streams matter more than anything else on the Metis.** libaxruntime has no
+async API *and* a single model instance occupies only one AI core, which the
+Frequency graph shows directly — with one stream `aicore0` runs at 800 MHz while
+`aicore1`–`3` sit at 50 MHz. Measured on ResNet-50:
+
+| Streams | fps | AI core clocks |
+| ------: | --: | -------------- |
+| 1 | 437 | `800 · 50 · 50 · 50` |
+| 2 | 671 | `800 · 50 · 800 · 50` |
+| 4 | **805** | `800 · 800 · 800 · 800` |
+
+2.1× from 1 → 4, with the cores waking one at a time. Cores are divided across
+`stages × streams`, so a two-stage pipeline at two streams still covers the card.
 
 ## Models and pipelines
 
@@ -216,9 +275,11 @@ This matters for reading the numbers honestly.
 - **One subject per card at a time.** Two models sharing a card would split its
   throughput *and* its watts, and neither efficiency figure would mean anything
   per model. The UI enforces one selection at a time.
-- **No watts, no efficiency.** A card with no power sensor (DeepX here) reports a
-  real frame rate but sits at 0 on both efficiency graphs, rather than being
-  given an invented number.
+- **No watts, no efficiency.** A card with no power reading reports a real frame
+  rate but sits at 0 on both efficiency graphs, rather than being given an
+  invented number. On this host every card is now instrumented, so this only
+  applies to a card whose INA228 is unmapped or absent — DeepX and MemryX have
+  no on-die sensor at all and depend entirely on their external shunt.
 - **Async depth is 4** on DeepX and MemryX, and whatever HailoRT reports as its
   async queue size (capped at 8) on Hailo — deep enough to keep the NPU fed,
   shallow enough that the figure stays a throughput measurement rather than a
@@ -262,10 +323,10 @@ Efficiency, same runs:
 
 | Card | This app | Vendor run |
 | ---- | -------: | ---------: |
-| Hailo-8 | 304.6 fps/W @ 4.50 W | 343 fps/W @ 4.0 W |
-| MemryX MX3 | 146.2 fps/W @ 7.63 W | 163 fps/W @ 11.0 W |
-| Axelera Metis | 104.0 fps/W @ 3.66 W | 270 fps/W @ 7.6 W |
-| DeepX M1 | — (no power sensor) | 214 fps/W @ 4.7 W |
+| Hailo-8 | 321.4 fps/W @ 4.27 W | 343 fps/W @ 4.0 W |
+| DeepX M1 | 203.5 fps/W @ 5.30 W | 214 fps/W @ 4.7 W |
+| MemryX MX3 | 148.2 fps/W @ 7.49 W | 163 fps/W @ 11.0 W |
+| Axelera Metis | 104.2 fps/W @ 3.61 W | 270 fps/W @ 7.6 W |
 
 Efficiency figures are only comparable at comparable *load* — a card that is
 being under-driven draws less power but also does proportionally less work, and
@@ -315,6 +376,30 @@ Without it, the runtime fails every Axelera model with
 rather than the missing compiler; the app appends the real explanation to that
 message.
 
+## Desktop integration
+
+`mb-benchmark-gui.desktop` is a ready launcher; it points `Exec` at
+`build/mb-benchmark`, so the repo has to stay where it is (or edit the path).
+
+```bash
+# application menu
+install -Dm644 mb-benchmark-gui.desktop ~/.local/share/applications/mb-benchmark-gui.desktop
+update-desktop-database ~/.local/share/applications
+
+# icon (its own M_benchmarking, so it is distinguishable from mb-powermon-gui)
+install -Dm644 assets/M_benchmarking.svg ~/.local/share/icons/hicolor/scalable/apps/M_benchmarking.svg
+gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor
+```
+
+For a launcher on the desktop itself, copy it to `~/Desktop` **executable and
+marked trusted** — GNOME's `ding` extension needs both, or it renders as a plain
+text file rather than an app:
+
+```bash
+install -m 755 mb-benchmark-gui.desktop ~/Desktop/
+gio set ~/Desktop/mb-benchmark-gui.desktop metadata::trusted true
+```
+
 ## Configuration
 
 **Model catalog.** [`config/models.conf`](config/models.conf) — vendor download
@@ -347,6 +432,24 @@ and feeds nothing. Search order:
 ### Fixed — kept here because the symptoms are misleading
 
 If you see one of these again, this is what it means:
+
+- **INA228 bridges not detected after a reboot, but fine after unplug/replug.**
+  A udev rule granting access to the FT232H is overridden by the system
+  defaults if its filename sorts *before* them. `MODE` is a plain assignment and
+  the last one wins, so `11-ftdi.rules` loses to `50-udev-default.rules`
+  (`SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", MODE="0664"`) and the nodes
+  come up `crw-rw-r-- root root` — unopenable by a normal user. Name the rule so
+  it sorts *after* 50:
+
+  ```bash
+  sudo mv /etc/udev/rules.d/11-ftdi.rules /etc/udev/rules.d/99-ftdi.rules
+  sudo udevadm control --reload
+  sudo udevadm trigger --action=add --subsystem-match=usb   # no replug needed
+  ```
+
+  Diagnose with `udevadm test /sys/bus/usb/devices/<port>` — it prints every
+  `MODE` assignment and which rule made it. Note the devices are tagged `seat`
+  but **not** `uaccess`, so logind grants no ACL; the file mode is all there is.
 
 - **`Gtk-CRITICAL … gtk_list_box_get_selected_row: assertion 'GTK_IS_LIST_BOX
   (box)' failed`, then `Segmentation fault` on exit.** GTK widget members are
@@ -399,9 +502,24 @@ If you see one of these again, this is what it means:
 - Only one process can hold a Hailo device's power measurement at a time.
   Running `mb-powermon` / `mb-powermon-gui` alongside this will fail one of them
   with `DVM_ALREADY_IN_USE` — stop one.
-- Axelera temperatures only appear once a Metis app has loaded the card's
-  firmware *and* something is running its collector; a benchmark on the Metis
-  does the first but not the second. See `mb-powermon-gui`'s README for the full
-  recovery recipe.
+- **Axelera temperatures need two gates cleared, and both are lost on every
+  reboot** — the card's runtime firmware is RAM-only and nothing loads it at
+  boot. Until then the Axelera row shows no values and the app logs
+  `collector idle`. [`tools/axelera-temps.sh`](tools/axelera-temps.sh) clears
+  both (loads the firmware if the card is still in bootloader state, then sets
+  the collector to `inf`), and
+  [`tools/axelera-temps.service`](tools/axelera-temps.service) runs it once per
+  boot:
+
+  ```bash
+  sudo cp tools/axelera-temps.service /etc/systemd/system/
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now axelera-temps.service
+  ```
+
+  The script is idempotent, so running it by hand at any time is safe. Note the
+  collector level is a *global* device log setting — that is why the app's probe
+  never sets it itself, staying passive and reporting `collector idle` instead
+  of changing device state behind your back.
 - Kill stray instances with `pkill -x mb-benchmark` (exact name) — `pkill -f
   build/mb-benchmark` also matches your own shell command.
