@@ -1,0 +1,16 @@
+/build/
+# Downloaded model artifacts — reproducible from config/models.conf, so they
+# are never committed. Locally compiled ones (the `source = local` entries)
+# have to be dropped back in by hand after a fresh clone.
+/models/
+*.o
+*.user
+compile_commands.json
+hailort*.log
+# Vendor benchmark tools write their reports to the *current directory*, so a
+# cross-check run from the repo root litters it. Run them from a scratch dir;
+# these patterns are a backstop.
+DXBENCHMARK_*.csv
+DXBENCHMARK_*.html
+DXBENCHMARK_*.json
+profiler.json
