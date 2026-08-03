@@ -1,0 +1,35 @@
+# Clear both gates that Axelera Metis core temperatures depend on, at boot.
+#
+# Needed because the card's runtime firmware is RAM-only and nothing loads it at
+# startup: after every reboot the Metis sits in bootloader firmware with its
+# collector at the default `err` level, so `core_temps=[...]` is never emitted
+# and mb-benchmark-gui / mb-powermon-gui show the Axelera row with no values.
+#
+# Install (paths are baked in, so adjust ExecStart if the repo moves):
+#   sudo cp tools/axelera-temps.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now axelera-temps.service
+#   systemctl status axelera-temps.service
+#
+# Undo:
+#   sudo systemctl disable --now axelera-temps.service
+
+[Unit]
+Description=Axelera Metis: load runtime firmware and enable the temperature collector
+Documentation=https://github.com/AlbertaBeef/mb-benchmark-gui
+# The PCIe/multi-chip setup has to have run before /dev/metis-* exists. The
+# script also waits for the node itself, so this is belt and braces.
+After=axelera-multi-device.service
+Wants=axelera-multi-device.service
+
+[Service]
+Type=oneshot
+ExecStart=/media/abbeefepyc/Nauvoo/shared_with_docker/mb-benchmark-gui/tools/axelera-temps.sh
+# Both settings live in volatile device state, so this runs once per boot and
+# there is nothing to keep alive afterwards.
+RemainAfterExit=yes
+# The device node is 0666, so root is not strictly required — but at boot this
+# runs before any user session exists, so root is the reliable choice.
+
+[Install]
+WantedBy=multi-user.target
