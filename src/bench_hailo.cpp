@@ -217,6 +217,10 @@ public:
         stages_.clear();
     }
 
+    void configure(const BenchItem& item) override {
+        if (item.threads >= 1) want_depth_ = item.threads;
+    }
+
     void load(const std::vector<BenchMember>& members) override {
         hailo_vdevice_params_t params{};
         check(hailo_init_vdevice_params(&params), "init vdevice params");
@@ -243,10 +247,13 @@ public:
             st->configured = std::make_unique<ConfiguredInferModel>(
                 unwrap(st->model->configure(), "InferModel::configure"));
 
-            size_t depth = 4;
+            // The Threads control asks for a depth; HailoRT's own reported
+            // queue size is a hard ceiling, so take the smaller of the two.
+            size_t depth = std::max<size_t>(1, static_cast<size_t>(want_depth_));
             if (auto q = st->configured->get_async_queue_size()) {
-                depth = std::max<size_t>(1, std::min<size_t>(*q, 8));
+                depth = std::min<size_t>(depth, std::max<size_t>(1, *q));
             }
+            depth = std::max<size_t>(1, std::min<size_t>(depth, 8));
             st->depth = depth;
 
             for (size_t i = 0; i < depth; ++i) {
@@ -383,6 +390,10 @@ private:
     std::unique_ptr<VDevice> device_;
     std::vector<std::unique_ptr<Stage>> stages_;
     std::string describe_;
+    // Requested in-flight depth (the Threads control). HailoRT's own reported
+    // async queue size still caps it — asking for more than the SDK will queue
+    // would just fail at bind time.
+    int want_depth_ = 4;
 };
 
 }  // namespace

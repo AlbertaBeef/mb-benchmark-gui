@@ -67,6 +67,12 @@ private:
         Gtk::Label* value[kAccelCount] = {};
     };
 
+    // Push the control panel's Range choice onto every graph.
+    void apply_range_mode();
+    // Show the cards ticked in Graphs / Accelerators by hiding the rest on
+    // every graph. Retroactive, and it re-scales the axes.
+    void apply_graph_filter();
+
     AccelSection build_accel_section(std::function<std::string(double)> value_fmt,
                                      double min_axis_max);
 

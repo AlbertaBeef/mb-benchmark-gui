@@ -22,6 +22,10 @@ class DeepXBenchRunner : public BenchRunner {
 public:
     explicit DeepXBenchRunner(ApiMode mode) : mode_(mode) {}
 
+    void configure(const BenchItem& item) override {
+        if (item.threads >= 1) async_depth_ = static_cast<size_t>(item.threads);
+    }
+
     void load(const std::vector<BenchMember>& members) override {
         for (const auto& m : members) {
             auto st = std::make_unique<Stage>();
@@ -47,7 +51,7 @@ public:
                     }
                     describe_ = shape + " uint8";
                     if (mode_ == ApiMode::Async)
-                        describe_ += " · " + std::to_string(kAsyncDepth) + " in flight";
+                        describe_ += " · " + std::to_string(async_depth_) + " in flight";
                 }
             }
             stages_.push_back(std::move(st));
@@ -62,7 +66,7 @@ public:
                 } else {
                     // DXRT's native job queue. Top the pipeline up, then retire
                     // the oldest job — one call still means one finished frame.
-                    while (st->jobs.size() < kAsyncDepth) {
+                    while (st->jobs.size() < async_depth_) {
                         const int id = st->engine->RunAsync(st->input.data());
                         if (id < 0) throw std::runtime_error("DeepX: RunAsync failed");
                         st->jobs.push_back(id);
@@ -86,7 +90,8 @@ private:
 
     // Enough outstanding jobs to keep the NPU fed without turning the figure
     // into a latency-hiding contest; matches a realistic pipeline depth.
-    static constexpr size_t kAsyncDepth = 4;
+    static constexpr size_t kDefaultAsyncDepth = 4;
+    size_t async_depth_ = kDefaultAsyncDepth;  // set from the Threads control
     ApiMode mode_ = ApiMode::Sync;
 
     std::vector<std::unique_ptr<Stage>> stages_;

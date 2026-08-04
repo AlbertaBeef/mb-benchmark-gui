@@ -5,26 +5,57 @@
 # collector at the default `err` level, so `core_temps=[...]` is never emitted
 # and mb-benchmark-gui / mb-powermon-gui show the Axelera row with no values.
 #
-# Install (paths are baked in, so adjust ExecStart if the repo moves):
+# At boot nothing has the card open, which is the one moment an out-of-band
+# firmware upload is unambiguously safe — that is what this unit is for. Run
+# interactively the script skips the upload whenever a client already holds the
+# device, and leaves the firmware to that client (any inference loads it).
+#
+# SCOPE: this covers boot only. The collector level is volatile device state and
+# also resets on a driver reload, so `modprobe -r metis && modprobe metis`
+# mid-session silently takes temperatures away again with the unit still shown
+# as active (Type=oneshot + RemainAfterExit). Re-run the script by hand after
+# any modprobe cycle:
+#   sudo /usr/local/sbin/axelera-temps.sh
+#
+# The script is installed to /usr/local/sbin rather than run from the repo, and
+# that is load-bearing on this host: the repo sits on /media/abbeefepyc/Nauvoo,
+# which udisks mounts *on behalf of uid 1000* when the user logs into GNOME —
+# 44 s after boot in one measured case, and never at all if nobody logs in. An
+# ExecStart pointing into the repo would therefore race the login or fail
+# outright. The script depends on nothing in the repo (only /opt/axelera and
+# /dev/metis-*), so copying it out costs nothing.
+#
+# Install:
+#   sudo install -m 755 tools/axelera-temps.sh /usr/local/sbin/axelera-temps.sh
 #   sudo cp tools/axelera-temps.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now axelera-temps.service
 #   systemctl status axelera-temps.service
 #
+# After editing tools/axelera-temps.sh, re-run the `install` line — the running
+# copy is /usr/local/sbin's, not the repo's.
+#
 # Undo:
 #   sudo systemctl disable --now axelera-temps.service
+#   sudo rm /etc/systemd/system/axelera-temps.service /usr/local/sbin/axelera-temps.sh
 
 [Unit]
-Description=Axelera Metis: load runtime firmware and enable the temperature collector
+Description=Axelera Metis: load runtime firmware (if free) and enable the temperature collector
 Documentation=https://github.com/AlbertaBeef/mb-benchmark-gui
-# The PCIe/multi-chip setup has to have run before /dev/metis-* exists. The
-# script also waits for the node itself, so this is belt and braces.
+# Ordering only. The node is created by the metis driver, not by this service,
+# and the script waits up to 30 s for /dev/metis-* itself — so this is belt and
+# braces rather than a real dependency.
+#
+# Note: on a single-chip M.2 Metis, axelera-multi-device.service FAILS on every
+# boot (status=255 — it runs `axl-switchtec list`, and there is no PCIe switch
+# to find). That is normal here and does not affect this unit: Wants= does not
+# propagate failure. Don't go debugging it because you saw it red in the journal.
 After=axelera-multi-device.service
 Wants=axelera-multi-device.service
 
 [Service]
 Type=oneshot
-ExecStart=/media/abbeefepyc/Nauvoo/shared_with_docker/mb-benchmark-gui/tools/axelera-temps.sh
+ExecStart=/usr/local/sbin/axelera-temps.sh
 # Both settings live in volatile device state, so this runs once per boot and
 # there is nothing to keep alive afterwards.
 RemainAfterExit=yes

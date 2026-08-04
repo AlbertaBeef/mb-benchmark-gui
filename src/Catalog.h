@@ -102,8 +102,18 @@ struct BenchItem {
     Accel accel = Accel::Hailo;
     std::vector<BenchMember> members;
     // Per-card settings from the accelerator tabs. Defaults mean "leave alone".
-    int streams = 1;    // Axelera: concurrent model instances
+    // Axelera: AIPU cores to claim (num_sub_devices on axr_device_connect).
+    // The Metis has 4. This is the card's real concurrency primitive — an
+    // earlier version exposed "streams" (host threads) instead and derived the
+    // core count from it, which opened one device connection per stream and
+    // made each connect reload the card's firmware.
+    // 2 by default: claiming all four wedges this Metis, and 3 sits one step
+    // from that cliff (see bench_axelera.cpp and Known issues).
+    int cores = 2;
     int freq_mhz = 0;   // MemryX: MPU clock to request, 0 = don't touch it
+    // Frames each card keeps outstanding in Async mode. Sync is always 1.
+    // Axelera has no async API and ignores this — its knob is `cores`.
+    int threads = 4;
 };
 
 class Catalog {

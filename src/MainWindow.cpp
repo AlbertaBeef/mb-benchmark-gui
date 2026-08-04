@@ -19,13 +19,14 @@
 #include <gtkmm/stylecontext.h>
 
 #include <cmath>
+#include <limits>
 #include <cstdio>
 
 #include "util.h"
 
 namespace {
 constexpr int kIntervalMs = 1000;
-constexpr int kSpanSeconds = 60;
+constexpr int kSpanSeconds = 600;  // 10 min of history on every graph
 constexpr int kHistory = kSpanSeconds + 1;
 constexpr double kTempAxisMax = 100.0;  // °C
 
@@ -174,6 +175,10 @@ MainWindow::MainWindow() {
     controls_ = Gtk::make_managed<ControlPanel>(catalog_);
     controls_->signal_start_stop().connect(
         sigc::mem_fun(*this, &MainWindow::on_start_stop));
+    controls_->signal_range_mode_changed().connect(
+        sigc::mem_fun(*this, &MainWindow::apply_range_mode));
+    controls_->signal_graph_filter_changed().connect(
+        sigc::mem_fun(*this, &MainWindow::apply_graph_filter));
     paned->set_start_child(*controls_);
     paned->set_resize_start_child(false);
     // Never allocate the controls less than their minimum: GTK4's default
@@ -242,6 +247,11 @@ MainWindow::MainWindow() {
     graphs->append(make_section("Energy (mJ/frame — lower is better)",
                                 *energy_.root, /*expanded=*/false));
 
+    // Seed every graph from the Range radios. They agree with GraphArea's own
+    // default today, but binding it here means the two cannot drift apart.
+    apply_range_mode();
+    apply_graph_filter();
+
     // Pull anything the catalog knows a source for but that isn't on disk yet.
     // Runs on its own thread; rows light up as artifacts land.
     fetcher_.start(catalog_);
@@ -268,7 +278,8 @@ void MainWindow::poll_downloads() {
         catalog_.refresh_presence();
         controls_->refresh_availability();
     }
-    if (engine_.active()) return;  // a running benchmark owns the status line
+    // A running benchmark, or one still shutting down, owns the status line.
+    if (engine_.active() || engine_.stopping()) return;
 
     if (st.running) {
         controls_->set_status(
@@ -496,10 +507,10 @@ Gtk::Widget& MainWindow::build_metric_section(
 
 void MainWindow::on_start_stop() {
     if (engine_.active()) {
-        engine_.stop();
+        engine_.stop();          // returns at once; workers are joined off-thread
         controls_->set_running(false);
-        controls_->set_status("Stopped.");
-        return;
+        run_status_.clear();
+        return;                  // on_tick reports "stopping" / "stopped"
     }
 
     const auto items = controls_->selection();
@@ -541,6 +552,54 @@ void MainWindow::on_start_stop() {
     controls_->set_status(run_status_);
 }
 
+// Apply the Graphs / Accelerators filter by hiding series rather than by
+// dropping samples. Hiding is retroactive — the ten minutes already on screen
+// disappear too — and a hidden series is left out of the axis calculation, so
+// the remaining card gets the whole plot. Masking at push() would have done
+// neither.
+void MainWindow::apply_graph_filter() {
+    const unsigned mask = controls_->graph_accel_mask();
+    auto shown = [&](int accel_idx) {
+        return (mask >> accel_idx) & 1u;
+    };
+
+    // Telemetry graphs: one series per metric, matched on the owning device. A
+    // metric whose device is not one of the four cards (an unmapped INA228, the
+    // board ambient sensor) has no bit to consult, so it stays visible.
+    auto by_device = [&](GraphArea* g, const std::vector<MetricInfo>& m) {
+        if (!g) return;
+        for (size_t i = 0; i < m.size(); ++i) {
+            bool vis = true;
+            for (int a = 0; a < kAccelCount; ++a) {
+                if (m[i].device_name == accel_name(accel_at(a))) {
+                    vis = shown(a);
+                    break;
+                }
+            }
+            g->set_series_visible(static_cast<int>(i), vis);
+        }
+    };
+    by_device(power_graph_, probes_.power_metrics());
+    by_device(temp_graph_, probes_.temp_metrics());
+    by_device(freq_graph_, probes_.freq_metrics());
+
+    // Benchmark graphs: exactly one series per card, in Accel order.
+    for (GraphArea* g : {fps_.graph, eff_.graph, energy_.graph}) {
+        if (!g) continue;
+        for (int i = 0; i < kAccelCount; ++i) g->set_series_visible(i, shown(i));
+    }
+}
+
+// Every graph shares one Range setting: mixing modes between graphs would make
+// the six plots answer different questions at the same moment.
+void MainWindow::apply_range_mode() {
+    const auto m = controls_->range_mode();
+    for (GraphArea* g : {power_graph_, temp_graph_, freq_graph_,
+                         fps_.graph, eff_.graph, energy_.graph}) {
+        if (g) g->set_range_mode(m);
+    }
+}
+
 bool MainWindow::on_tick() {
     const std::int64_t now = g_get_monotonic_time();
     const double dt = std::max(1e-3, (now - last_time_us_) / 1e6);
@@ -580,12 +639,22 @@ bool MainWindow::on_tick() {
         }
     }
 
+    // Start stays disabled until the previous run's workers are actually gone.
+    controls_->set_busy(engine_.stopping());
+
     if (engine_.active()) {
         std::string text = run_status_;
         for (const auto& p : problems) {
             text += "\n<small>" + Glib::Markup::escape_text(p) + "</small>";
         }
         controls_->set_status(text);
+    } else if (engine_.stopping()) {
+        // A card wedged inside a vendor SDK call can sit here indefinitely —
+        // but the window stays live, which is the whole point of the change.
+        controls_->set_status(
+            "Stopping — waiting for the device to release…\n"
+            "<small>The window stays responsive; a card that never returns "
+            "leaves its worker behind rather than freezing the app.</small>");
     }
 
     fps_.graph->push(fps);

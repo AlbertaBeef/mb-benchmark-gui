@@ -19,7 +19,7 @@ accelerators to run it on, choose a target frame rate (or max speed), and press
 Start. One worker thread per card loops inference on its own device; the graphs
 update once a second.
 
-Six stacked graphs, each a scrolling 60-second window:
+Six stacked graphs, each a scrolling 10-minute window:
 
 | Graph | What it shows |
 | ----- | ------------- |
@@ -32,6 +32,34 @@ Six stacked graphs, each a scrolling 60-second window:
 
 Power, temperature and frequency come first because they are live whether or not
 a benchmark is running; the three below them only mean anything during a run.
+
+**Graphs → Range** decides how every axis responds to its data. All six graphs
+share the setting:
+
+| Range | Behaviour |
+| ----- | --------- |
+| **Fixed** | Leave each axis at its resting top — 100 °C for temperature, a small floor elsewhere. Readings above it clip and draw flat along the top edge. |
+| **Max** *(default)* | Start at the resting top, grow to **10 % above the highest reading** once the data reaches it, and never shrink back — so successive runs stay on one comparable scale. |
+| **Dynamic** | Track the data at **both ends** — the axis runs from just below the lowest reading to just above the highest, with 10 % of the span as margin. Four dies sitting between 37 °C and 42 °C fill the plot instead of occupying five pixels of a 0–100 axis. The scale moves as the data does, so runs are not comparable by eye. |
+
+**Graphs → Accelerators** picks whose traces are drawn — one checkbox per card,
+all ticked by default, any subset selectable. It is a view filter, not a run
+filter: every card keeps running and its legend value keeps updating; only the
+traces are hidden. Two things follow from hiding rather than discarding: the
+change applies to the history already on screen, and unticked cards drop out of
+the axis calculation, so the ones you kept fill the plot. To choose what actually
+*runs*, use the Accelerators checkboxes in the Inference section.
+
+A reading outside **-40…150 °C** is treated as "no reading" and drawn as a gap
+rather than plotted. Drivers publish sentinels when a chip stops answering — a
+wedged MX3 reports `65262000` millidegrees on every sensor, i.e. -274 °C read as
+unsigned — and with no axis clipping any more, one such sample would otherwise
+re-scale the temperature graph to ~72000 °C and flatten every real card into the
+bottom pixel row.
+
+`Max` is the default because it never clips and never rescales under you. It
+matters most on temperature: under `Fixed`, a die past 100 °C draws as a straight
+line along the top edge, indistinguishable from one sitting exactly at 100.
 
 All four cards report a clock, each from a different place:
 
@@ -49,15 +77,16 @@ MemryX idles at half its configured 600 MHz, and Axelera's AI cores idle at
 sit flat however hot the part got.
 
 The Axelera trace also exposes something the frame-rate graph cannot: at one
-stream **only `C0` ramps to 800 MHz while `C1`–`C3` stay at 50 MHz**, i.e. three
-of the four AI cores are idle. Raising **Streams** in the Axelera tab wakes them
+core **only `C0` ramps to 800 MHz while `C1`–`C3` stay at 50 MHz**, i.e. three
+of the four AI cores are idle. Raising **AIPU cores** in the Axelera tab wakes them
 one at a time — see [Per-accelerator controls](#per-accelerator-controls).
 
 **The graphs are never cleared.** Starting or stopping a run does not wipe the
 traces, so consecutive runs stay on one axis and can be read against each other
 — change the model or the API mode and the step is visible in place. Idle
-stretches sit at zero on all three benchmark graphs. The window is still the
-rolling 60 s all the graphs share.
+stretches sit at zero on all three benchmark graphs. The window is the rolling
+10 minutes all six graphs share — long enough to watch a card heat up and
+throttle, and to compare several runs side by side without them scrolling off.
 
 `fps/W` and `mJ/frame` are now both raw per-sample figures, which makes them
 **exact reciprocals** — the same measurement in two units, not two different
@@ -123,6 +152,31 @@ status line under the Start button names that card and how, e.g.
   inference, and it blocks — so "async" there means enabling the runtime's own
   `double_buffer` property, which is a much weaker mechanism.
 
+### Threads
+
+**Threads** (1–8, default 4) sets how many frames each card keeps outstanding in
+Async mode. It is greyed out in Sync, where the depth is 1 by definition, and
+locked while a run is in flight.
+
+| Card | What it sets |
+| ---- | ------------ |
+| **DeepX M1** | `RunAsync` job depth |
+| **MemryX MX3** | `connect_stream` depth |
+| **Hailo-8** | requested async queue depth, **capped by HailoRT's own reported queue size** — asking for more than the SDK will queue fails at bind time |
+| **Axelera Metis** | nothing: it has no async API at all. Use **AIPU cores** instead |
+
+Depth buys a lot up to the point the device saturates, and nothing after.
+Measured on DeepX with ResNet-50:
+
+| Threads | fps |
+| ------: | --: |
+| 1 | 401.5 |
+| 4 | **1077.9** |
+| 8 | 1051.1 |
+
+4 is the default because it is where all three async-capable cards level off; the
+control is there for checking that, not because 8 is better.
+
 Measured on this host, max speed:
 
 | YOLOv8s | Sync | Async | |
@@ -156,21 +210,47 @@ Below the `Inference` frame is a tab per card, for settings that configure the
   setter — `set_mpu_frequency` exists only in the Python `mxa` module, absent
   from both `memx.h` and `MxAccl` — so this is a one-shot interpreter call at
   load time, never in the timed loop.
-- **Axelera — Streams** (1–4). Concurrent model instances, one host thread each.
+- **Axelera — AIPU cores** (1–4, default 2). How much of the Metis the model
+  claims, passed as `num_sub_devices` to `axr_device_connect()`.
 
-**Streams matter more than anything else on the Metis.** libaxruntime has no
-async API *and* a single model instance occupies only one AI core, which the
-Frequency graph shows directly — with one stream `aicore0` runs at 800 MHz while
-`aicore1`–`3` sit at 50 MHz. Measured on ResNet-50:
+> ⚠️ **Do not set this to 4 on this card.** Claiming all four cores makes every
+> MSI vector time out and drops the PCIe link, after which the Metis sits in
+> bootloader and no firmware upload succeeds until a **full power-off** — a
+> driver reload does not clear it. 1–3 run fine; 3 is the highest value seen
+> stable. The default is 2 so that a fresh checkout can't cost you a power
+> cycle. See [Known issues](#known-issues).
 
-| Streams | fps | AI core clocks |
-| ------: | --: | -------------- |
+**Cores matter more than anything else on the Metis.** libaxruntime has no async
+API, and a model only occupies the cores it asked for — which the Frequency
+graph shows directly: on one core `aicore0` runs at 800 MHz while `aicore1`–`3`
+sit at 50 MHz. Measured on ResNet-50:
+
+| AIPU cores | fps | AI core clocks |
+| ---------: | --: | -------------- |
 | 1 | 437 | `800 · 50 · 50 · 50` |
 | 2 | 671 | `800 · 50 · 800 · 50` |
 | 4 | **805** | `800 · 800 · 800 · 800` |
 
-2.1× from 1 → 4, with the cores waking one at a time. Cores are divided across
-`stages × streams`, so a two-stage pipeline at two streams still covers the card.
+2.1× from 1 → 4, with the cores waking one at a time. A multi-stage pipeline
+divides the card between its stages, so the request is capped at
+`subdevice_count / stages`.
+
+A core is lit by a **model instance**, and an instance occupies exactly one core
+regardless of what its connection asked for — so *N* cores means *N* connections
+with one instance each. Measured on ResNet-50 (async), clocks sampled mid-run:
+
+| connections × instances | aicore0..3 during run | fps |
+| --- | --- | --- |
+| 1 × 1, asking for 4 cores | `800 · 50 · 50 · 50` | 375.6 |
+| 1 × 4 on one connection | collides — `Failed to wait for MSI` | 201.7 |
+| **4 × 1** | **`800 · 800 · 800 · 800`** | **694.9** |
+
+The control was previously labelled "Streams" and the core count was *derived*
+from it. The mechanism was right but the name hid it, and the first connect on a
+cold card was allowed to race the others: every `axr_device_connect()` makes the
+runtime reload the card's firmware, so several at once could interrupt the
+3.8 MB firmware upload and drop the PCIe link. The first connection is now made
+alone and allowed to finish before the rest are opened.
 
 ## Models and pipelines
 
@@ -380,6 +460,10 @@ message.
 
 `mb-benchmark-gui.desktop` is a ready launcher; it points `Exec` at
 `build/mb-benchmark`, so the repo has to stay where it is (or edit the path).
+Its visible label is `Name=mb-benchmark` — short on purpose, since a longer
+label wraps to a second line under the desktop icon. The descriptive text lives
+in `GenericName`/`Comment`, which is where the launcher's tooltip and search
+keywords come from.
 
 ```bash
 # application menu
@@ -427,11 +511,78 @@ and feeds nothing. Search order:
    from any working directory
 3. `$XDG_CONFIG_HOME/mb-benchmark-gui/ina228.conf` (else `~/.config/…`)
 
+## Resetting a card
+
+Any card can end up wedged — a killed process holding an MX3 session, a Metis
+that has lost its firmware. Two scripts cover it: **`npu-status.sh`** only looks,
+**`npu-reset.sh`** acts.
+
+```bash
+./tools/npu-status.sh                 # read-only health check (no root, no side effects)
+./tools/npu-status.sh memryx          # ...or one card
+sudo ./tools/npu-reset.sh all         # act on it
+sudo ./tools/npu-reset.sh memryx      # ...or one card
+sudo ./tools/npu-reset.sh all --force # ...killing any app still holding a device
+sudo ./tools/npu-reset.sh memryx --hard          # also reload the driver
+sudo ./tools/npu-reset.sh memryx --hard --rescan # ...then re-enumerate on PCI
+```
+
+The MemryX reset restarts `mxa-manager` and stops there by default. That clears
+the stale session behind the usual hang, and it is deliberately *not* a driver
+reload: unloading `memx_cascade_plus_pcie` has been observed to drop this card
+into **D3cold**, after which it will not re-probe and there is no `/dev/memx0` at
+all. `--hard` does it anyway if you need to, and `--rescan` follows up by
+re-enumerating the card on the PCI bus, which is the only recovery short of a
+power cycle.
+
+The status view names the two failure states that are otherwise hard to read: a
+MemryX reporting `65262000` on every sensor (its no-reading sentinel — the chip
+has stopped answering), and an Axelera sitting in bootloader *with* DMA errors,
+which means wedged and needing a power-off rather than a driver reload.
+
 ## Known issues
+
+### Open
+
+**Launching does nothing after the app was killed mid-run (MemryX).** The
+desktop icon shows a startup spinner that gives up, and no window ever appears —
+but the process is running, blocked in the MemryX driver's `open()`:
+
+```bash
+$ pgrep -af build/mb-benchmark
+26703 …/build/mb-benchmark
+$ cat /proc/26703/task/*/wchan
+memx_fops_open
+$ ls /proc/26703/fd          # only 0, 1, 2 — it never even reached GTK
+```
+
+`libmemx`/`libmx_accl` open `/dev/memx0` from a library constructor, *before*
+`main()`, so this affects every launch of the binary equally and the app cannot
+work around it. The cause is a previous instance being killed while it held an
+MX3 session: `mxa-manager` does not reclaim it, and every subsequent open blocks
+forever. Clear it with
+
+```bash
+pkill -x mb-benchmark && sudo systemctl restart mxa-manager
+```
+
+and, if a launch still hangs, reload the driver
+(`sudo modprobe -r memx && sudo modprobe memx`) or reboot.
+
+This is **not** the Stop-button freeze below — that one has a live window and
+many threads, and is fixed.
 
 ### Fixed — kept here because the symptoms are misleading
 
 If you see one of these again, this is what it means:
+
+- **The window freezes when you press Stop.** The engine used to join its worker
+  threads on the GUI thread, and a worker only notices the stop flag *between*
+  frames — so a card blocked inside a vendor SDK call (HailoRT's ioctl, DXRT's
+  message queue, MemryX's driver open) held the UI forever. Stopping is now
+  asynchronous: the window stays live and shows "Stopping — waiting for the
+  device to release…", Start stays disabled until the workers are actually gone,
+  and a card that never returns leaks one thread instead of hanging the app.
 
 - **INA228 bridges not detected after a reboot, but fine after unplug/replug.**
   A udev rule granting access to the FT232H is overridden by the system
@@ -512,10 +663,18 @@ If you see one of these again, this is what it means:
   boot:
 
   ```bash
+  sudo install -m 755 tools/axelera-temps.sh /usr/local/sbin/axelera-temps.sh
   sudo cp tools/axelera-temps.service /etc/systemd/system/
   sudo systemctl daemon-reload
   sudo systemctl enable --now axelera-temps.service
   ```
+
+  **The script is installed outside the repo on purpose.** If your checkout sits
+  on a removable or `udisks`-mounted filesystem (anything under `/media/<user>/`),
+  that mount happens when a user logs in — not at boot — so a unit pointing
+  `ExecStart` into the repo would race the login, or never run at all on a
+  headless boot. The script needs nothing from the repo, only `/opt/axelera` and
+  `/dev/metis-*`. Re-run the `install` line after editing the script.
 
   The script is idempotent, so running it by hand at any time is safe. Note the
   collector level is a *global* device log setting — that is why the app's probe

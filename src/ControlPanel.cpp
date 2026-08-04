@@ -148,6 +148,25 @@ ControlPanel::ControlPanel(const Catalog& catalog)
         api_row->append(async_radio_);
         box->append(*api_row);
 
+        // --- threads (in-flight depth) ---
+        // Sits under API because it only means anything in Async mode: it is the
+        // number of frames each card keeps outstanding. Greyed out in Sync,
+        // where the depth is 1 by definition.
+        auto* threads_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
+        threads_row->append(*row_label("Threads"));
+        threads_spin_.set_adjustment(Gtk::Adjustment::create(4, 1, 8, 1, 1));
+        threads_spin_.set_numeric(true);
+        threads_spin_.set_tooltip_text(
+            "How many frames each card keeps in flight in Async mode — DeepX "
+            "job depth, MemryX stream depth, Hailo's async queue (its own "
+            "reported queue size is the ceiling). Axelera has no async API, so "
+            "this does not apply to it; use its AIPU cores control instead.\n\n"
+            "Ignored in Sync mode, where exactly one frame is outstanding.");
+        threads_row->append(threads_spin_);
+        box->append(*threads_row);
+        conns_.push_back(sync_radio_.signal_toggled().connect(
+            [this] { threads_spin_.set_sensitive(!sync_radio_.get_active()); }));
+
         // --- frame rate ---
         auto* rate_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
         rate_row->append(*row_label("Frame Rate"));
@@ -203,6 +222,76 @@ ControlPanel::ControlPanel(const Catalog& catalog)
         append(*frame);
     }
 
+    // ---- Graphs ----
+    {
+        auto* frame = Gtk::make_managed<Gtk::Frame>("Graphs");
+        auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 6);
+        box->set_margin(8);
+
+        auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
+        auto* lbl = Gtk::make_managed<Gtk::Label>("Range");
+        lbl->set_xalign(0.0);
+        lbl->set_width_chars(12);   // same as the Inference rows, so they align
+        row->append(*lbl);
+
+        range_max_.set_group(range_fixed_);
+        range_dynamic_.set_group(range_fixed_);
+        range_max_.set_active(true);   // current behaviour is the default
+
+        range_fixed_.set_tooltip_text(
+            "Leave every axis at its resting top — 100 °C for temperature, the "
+            "per-graph floor elsewhere. Readings above it are clipped and draw "
+            "flat along the top edge. This is what the graphs did originally.");
+        range_max_.set_tooltip_text(
+            "Start at the resting top and grow to 10 % above the highest "
+            "reading once the data reaches it. The axis never shrinks back, so "
+            "successive runs stay comparable on one scale.");
+        range_dynamic_.set_tooltip_text(
+            "Scale to the data in both directions — always 10 % above the "
+            "highest reading in the window, however small. Fills the plot, but "
+            "the scale moves as the data does, so two runs are not directly "
+            "comparable by eye.");
+
+        row->append(range_fixed_);
+        row->append(range_max_);
+        row->append(range_dynamic_);
+        box->append(*row);
+
+        for (auto* b : {&range_fixed_, &range_max_, &range_dynamic_}) {
+            conns_.push_back(b->signal_toggled().connect([this, b] {
+                if (b->get_active()) sig_range_mode_.emit();
+            }));
+        }
+
+        // --- which cards' traces to draw ---
+        // Independent checkboxes: any subset. Untick a card to take it out of
+        // the plots (and out of the axis calculation) without stopping it.
+        auto* filt = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
+        auto* flbl = Gtk::make_managed<Gtk::Label>("Accelerators");
+        flbl->set_xalign(0.0);
+        flbl->set_width_chars(12);
+        filt->append(*flbl);
+        for (int i = 0; i < kAccelCount; ++i) {
+            const Accel a = accel_at(i);
+            auto* b = Gtk::make_managed<Gtk::CheckButton>(accel_name(a));
+            b->set_active(true);   // everything shown by default
+            b->set_tooltip_text(
+                std::string("Draw ") + accel_name(a) +
+                " on the graphs. Unticking hides its traces — including the "
+                "history already on screen — and drops it from the axis "
+                "calculation, so the remaining cards fill the plot. The card "
+                "keeps running either way; its legend value keeps updating.");
+            filt->append(*b);
+            graph_accel_[i] = b;
+            conns_.push_back(b->signal_toggled().connect(
+                [this] { sig_graph_filter_.emit(); }));
+        }
+        box->append(*filt);
+
+        frame->set_child(*box);
+        append(*frame);
+    }
+
     // ---- per-accelerator controls, one tab each ----
     // No enclosing Frame: the tab strip already delimits it, and the checkboxes
     // that used to need the "Accelerators" heading now live under Inference.
@@ -243,17 +332,26 @@ ControlPanel::ControlPanel(const Catalog& catalog)
                 page->append(*row);
             } else if (a == Accel::Axelera) {
                 auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-                auto* lbl = Gtk::make_managed<Gtk::Label>("Streams");
+                auto* lbl = Gtk::make_managed<Gtk::Label>("AIPU cores");
                 lbl->set_xalign(0.0);
                 row->append(*lbl);
-                axelera_streams_.set_adjustment(Gtk::Adjustment::create(1, 1, 4, 1, 1));
-                axelera_streams_.set_numeric(true);
-                axelera_streams_.set_tooltip_text(
-                    "Concurrent model instances. One stream leaves three of the "
-                    "four AI cores idle at 50 MHz — visible in the Frequency "
-                    "graph — which is why a single-stream run falls well short "
-                    "of the vendor pipeline.");
-                row->append(axelera_streams_);
+                // Default 2, conservatively. Claiming all four cores wedges
+                // this card: all four MSI vectors time out, the PCIe link drops
+                // and the Metis falls back to bootloader — recoverable only by
+                // a full power-off. 3 has been seen to work but sits one step
+                // from the cliff, so the shipped default stays at 2 and raising
+                // it is a deliberate act. See "Known issues" in the README.
+                axelera_cores_.set_adjustment(Gtk::Adjustment::create(2, 1, 4, 1, 1));
+                axelera_cores_.set_numeric(true);
+                axelera_cores_.set_tooltip_text(
+                    "AIPU cores this model claims (num_sub_devices). The Metis "
+                    "has four; one core leaves the others idle at 50 MHz, "
+                    "visible in the Frequency graph.\n\n"
+                    "WARNING: 4 has been observed to wedge the card — all four "
+                    "MSI vectors time out and the PCIe link drops, needing a "
+                    "power-off to recover. 3 works but is one step from that; "
+                    "the default is 2.");
+                row->append(axelera_cores_);
                 page->append(*row);
             }
 
@@ -374,7 +472,8 @@ std::vector<BenchItem> ControlPanel::selection() const {
         it.accel = a;
         it.members = s->members[i];
         if (a == Accel::MemryX) it.freq_mhz = memryx_freq_mhz();
-        if (a == Accel::Axelera) it.streams = axelera_streams();
+        it.threads = threads();
+        if (a == Accel::Axelera) it.cores = axelera_cores();
         out.push_back(std::move(it));
     }
     return out;
@@ -393,8 +492,25 @@ int ControlPanel::memryx_freq_mhz() const {
     try { return std::stoi(s); } catch (...) { return 0; }  // 0 = leave alone
 }
 
-int ControlPanel::axelera_streams() const {
-    return static_cast<int>(axelera_streams_.get_value());
+GraphArea::RangeMode ControlPanel::range_mode() const {
+    if (range_fixed_.get_active()) return GraphArea::RangeMode::Fixed;
+    if (range_dynamic_.get_active()) return GraphArea::RangeMode::Dynamic;
+    return GraphArea::RangeMode::Max;
+}
+
+unsigned ControlPanel::graph_accel_mask() const {
+    unsigned m = 0;
+    for (int i = 0; i < kAccelCount; ++i)
+        if (!graph_accel_[i] || graph_accel_[i]->get_active()) m |= 1u << i;
+    return m;
+}
+
+int ControlPanel::threads() const {
+    return static_cast<int>(threads_spin_.get_value());
+}
+
+int ControlPanel::axelera_cores() const {
+    return static_cast<int>(axelera_cores_.get_value());
 }
 
 void ControlPanel::set_running(bool running) {
@@ -408,8 +524,15 @@ void ControlPanel::set_running(bool running) {
     max_speed_.set_sensitive(!running);
     fps_spin_.set_sensitive(!running && !max_speed_.get_active());
     memryx_freq_.set_sensitive(!running);
-    axelera_streams_.set_sensitive(!running);
+    axelera_cores_.set_sensitive(!running);
+    threads_spin_.set_sensitive(!running && !sync_radio_.get_active());
     refresh_accel_sensitivity();
+}
+
+void ControlPanel::set_busy(bool busy) {
+    if (busy_ == busy) return;
+    busy_ = busy;
+    run_button_.set_sensitive(!busy);
 }
 
 void ControlPanel::set_status(const std::string& text) {

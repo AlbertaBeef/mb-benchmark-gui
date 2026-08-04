@@ -59,6 +59,10 @@ public:
     // time rather than an API call. ~4 s of Python startup, once per run,
     // alongside model loading; not in the timed loop.
     void configure(const BenchItem& item) override {
+        // Async depth from the Threads control; Sync means exactly one frame
+        // outstanding, which is the whole point of emulating it here.
+        if (mode_ == ApiMode::Async && item.threads >= 1)
+            depth_ = static_cast<size_t>(item.threads);
         if (item.freq_mhz <= 0) return;
         const std::string py = find_memryx_python();
         if (py.empty()) return;

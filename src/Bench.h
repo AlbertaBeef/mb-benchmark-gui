@@ -3,9 +3,12 @@
 //
 // Deliberately kept off the GUI thread and lock-free on the hot path: a worker
 // only ever bumps a free-running atomic frame counter, and the GUI derives the
-// frame rate from that counter's delta on its 1 Hz tick. Nothing in a worker
-// waits on the UI, so a slow-loading model or a wedged device can never freeze
-// the window.
+// frame rate from that counter's delta on its 1 Hz tick.
+//
+// The independence has to hold in BOTH directions, and originally it did not.
+// No worker waits on the UI — but `stop()` used to join the workers, so a card
+// wedged inside a vendor SDK call froze the whole window on "Stop benchmark".
+// `stop()` now signals and returns; a detached reaper does the joining.
 //
 // No GTK dependency.
 #pragma once
@@ -100,10 +103,16 @@ public:
 
     // Start one worker per item. target_fps <= 0 means "run flat out".
     void start(const std::vector<BenchItem>& items, double target_fps, ApiMode mode);
-    // Signal every worker to stop and join them. Safe to call when idle.
+    // Signal every worker to stop. Returns **immediately** — the join happens
+    // on a detached reaper thread. A worker only notices `stop_flag` between
+    // frames, so joining here would freeze the caller until the device came
+    // back, which for a wedged card is never. Safe to call when idle.
     void stop();
 
     bool active() const { return active_; }
+    // Workers signalled but not yet joined. Start must stay disabled until this
+    // is false, or a new run would race the old one for the device.
+    bool stopping() const { return pending_stops_->load() > 0; }
     double target_fps() const { return target_fps_; }
     ApiMode mode() const { return mode_; }
 
@@ -117,6 +126,10 @@ public:
 private:
     struct Worker;
     std::vector<std::unique_ptr<Worker>> workers_;
+    // Shared with the reaper thread so the count outlives this object if a
+    // worker never comes back.
+    std::shared_ptr<std::atomic<int>> pending_stops_ =
+        std::make_shared<std::atomic<int>>(0);
     std::vector<Series> series_;
     bool active_ = false;
     double target_fps_ = 0.0;

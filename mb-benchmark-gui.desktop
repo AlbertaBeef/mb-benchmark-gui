@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=NPU Benchmarking GUI
+Name=mb-benchmark
 GenericName=NPU Benchmark
 Comment=Benchmark edge-AI NPUs and chart frame rate, power and energy efficiency
 Exec=/media/abbeefepyc/Nauvoo/shared_with_docker/mb-benchmark-gui/build/mb-benchmark

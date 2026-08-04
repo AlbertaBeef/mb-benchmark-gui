@@ -21,6 +21,7 @@
 
 #include "Bench.h"
 #include "Catalog.h"
+#include "GraphArea.h"
 
 class ControlPanel : public Gtk::Box {
 public:
@@ -40,15 +41,36 @@ public:
     // Which of the vendors' two inference APIs to drive.
     ApiMode api_mode() const;
 
+    // How many frames each card keeps in flight in Async mode.
+    int threads() const;
+
+    // How every graph's axis top should respond to its data.
+    GraphArea::RangeMode range_mode() const;
+
+    // Which cards' traces to draw — any subset, all ticked by default.
+    // Bit i (in Accel order) set means that card is shown. Filters the *graphs*
+    // only: the legends keep reading live, and the Inference/Accelerators
+    // checkboxes still decide what actually runs.
+    unsigned graph_accel_mask() const;
+    // Fired when the Range radios change, so the graphs re-scale immediately
+    // rather than at the next tick.
+    sigc::signal<void()>& signal_range_mode_changed() { return sig_range_mode_; }
+    // Fired when the graph accelerator filter changes.
+    sigc::signal<void()>& signal_graph_filter_changed() { return sig_graph_filter_; }
+
     // Per-accelerator settings from the card tabs.
     int memryx_freq_mhz() const;   // MPU clock to request before a run
-    int axelera_streams() const;   // concurrent model instances on the Metis
+    int axelera_cores() const;     // AIPU cores to claim on the Metis
 
     // Flip the button between Start and Stop and lock the selection while a
     // run is in flight (changing models mid-run would mix two measurements).
     void set_running(bool running);
 
     void set_status(const std::string& text);
+
+    // Keeps Start disabled while a previous run's workers are still being
+    // joined — starting again then would fight the old run for the device.
+    void set_busy(bool busy);
 
     // Re-read which artifacts are on disk and repaint the rows. Called as
     // downloads land, so a model becomes selectable the moment it arrives.
@@ -71,6 +93,18 @@ private:
 
     Gtk::CheckButton max_speed_{"Max"};
     Gtk::SpinButton fps_spin_;
+    Gtk::SpinButton threads_spin_;   // in-flight depth per card (Async only)
+
+    // Graphs / Range. Max is the default: it is the behaviour the graphs have
+    // had since the headroom rule landed, and the one that never clips.
+    Gtk::CheckButton range_fixed_{"Fixed"};
+    Gtk::CheckButton range_max_{"Max"};
+    Gtk::CheckButton range_dynamic_{"Dynamic"};
+
+    // Graphs / Accelerators: one independent checkbox per card, in Accel order.
+    // Independent, not a radio group — the point is comparing several cards on
+    // one plot, so any subset has to be selectable.
+    Gtk::CheckButton* graph_accel_[kAccelCount] = {nullptr, nullptr, nullptr, nullptr};
 
     // Labelled just "Sync"/"Async"; the adjacent "API" label supplies the noun.
     Gtk::CheckButton sync_radio_{"Sync"};
@@ -81,7 +115,7 @@ private:
     // what a run targets rather than configuring a card.
     Gtk::Notebook accel_notebook_;
     Gtk::ComboBoxText memryx_freq_;   // MemryX tab: MPU clock
-    Gtk::SpinButton axelera_streams_; // Axelera tab: concurrent streams
+    Gtk::SpinButton axelera_cores_;   // Axelera tab: AIPU cores (1-4)
 
     Gtk::CheckButton* accel_check_[kAccelCount] = {nullptr, nullptr, nullptr, nullptr};
     // What the user last asked for, per card, independent of whether the
@@ -95,7 +129,10 @@ private:
     Gtk::Label status_;
 
     sigc::signal<void()> sig_start_stop_;
+    sigc::signal<void()> sig_range_mode_;
+    sigc::signal<void()> sig_graph_filter_;
     bool running_ = false;
+    bool busy_ = false;   // workers from a previous run still shutting down
 
     // Widget-signal connections, severed in the destructor. Members are
     // destroyed in reverse declaration order, so the list boxes die *before*

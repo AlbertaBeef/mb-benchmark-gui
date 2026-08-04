@@ -96,7 +96,15 @@ struct BenchEngine::Worker {
 };
 
 BenchEngine::BenchEngine() = default;
-BenchEngine::~BenchEngine() { stop(); }
+
+BenchEngine::~BenchEngine() {
+    stop();
+    // Give a clean shutdown a moment, but never hang exit on a wedged device:
+    // the reaper is detached and the Worker objects outlive us via shared_ptr.
+    for (int i = 0; i < 40 && pending_stops_->load() > 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+}
 
 void BenchEngine::start(const std::vector<BenchItem>& items, double target_fps,
                         ApiMode mode) {
@@ -132,8 +140,23 @@ void BenchEngine::start(const std::vector<BenchItem>& items, double target_fps,
 
 void BenchEngine::stop() {
     for (auto& w : workers_) w->stop_flag.store(true, std::memory_order_relaxed);
-    for (auto& w : workers_) {
-        if (w->th.joinable()) w->th.join();
+
+    // Hand the workers to a detached reaper rather than joining here. `stop_flag`
+    // is only tested between frames, so a worker blocked inside a vendor SDK
+    // call — HailoRT's ioctl, DXRT's message queue, MemryX's driver open — would
+    // otherwise hold the caller forever. This used to be the GUI thread, so one
+    // wedged device froze the whole window on "Stop benchmark".
+    if (!workers_.empty()) {
+        auto orphans = std::make_shared<std::vector<std::unique_ptr<Worker>>>(
+            std::move(workers_));
+        auto pending = pending_stops_;
+        pending->fetch_add(static_cast<int>(orphans->size()));
+        std::thread([orphans, pending] {
+            for (auto& w : *orphans) {
+                if (w->th.joinable()) w->th.join();
+                pending->fetch_sub(1);
+            }
+        }).detach();
     }
     workers_.clear();
     // Series are kept so the UI can still show why a run failed, but their

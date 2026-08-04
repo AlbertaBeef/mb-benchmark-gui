@@ -6,12 +6,18 @@
 // the loop here: the input buffer is prepared once at load, and the outputs are
 // left in their raw device layout. What is timed is axr_run_model_instance.
 //
-// Streams. libaxruntime has no async inference API, and a *single* model
-// instance only ever occupies one AI core — the Frequency graph shows this
-// directly: with one stream, aicore0 runs at 800 MHz while aicore1-3 sit at
-// 50 MHz. Concurrency therefore has to come from running several instances at
-// once, one host thread each, which is what `streams` does. Cores are divided
-// across stages x streams so the whole card is covered.
+// Cores. libaxruntime has no async inference API; the card's concurrency knob is
+// how many AIPU cores a model claims, passed as num_sub_devices to
+// axr_device_connect(). The Frequency graph shows it directly: on one core
+// aicore0 runs at 800 MHz while aicore1-3 sit at 50 MHz. A multi-stage pipeline
+// divides subdevice_count between its stages.
+//
+// ONE axr_device_connect() PER STAGE. Every connect makes the runtime reload the
+// card's firmware ("fwtrace: detached for firmware reload" in dmesg). This file
+// used to open one connection per host thread, which fired three or four reloads
+// within seconds and, on a card still in bootloader, raced the 3.8 MB firmware
+// ELF upload badly enough to drop the PCIe link. Host instances are now an
+// internal detail (instances_, default 1) and share the stage's connection.
 #include "axruntime/axruntime.h"
 
 #include <unistd.h>
@@ -58,7 +64,15 @@ public:
     ~AxeleraBenchRunner() override { shutdown(); }
 
     void configure(const BenchItem& item) override {
-        streams_ = std::max(1, std::min(4, item.streams));
+        cores_ = std::max(1, std::min(4, item.cores));
+        // One model instance occupies exactly ONE AI core, whatever
+        // num_sub_devices the connection asked for. Measured 2026-08-04 with the
+        // clocks sampled mid-run: cores=4 with a single instance leaves
+        // aicore1..3 at 50 MHz and gives 375.6 fps, no better than one core.
+        // So "N cores busy" means N instances, and each needs its own
+        // connection — four instances shoved onto one connection collide
+        // (`Failed to wait for MSI`, 201.7 fps). Hence: instances == cores.
+        instances_ = cores_;
     }
 
     void load(const std::vector<BenchMember>& members) override {
@@ -70,13 +84,14 @@ public:
         if (n == 0 || !devices) throw std::runtime_error("Axelera: no devices found");
         device_ = devices[0];  // the array is owned by the context
 
-        // Every instance we intend to run concurrently gets a share: with one
-        // stage and four streams that is one core each, which is what actually
-        // puts all four AI cores to work.
+        // One core per instance. A multi-stage pipeline shares the card between
+        // its stages, so cap the instance count at what each stage can own.
         const size_t nstages = std::max<size_t>(1, members.size());
         const size_t avail = std::max<size_t>(1, device_.subdevice_count);
-        const size_t want =
-            std::max<size_t>(1, avail / (nstages * static_cast<size_t>(streams_)));
+        instances_ = static_cast<int>(
+            std::clamp<size_t>(static_cast<size_t>(cores_), 1,
+                               std::max<size_t>(1, avail / nstages)));
+        const size_t want = 1;  // sub-devices per connection
 
         for (const auto& m : members) {
             auto st = std::make_unique<Stage>();
@@ -94,10 +109,31 @@ public:
             for (size_t i = 0; i < no; ++i)
                 st->out_infos.push_back(axr_get_model_output(st->model, i));
 
-            for (int s = 0; s < streams_; ++s) {
+            // One connection for the whole stage, opened before any instance
+            // exists. Ask for this stage's full share of the card so the
+            // instances on it can spread across cores.
+            // The FIRST connect is the one that uploads the firmware ELF to a
+            // cold card. Do it alone and let it complete before opening any
+            // further connection, so nothing resets the device mid-upload.
+            connect_stage(*st, want);
+            if (!st->conn) {
+                throw std::runtime_error("Axelera: could not connect to the device: " +
+                                         std::string(axr_last_error_string(AXR_OBJECT(ctx_))));
+            }
+
+            for (int s = 0; s < instances_; ++s) {
                 auto inst = std::make_unique<Inst>();
-                if (!connect(*st, *inst, want) && want > 1) {
-                    connect(*st, *inst, 1);  // deploy-time core cap — retry narrow
+                // Instance 0 rides the stage connection; each later one gets
+                // its own, which is what actually lights up another AI core.
+                if (s == 0) {
+                    inst->instance = st->conn ? make_instance(st->conn, *st) : nullptr;
+                } else {
+                    inst->conn = axr_device_connect(ctx_, &device_, want, nullptr);
+                    if (inst->conn) inst->instance = make_instance(inst->conn, *st);
+                    if (!inst->instance && inst->conn) {
+                        axr_destroy(AXR_OBJECT(inst->conn));
+                        inst->conn = nullptr;
+                    }
                 }
                 if (!inst->instance) {
                     std::string why = axr_last_error_string(AXR_OBJECT(ctx_));
@@ -139,10 +175,8 @@ public:
                     if (!shape.empty()) shape += "x";
                     shape += std::to_string(u);
                 }
-                describe_ = shape + " int8 · " + std::to_string(streams_) +
-                            (streams_ == 1 ? " stream" : " streams") + " x " +
-                            std::to_string(st->cores) +
-                            (st->cores == 1 ? " core" : " cores");
+                describe_ = shape + " int8 · " + std::to_string(instances_) +
+                            (instances_ == 1 ? " core" : " cores");
                 if (mode_ == ApiMode::Async) describe_ += " · double-buffered";
             }
             stages_.push_back(std::move(st));
@@ -151,15 +185,15 @@ public:
         // >1 stream: free-running threads, one per stream, each retiring frames
         // into a shared counter. One stream stays inline — no threads, no
         // synchronisation, identical to the original single-instance path.
-        if (streams_ > 1) {
-            for (int s = 0; s < streams_; ++s) {
+        if (instances_ > 1) {
+            for (int s = 0; s < instances_; ++s) {
                 threads_.emplace_back([this, s] { stream_loop(s); });
             }
         }
     }
 
     void run_frame() override {
-        if (streams_ == 1) {
+        if (instances_ == 1) {
             run_one(0);
             return;
         }
@@ -176,6 +210,9 @@ public:
 
 private:
     struct Inst {
+        // Normally null: the instance lives on Stage::conn. Only set when the
+        // shared connection refused an extra instance and this stream had to
+        // fall back to its own — safe by then, since the firmware is loaded.
         axrConnection* conn = nullptr;
         axrModelInstance* instance = nullptr;
         std::vector<std::vector<std::uint8_t>> in_bufs, out_bufs;
@@ -183,6 +220,14 @@ private:
     };
     struct Stage {
         axrModel* model = nullptr;
+        // One device connection shared by this stage's stream instances. Every
+        // axr_device_connect() makes the runtime reload the card's firmware
+        // ("fwtrace: detached for firmware reload" in dmesg); opening one per
+        // stream meant a second connect could reset the device while the first
+        // was still DMA-ing the 3.8 MB firmware ELF into it. That took the PCIe
+        // link down and left the card stuck in bootloader. Connect once,
+        // instantiate many.
+        axrConnection* conn = nullptr;
         std::vector<axrTensorInfo> in_infos, out_infos;
         std::vector<std::unique_ptr<Inst>> insts;  // one per stream
         size_t cores = 1;
@@ -233,9 +278,13 @@ private:
         for (auto& st : stages_) {
             for (auto& inst : st->insts) {
                 if (inst->instance) axr_destroy(AXR_OBJECT(inst->instance));
+                // Only a fallback stream owns a connection; the usual case is
+                // null and the shared Stage::conn is released just below.
                 if (inst->conn) axr_destroy(AXR_OBJECT(inst->conn));
             }
             st->insts.clear();
+            // After every instance on it is gone, never before.
+            if (st->conn) { axr_destroy(AXR_OBJECT(st->conn)); st->conn = nullptr; }
             if (st->model) axr_destroy(AXR_OBJECT(st->model));
         }
         stages_.clear();
@@ -259,27 +308,29 @@ private:
         throw std::runtime_error("Axelera: no model_*.json in " + dir);
     }
 
-    bool connect(Stage& st, Inst& inst, size_t cores) {
-        if (inst.conn) { axr_destroy(AXR_OBJECT(inst.conn)); inst.conn = nullptr; }
-        inst.conn = axr_device_connect(ctx_, &device_, cores, nullptr);
-        if (!inst.conn) return false;
-        // libaxruntime has no async inference API at all; the nearest thing it
-        // offers is its own double_buffer property, which overlaps the next
-        // frame's transfer with the current run. That is what "Async" means for
-        // this card, and the status line says so rather than implying parity.
+    // Open the stage's single device connection. This is the call that loads
+    // firmware onto a cold card, so it must happen exactly once and finish
+    // before anything else touches the device.
+    bool connect_stage(Stage& st, size_t cores) {
+        if (st.conn) { axr_destroy(AXR_OBJECT(st.conn)); st.conn = nullptr; }
+        st.conn = axr_device_connect(ctx_, &device_, cores, nullptr);
+        if (!st.conn) return false;
+        st.cores = cores;
+        return true;
+    }
+
+    // libaxruntime has no async inference API at all; the nearest thing it
+    // offers is its own double_buffer property, which overlaps the next frame's
+    // transfer with the current run. That is what "Async" means for this card,
+    // and the status line says so rather than implying parity.
+    axrModelInstance* make_instance(axrConnection* conn, Stage& st) {
         axrProperties* props = nullptr;
         if (mode_ == ApiMode::Async) {
             props = axr_create_properties(ctx_, "double_buffer=1");
         }
-        inst.instance = axr_load_model_instance(inst.conn, st.model, props);
+        axrModelInstance* mi = axr_load_model_instance(conn, st.model, props);
         if (props) axr_destroy(AXR_OBJECT(props));
-        if (!inst.instance) {
-            axr_destroy(AXR_OBJECT(inst.conn));
-            inst.conn = nullptr;
-            return false;
-        }
-        st.cores = cores;
-        return true;
+        return mi;
     }
 
     axrContext* ctx_ = nullptr;
@@ -287,7 +338,8 @@ private:
     std::vector<std::unique_ptr<Stage>> stages_;
     std::string describe_;
     ApiMode mode_ = ApiMode::Sync;
-    int streams_ = 1;
+    int cores_ = 4;
+    int instances_ = 1;
 
     std::vector<std::thread> threads_;
     std::atomic<bool> stop_{false};
