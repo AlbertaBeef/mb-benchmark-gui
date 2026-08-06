@@ -8,6 +8,11 @@ Guidance for Claude Code when working in this repository.
 edge-AI NPUs — it links each vendor's runtime and drives inference itself, then
 charts the achieved frame rate alongside the power it cost.
 
+Five backends: four M.2 cards (Hailo-8, MemryX MX3, DeepX M1, Axelera Metis) and
+one **SoC-integrated** NPU (the Qualcomm Hexagon NSP on a Dragonwing IQ-9075).
+Every one is optional and auto-detected, and it builds on **x86_64 and aarch64**
+— see **Host specifics**, which describes two quite different machines.
+
 It was built from `../mb-powermon-gui` and shares its chrome (teal
 `Gtk::HeaderBar`, brand palette, `Gtk::Expander` graph sections) and three files
 with it. They are the *same code*, not a fork with intent to diverge — fix a bug
@@ -94,9 +99,20 @@ thread; `MainWindow::poll_downloads()` re-runs `Catalog::refresh_presence()` and
 
 Three layers, cleanly separated. Keep it that way.
 
+- **`qnnruntime.{h,cpp}`** — **vendored, not written here.** A flat C-ABI shim
+  over the QNN C API, copied from
+  `../envic_ai_aerex/envic/src/components/accelerator/qnn/`. The `.cpp` is kept
+  **byte-identical** to that copy so fixes can move either way with `cp`; `cmp`
+  it after touching anything. The `.h` differs *only* in its header comment
+  (the original describes a Vala caller). QNN is never linked — the shim
+  `dlopen`s a backend library and asks it for an interface struct, which is why
+  CMake needs only headers and `libdl`.
 - **`Catalog.{h,cpp}`** — pure data, no GTK. The `Accel` enum
-  (Hailo/DeepX/Axelera/MemryX, order fixes every graph's series order) plus an
-  INI reader for `config/models.conf`. Rows are **logical**: one `BenchSubject`
+  (Hailo/MemryX/DeepX/Axelera/Qualcomm, order fixes every graph's series order)
+  plus an INI reader for `config/models.conf`. **Append to that enum, never
+  insert** — `accel_index()`/`accel_at()` are raw casts, so a card's position is
+  what indexes `watts[]`, `Catalog::vendors_[]` and every graph series.
+  Rows are **logical**: one `BenchSubject`
   holds a different artifact per vendor in `members[kAccelCount]`, so the same
   model can run on three cards at once and be compared. Two distinct notions,
   don't conflate them: `configured(a)` = the config names an artifact for that
@@ -112,15 +128,23 @@ Three layers, cleanly separated. Keep it that way.
   window. `BenchEngine`'s ctor **and** dtor are defined out-of-line in the .cpp
   because `Worker` is incomplete in the header.
 - **Per-card settings** reach a runner through `BenchRunner::configure(BenchItem&)`,
-  called just before `load()`. `BenchItem` carries `streams` (Axelera) and
-  `freq_mhz` (MemryX); defaults mean "leave the device alone". Adding a knob is
-  a field plus a `configure()` override, not a signature change everywhere.
-- **`bench_<backend>.cpp`** — one `BenchRunner` per SDK (all four now), each
+  called just before `load()`. `BenchItem` carries `cores` (Axelera), `freq_mhz`
+  (MemryX) and `nsps` / `perf_mode` / `qnn_backend` (Qualcomm); defaults mean
+  "leave the device alone", except `perf_mode`, which deliberately states
+  `burst` rather than inheriting whatever the governor is doing. Adding a knob
+  is a field plus a `configure()` override, not a signature change everywhere.
+- **`bench_<backend>.cpp`** — one `BenchRunner` per SDK (all five now), each
   behind `MB_HAVE_<BACKEND>` and added to the target only when CMake found that
   SDK. Each takes an `ApiMode` and implements both sync and async — see
   **API modes** below. `bench_runners.cpp` holds the single `make_runner()`
   dispatch plus the `api_mode_is_native()` / `api_mode_note()` table; adding a
   backend means a new file plus two lines there.
+
+  **`make_runner()`'s switch has a `default:`, so a missing case does not
+  warn** — it silently returns nullptr and the UI reports "SDK not found at
+  build time". The three `Accel` switches in `Catalog.cpp` and
+  `api_mode_is_native()` are exhaustive and *will* be caught by `-Wswitch`;
+  this one won't. Check it by hand when adding a card.
 - **`ControlPanel.{h,cpp}`** — the left panel: a `Gtk::Notebook` of two
   single-selection `Gtk::ListBox`es (Models / Pipelines), the frame-rate controls,
   the per-accelerator checkboxes, Start/Stop, status. `selection()` turns the
@@ -246,6 +270,19 @@ Three layers, cleanly separated. Keep it that way.
   belonging to no card at all — an unmapped INA228, the board ambient sensor —
   has no bit to consult and stays visible. The legends deliberately keep
   updating for hidden cards: the filter is about the plot, not about what runs.
+
+  **Qualcomm is deliberately one of those unmatched metrics, and this is the one
+  place a fifth card is not seamless.** `accel_name(Accel::Qualcomm)` is the
+  stable string `"Qualcomm"` — it labels a checkbox, a settings tab and a graph
+  series, so it cannot vary by board — while `QualcommIQProbe` names its thermal
+  rows after the device tree (`IQ9075 N0-0` …), because a temperature row wants
+  to say *which board*. They therefore never string-match, so unticking Qualcomm
+  in Graphs/Accelerators hides its benchmark series but leaves its six NSP
+  thermal traces on the Temperature graph. That was the accepted cost of a
+  stable name; the alternatives were renaming the probe (which would change what
+  the shared `mb-powermon-gui` shows on this board) or making `accel_name()`
+  read the device tree. `power_for_device("Qualcomm")` returning NaN is likewise
+  *correct*, not a bug — this board has no power sensor at all.
 - **Axelera AIPU cores defaults to 2 — deliberately not 4.** One core leaves the
   others at 50 MHz, which is not a representative Metis figure, so the default
   wants to be high; but claiming *all four* wedges this card (all four MSI
@@ -337,7 +374,7 @@ new addition here and has *not* been ported there yet.
 ## API modes (Sync / Async)
 
 The control panel switches every backend between a vendor's blocking call and
-its async/streaming one. **The four SDKs are not symmetric** — this was verified
+its async/streaming one. **The five SDKs are not symmetric** — this was verified
 against the installed headers and exported symbols, not assumed:
 
 | | Sync | Async |
@@ -346,12 +383,13 @@ against the installed headers and exported symbols, not assumed:
 | DeepX | `InferenceEngine::Run()` | `RunAsync()` → jobId → `Wait()` |
 | Axelera | `axr_run_model_instance()` | **none exists** |
 | MemryX | **none exists** | `connect_stream(in_cb, out_cb)` + `start`/`stop` |
+| Qualcomm | `QnnGraph_execute()` | **none exists** |
 
-So in each mode exactly one vendor is emulated, and the **status line** says
-which, via `api_mode_note()` (it was the frame-rate legend until that legend's
-text was dropped — if the status line is ever reworked, this must land
-somewhere). **Do not quietly present an emulated mode as equivalent** — that
-tag is the whole reason the toggle is honest. **Async is the default mode.**
+So in each mode some vendor is emulated, and the **status line** says which, via
+`api_mode_note()` (it was the frame-rate legend until that legend's text was
+dropped — if the status line is ever reworked, this must land somewhere). **Do
+not quietly present an emulated mode as equivalent** — that tag is the whole
+reason the toggle is honest. **Async is the default mode.**
 
 - **Axelera concurrency is AIPU cores, not async and not host threads.** A model
   claims cores via `num_sub_devices` on `axr_device_connect()` — that is the
@@ -406,6 +444,53 @@ tag is the whole reason the toggle is honest. **Async is the default mode.**
 - **MemryX really has no blocking call.** Its whole public surface is ctor,
   `connect_stream`, `start`, `wait`, `stop`, `set_num_workers`,
   `get_num_streams`. Sync is emulated by permitting one frame in flight.
+- **Qualcomm concurrency is NSPs first, engines-per-NSP second — and both are
+  real.** QCS9075 has **two** Hexagon NSPs, each with its own 8 MB VTCM, and they
+  are QNN **device ids**, not core ids. Measured 2026-08-04 on OSNet x1.0, burst,
+  through the app's own headless driver:
+
+  | | 1 NSP | 2 NSPs |
+  | --- | ---: | ---: |
+  | Sync (depth 1) | 1618 fps | **3546** (2.19x) |
+  | Async depth 4 | 2313 (1.43x) | **4581** |
+  | Async depth 8 | — | 4502 (saturated) |
+
+  So NSPs are the large knob and async depth a smaller host-side overlap win that
+  stacks on top of it. Two consequences for the design: the **`NSPs` control
+  defaults to 2** (unlike Axelera's cores there is no cliff — nothing wedges), and
+  **Async is honest here even though QNN has no async API** — it is extra engines
+  in flight per NSP on host threads, and `api_mode_note()` says exactly that.
+  Depth 8 regressing is why the shared default of 4 is right for this card too.
+
+  **Selecting the second NSP takes a device *config*, not an id you pass to your
+  own loader.** `QnnDevice_create` with a null config always instantiates
+  hardware device 0. Asking for `core_id = 1` instead fails with "core type for
+  device id 0 core id 1 not found in platform info" — and in both wrong forms
+  **the model still loads and runs**, on the wrong NSP and without its
+  performance mode. Nothing fails loudly. The shim handles this; don't rewrite it
+  casually.
+
+  **Enumerate NSPs from `qnn_backend_device_count()`, never from
+  `/dev/fastrpc-*`.** The kernel exposes a node per FastRPC domain — this SoC has
+  `cdsp`, `cdsp1`, `gdsp0`, `gdsp1` — whether or not the HTP backend can drive
+  it, so counting nodes over-reports by 2x.
+- **Qualcomm performance mode is not a knob you may leave unstated.** The HTP
+  runs under DCVS and the spread is ~1.8x — measured on OSNet across two NSPs:
+  burst 3381, `sustained_high_performance` 2818, balanced 2384, power_saver 1886.
+  `describe()` therefore always carries the mode, and the default is an explicit
+  `burst` rather than "leave the governor alone" (a short inference can otherwise
+  finish before the governor ramps). Use `sustained_high_performance` for
+  steady-state comparisons: burst thermally throttles on this passively-cooled
+  board.
+- **The Qualcomm `Backend` control cannot work with the shipped artifacts, and
+  that is expected.** The shim can dlopen `libQnnHtp.so` / `libQnnGpu.so` /
+  `libQnnCpu.so`, but a *context binary* is compiled for one backend. Measured
+  here: the GPU rejects an HTP `.bin` with `GPU_ERROR_INVALID_VERSION` /
+  "Context deserialization verification failure", and `libQnnCpu.so` reports **no
+  devices at all**. The control is still offered — the failure is loud and names
+  the real cause, and a GPU- or CPU-compiled artifact dropped into the models tree
+  would then just work without a code change. Don't "fix" it by hiding the entries
+  or by faking a fallback.
 - **`run_frame()` must retire exactly one frame in both modes.** An async runner
   tops its pipeline up and *then* blocks for one completion, so the engine's
   frame counter needs no special case. Keep that contract.
@@ -413,9 +498,10 @@ tag is the whole reason the toggle is honest. **Async is the default mode.**
   as `BenchItem::threads`. It was three hardcoded constants before. Per backend:
   DeepX's `RunAsync` job depth, MemryX's `connect_stream` depth, and Hailo's
   requested queue depth — Hailo takes `min(requested, get_async_queue_size())`,
-  because asking for more than HailoRT will queue fails at bind time. **Axelera
-  ignores it entirely**: no async API, so its knob is AIPU cores. The control is
-  greyed out in Sync mode, where the depth is 1 by definition.
+  because asking for more than HailoRT will queue fails at bind time; Qualcomm
+  reads it as engines in flight **per NSP**. **Axelera ignores it entirely**: no
+  async API, so its knob is AIPU cores. The control is greyed out in Sync mode,
+  where the depth is 1 by definition.
 
   Measured on DeepX/ResNet-50: 1 → 401.5 fps, 4 → 1077.9, 8 → 1051.1. Depth pays
   until the device saturates and nothing after, which is why 4 is the default and
@@ -454,6 +540,13 @@ the accelerator, not this CPU:
   outputs are left in raw padded device layout — no unpad/dequant.
 - **MemryX** — outputs are not read back with `get_data()`; the input float
   buffer is filled once on the first callback, not per frame.
+- **Qualcomm** — the artifact is a **context binary** (`.bin`), never a `.dlc`.
+  Measured on this part, loading a cached context is 14–27 ms against 0.6–2.6 s
+  to finalize a graph from scratch, so a runner that accepted a `.dlc` would be
+  timing the compiler. Inputs are quantized uint8 already, filled once at load;
+  outputs are left in raw quantized device layout and **never dequantized** —
+  measured on this SoC, converting a detection head's uint8 outputs to float32
+  costs more than the inference did (1.487 ms output vs 1.074 ms execute).
 - Input is a fixed xorshift pattern (`bench_input.h`) — plausible bytes,
   identical on every run and every card.
 - **Compare within a mode, never across.** A sync figure and an async figure
@@ -480,12 +573,26 @@ the missing toolchain, which sends you debugging the wrong thing. The runner now
 appends the real cause to that message. This bit a user who launched the GUI
 normally; don't regress it back to "export PATH first".
 
+**`prepare_backend_environment()` also fills in `ADSP_LIBRARY_PATH`** for
+Qualcomm, via `qualcomm_prepare_environment()`. FastRPC loads the DSP-side skel
+and does **not** consult `LD_LIBRARY_PATH`, only `ADSP_LIBRARY_PATH`; getting it
+wrong is the classic Qualcomm bring-up failure and its worst form is silent — the
+graph quietly falls back to CPU and just reads slow. On Ubuntu for Dragonwing the
+loader finds `/usr/lib/dsp/<domain>` unaided (verified by running with the
+variable unset), so this only fills the variable in when **nothing** has set it,
+globbing `/usr/lib/dsp/*`, `/usr/lib/rfsa/adsp` and `/usr/share/qcom/*/*/*/dsp/cdsp*`
+for a `libQnnHtp*Skel.so`. It stays silent if it finds none, letting the SDK's own
+error stand. Note the separator is **`;`**, not `:`.
+
 No test suite. **Everything except the widgets is GTK-free and testable
 headlessly** — prefer this over driving the GUI, which belongs to the user:
 
 - **Runners** — `Catalog.cpp Bench.cpp bench_runners.cpp bench_*.cpp`; a ~50-line
   main that calls `Catalog::discover()`, `make_runner(accel, mode)`, `load()`
-  and loops `run_frame()` prints fps per card, per mode.
+  and loops `run_frame()` prints fps per card, per mode. On the IQ-9075 that is
+  `g++ -std=c++17 -O2 -Isrc -I/usr/include/QNN -DMB_HAVE_QUALCOMM=1 …
+  src/bench_qualcomm.cpp src/qnnruntime.cpp -ldl -lpthread` — the Qualcomm
+  backend needs no library beyond `libdl`, since the shim dlopen's QNN.
 - **Downloads** — `Catalog.cpp Fetcher.cpp`; drive `Fetcher::start(catalog)` and
   poll `snapshot()` to verify a new `[vendor:*]` source end to end.
 - **Telemetry** — `Probes.cpp` alone.
@@ -753,7 +860,12 @@ see **API modes**.
 | GUI appears frozen / shows no telemetry in a screenshot | **Not a bug.** GTK4 throttles rendering for an unfocused window, so `xwd` returns a stale first frame | Raise + focus before capture; verify with a temporary `g_message` in `on_tick` before believing a screenshot |
 | DeepX "only 32 fps" on YOLOv8s | **Not a bug.** Sync-mode artifact; 4.6× in async | Always state the API mode with a number |
 
-## Host specifics (this machine)
+## Host specifics
+
+**There are two development hosts, and most of this file describes the first
+one.** Check `uname -m` before trusting a "this machine" claim below.
+
+### The x86_64 four-card host
 
 All four cards are present and **all four** inference SDKs build: Hailo-8
 `0000:01:00.0`, MemryX MX3 `0000:47:00.0`, DeepX M1 `0000:c1:00.0`, Axelera Metis
@@ -803,6 +915,64 @@ The People Tracking pipeline roughly halves the YOLOv8s figures. Note DeepX
 *leads* on ResNet-50 sync while trailing badly on YOLOv8s sync — its weak
 YOLOv8s number is a mode artifact (4.6× in async), not a general handicap, so
 don't "fix" it by special-casing the DeepX runner.
+
+### The aarch64 Qualcomm host — Dragonwing IQ-9075 EVK
+
+`uname -m` = `aarch64`, kernel `6.8.0-1080-qcom`, `/proc/device-tree/model` =
+"Qualcomm Technologies, Inc. Addons IQ 9075 EVK" (QCS9075 / SA8775P, **HTP
+v73**, `socModel` 77, **2 NSPs**, 8 MB VTCM each). Two accelerators here, not
+four:
+
+- **Hexagon NSP ×2**, on-SoC. QAIRT **2.46.0** is apt-installed from
+  `ubuntu-qcom-iot/qcom-ppa`: headers in `/usr/include/QNN`, 44 × `libQnn*.so`
+  in `/usr/lib`, and the V73 skels in **`/usr/lib/dsp/cdsp{,1}`** — *not*
+  `/usr/lib/rfsa/adsp`, which the vendor docs name and which does not exist on
+  this image. `MB_HAVE_QUALCOMM` lights up from the headers alone.
+- **Hailo-8** at `0001:01:00.0` (`/dev/hailo0`), libhailort **4.24.0** in
+  `/usr/lib` with headers in `/usr/include` — so `MB_HAVE_HAILO` builds here
+  too and the board gives a genuine two-backend comparison. Note the paths:
+  CMake's `/usr/local/*` search hits nothing, `/usr/*` is what matters.
+
+DeepX / MemryX / Axelera are absent, and **`libftdi1` is not installed**, so
+there are no INA228 rails — every efficiency and energy figure on this host is
+legitimately 0. See the Qualcomm entry under telemetry for why no power number
+exists here at all; **do not add an estimate to fill the graph.**
+
+The user is in the `fastrpc` group already. If a fresh account is not,
+`/dev/fastrpc-*` can be `stat()`ed but not opened — existence checks pass and
+the DSP still refuses — so probe with `access(node, R_OK|W_OK)` and fix with
+`usermod -aG fastrpc`.
+
+Measured 2026-08-04 through the app's own headless driver, **burst, async,
+2 NSPs, depth 4** (context binaries from `~/envic_models/local/ctx`):
+
+| | fps | load |
+| --- | ---: | ---: |
+| ArcFace MobileFaceNet (`mbf`) | 10112 | 365 ms |
+| OSNet x1.0 | 4576 | 375 ms |
+| SCRFD-500M | 4325 | 402 ms |
+| SCRFD-2.5G | 3504 | 378 ms |
+| Face Recognition · SCRFD-500M | 2865 | 458 ms |
+| Face Recognition · SCRFD-2.5G | 2471 | 470 ms |
+| SCRFD-10G | 1869 | 416 ms |
+| Face Recognition · SCRFD-10G | 1527 | 476 ms |
+| YOLOv8m (split) | 507 | 529 ms |
+| People Tracking · YOLOv8m | 454 | 631 ms |
+
+Sanity checks these numbers pass, worth re-checking after any runner change: a
+pipeline is slower than its slowest stage, and SCRFD scales the right way with
+model size (10G < 2.5G < 500M).
+
+**Qualcomm artifacts are build products of this board, not downloads.** They are
+context binaries locked to HTP v73, produced by `qnn-context-binary-generator`
+via `~/envic_models/run_local.sh` after AI Hub compiles the `.dlc` — hence
+`fetch = none` and `qualcomm.source = local` on every entry. The aarch64
+packages ship **no converter and no quantizer** (`qairt-tools` is runtime-only),
+so ONNX → `.dlc` cannot happen on this board; that step is AI Hub or an x86
+host. `qai_hub` 0.53.0 lives in `~/qaihub-venv`, not on the system python.
+
+`resnet50` and `yolov8s` have no Qualcomm build yet — they are the two rows
+where this card shows nothing, and closing that gap needs new AI Hub jobs.
 
 ### Driving the GUI
 

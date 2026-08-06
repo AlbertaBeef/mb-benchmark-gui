@@ -61,6 +61,9 @@ public:
     // Per-accelerator settings from the card tabs.
     int memryx_freq_mhz() const;   // MPU clock to request before a run
     int axelera_cores() const;     // AIPU cores to claim on the Metis
+    int qualcomm_nsps() const;     // Hexagon NSPs to claim on the SoC
+    std::string qualcomm_perf_mode() const;  // HTP DCVS mode
+    std::string qualcomm_backend() const;    // QNN backend library to dlopen
 
     // Flip the button between Start and Stop and lock the selection while a
     // run is in flight (changing models mid-run would mix two measurements).
@@ -104,7 +107,8 @@ private:
     // Graphs / Accelerators: one independent checkbox per card, in Accel order.
     // Independent, not a radio group — the point is comparing several cards on
     // one plot, so any subset has to be selectable.
-    Gtk::CheckButton* graph_accel_[kAccelCount] = {nullptr, nullptr, nullptr, nullptr};
+    Gtk::CheckButton* graph_accel_[kAccelCount] = {nullptr, nullptr, nullptr,
+                                                   nullptr, nullptr};
 
     // Labelled just "Sync"/"Async"; the adjacent "API" label supplies the noun.
     Gtk::CheckButton sync_radio_{"Sync"};
@@ -116,13 +120,20 @@ private:
     Gtk::Notebook accel_notebook_;
     Gtk::ComboBoxText memryx_freq_;   // MemryX tab: MPU clock
     Gtk::SpinButton axelera_cores_;   // Axelera tab: AIPU cores (1-4)
+    Gtk::SpinButton qualcomm_nsps_;      // Qualcomm tab: Hexagon NSPs (1-2)
+    Gtk::ComboBoxText qualcomm_perf_;    // Qualcomm tab: HTP DCVS mode
+    Gtk::ComboBoxText qualcomm_backend_; // Qualcomm tab: HTP / GPU / CPU
 
-    Gtk::CheckButton* accel_check_[kAccelCount] = {nullptr, nullptr, nullptr, nullptr};
+    Gtk::CheckButton* accel_check_[kAccelCount] = {nullptr, nullptr, nullptr,
+                                                   nullptr, nullptr};
     // What the user last asked for, per card, independent of whether the
     // current subject happens to support it. A checkbox forced off because a
     // model has no build for that card comes back on when one does, instead of
     // silently staying off.
-    bool accel_wanted_[kAccelCount] = {true, true, true, true};
+    // NB every entry must be spelled out: a short initializer leaves the tail
+    // value-initialized to *false*, which would silently disable a new card
+    // everywhere without any other symptom.
+    bool accel_wanted_[kAccelCount] = {true, true, true, true, true};
     bool syncing_accels_ = false;  // guards the programmatic set_active()
 
     Gtk::Button run_button_{"Start benchmark"};

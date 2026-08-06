@@ -230,10 +230,11 @@ MainWindow::MainWindow() {
                              /*fixed_temp_axis=*/false, fmt_freq, freq_graph_,
                              freq_values_,
                              "No accelerator here reports a core clock. All "
-                             "four can: Hailo via the extended device "
+                             "four M.2 cards can: Hailo via the extended device "
                              "information, DeepX per NPU via dxrt-cli, MemryX "
                              "per chip via the SDK, and Axelera per AI core via "
-                             "axcmd --clock-all-actual.",
+                             "axcmd --clock-all-actual. The Qualcomm NSP does "
+                             "not — its probe is passive thermal only.",
                              &freq_avg_labels_, /*min_axis_max=*/1000.0),
         /*expanded=*/false));
 
@@ -387,7 +388,7 @@ MainWindow::AccelSection MainWindow::build_accel_section(
 
         // All the cards on one row (wrapping past four), so the legend is a
         // single compact strip under each graph rather than a tall block.
-        grid->attach(*cell, i % 4, i / 4, 1, 1);
+        grid->attach(*cell, i % kAccelCount, i / kAccelCount, 1, 1);
     }
     box->append(*grid);
     sec.root = box;

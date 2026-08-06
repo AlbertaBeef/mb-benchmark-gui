@@ -21,8 +21,11 @@
 
 // Accelerators this GUI can drive. The order fixes the series order in every
 // graph and indexes the per-accelerator arrays below.
-enum class Accel { Hailo, MemryX, DeepX, Axelera };
-inline constexpr int kAccelCount = 4;
+// Qualcomm is appended rather than inserted: accel_index()/accel_at() are raw
+// casts, so the position of an existing card is load-bearing (graph series
+// order, the watts[] slots, Catalog::vendors_[]).
+enum class Accel { Hailo, MemryX, DeepX, Axelera, Qualcomm };
+inline constexpr int kAccelCount = 5;
 
 inline int accel_index(Accel a) { return static_cast<int>(a); }
 inline Accel accel_at(int i) { return static_cast<Accel>(i); }
@@ -87,7 +90,7 @@ struct BenchSubject {
     std::vector<BenchMember> members[kAccelCount];
     // True when every stage's artifact is on disk for that accelerator. A
     // subject that is configured but not yet downloaded shows as pending.
-    bool ready[kAccelCount] = {false, false, false, false};
+    bool ready[kAccelCount] = {false, false, false, false, false};
 
     bool configured(Accel a) const { return !members[accel_index(a)].empty(); }
     bool runnable(Accel a) const {
@@ -113,7 +116,20 @@ struct BenchItem {
     int freq_mhz = 0;   // MemryX: MPU clock to request, 0 = don't touch it
     // Frames each card keeps outstanding in Async mode. Sync is always 1.
     // Axelera has no async API and ignores this — its knob is `cores`.
+    // Qualcomm reads it as engines in flight *per NSP*.
     int threads = 4;
+    // Qualcomm: how many of the SoC's NSPs to claim. QCS9075 has 2, each with
+    // its own VTCM, addressed as QNN device ids 0 and 1. Measured ~2.3x on
+    // OSNet, so unlike Axelera's cores there is no reason to default below the
+    // maximum — nothing here wedges.
+    int nsps = 2;
+    // Qualcomm: HTP DCVS mode. Empty means "leave the governor alone", which is
+    // not a neutral choice — a short inference can finish before the governor
+    // ramps, so the default states a mode rather than inheriting one.
+    std::string perf_mode = "burst";
+    // Qualcomm: which QNN backend library to dlopen. Only the HTP one can load
+    // the context binaries the catalog ships; see bench_qualcomm.cpp.
+    std::string qnn_backend;
 };
 
 class Catalog {

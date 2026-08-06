@@ -61,7 +61,8 @@ bottom pixel row.
 matters most on temperature: under `Fixed`, a die past 100 °C draws as a straight
 line along the top edge, indistinguishable from one sitting exactly at 100.
 
-All four cards report a clock, each from a different place:
+All four M.2 cards report a clock, each from a different place. The Qualcomm NSP
+does not — its probe is passive thermal only:
 
 | Card | Series | Source | Idle → load |
 | ---- | ------ | ------ | ----------- |
@@ -106,9 +107,10 @@ sibling `mb-powermon-gui`, so a trace is recognisable without reading the legend
 | :---: | :----: | :---: | :-----: | :------: |
 | Coral `#d9694f` | Sage `#8aa67e` | Slate Blue `#4e7ca1` | Amber `#e0a24b` | Plum `#7e6699` |
 
-Cards appear in the order **Hailo · MemryX · DeepX · Axelera** throughout. An
-external INA228 mapped onto a card inherits that card's colour; anything else
-(unmapped bridges, the board ambient sensor) falls back to a cycling palette.
+Cards appear in the order **Hailo · MemryX · DeepX · Axelera · Qualcomm**
+throughout. An external INA228 mapped onto a card inherits that card's colour;
+anything else (unmapped bridges, the board ambient sensor) falls back to a
+cycling palette.
 
 The legends are a single compact row of swatches and values and carry no
 explanatory text; what is running, which cards are emulated in the current API
@@ -123,10 +125,46 @@ mode, and any load failure all go to the **status line** under the Start button
 | **DeepX M1** | `InferenceEngine::Run()` | `RunAsync()` / `Wait()` | INA228 (no on-die sensor) | `T0`–`T2`, clock `C0`–`C2` |
 | **Axelera Metis** | `axr_run_model_instance()` | **none** — `double_buffer` only | INA228 | `SYS` / `AI0`–`AI3` (needs a live collector), clock `C0`–`C3` |
 | **MemryX MX3** | **none** — 1 frame in flight | `connect_stream()` | MemryX SDK + INA228 | `T0`–`T3`, clock `C0`–`C3` |
+| **Qualcomm Hexagon NSP** | `QnnGraph_execute()` | **none** — host threads per NSP | **none exists** — see below | `N0-0`–`N1-2` from the TSENS zones, no clock |
+
+The first four are M.2 cards; the fifth is the **SoC-integrated** NPU on a
+Qualcomm Dragonwing IQ-9075 EVK (QCS9075, Hexagon HTP v73), so the app builds and
+runs on **aarch64** as well as x86_64.
 
 Each backend is **optional and auto-detected at build time**. A card whose SDK is
 absent still appears in the UI, greyed out with the reason, and its telemetry
 still graphs — the build works on any host.
+
+### Qualcomm specifics
+
+Three things differ enough from the M.2 cards to be worth stating up front:
+
+- **The artifact is a context binary (`.bin`), and it is a build product of the
+  board**, produced by `qnn-context-binary-generator` and locked to that part's
+  HTP architecture. There is no URL to download one from, so every `qualcomm`
+  entry in `config/models.conf` is `source = local`; drop the files into
+  `models/qualcomm/iq9075/`. Loading a cached context costs ~15–25 ms against
+  0.6–2.6 s to finalize a graph from scratch, which is why the runner accepts
+  nothing else.
+- **Concurrency is NSPs.** QCS9075 has two, each with its own 8 MB VTCM, and the
+  **NSPs** control (1–2, default 2) claims them. Measured on OSNet x1.0 in
+  burst: 1618 fps on one NSP, 3546 on two in Sync; 2313 / 4581 in Async at
+  depth 4. Async here is extra engines in flight per NSP on host threads — QNN
+  has no async API, and the status line says so.
+- **Performance mode is exposed and always reported**, because the HTP runs
+  under DCVS and the spread is ~1.8× (burst 3381, `sustained_high_performance`
+  2818, balanced 2384, power_saver 1886 on the same model). A Qualcomm frame
+  rate without a stated mode is not comparable to anything. Use burst for peak
+  figures and `sustained_high_performance` for steady state.
+
+There is **no power measurement on this board** — no INA/shunt monitor in any
+IQ-9075 device tree, no hwmon current sensor, and the QNN libraries expose only
+the DCVS *mode*, which is a setting rather than a meter. The NSP also shares the
+package rail with the CPU and GPU, so even a package figure would not be an NPU
+figure. Efficiency and Energy therefore stay at 0 for this card, deliberately:
+a fabricated number sitting next to genuine INA228 readings would be worse than
+a gap. Wiring an INA23x/INA228 onto an i2c bus and declaring it in a device-tree
+overlay is the way to get real watts here.
 
 ## Sync API vs Async API
 
@@ -272,7 +310,11 @@ Missing artifacts are fetched on first launch into
 ```
 models/<vendor>/<accelerator>/
   hailo/hailo-8      axelera/metis      deepx/dx-m1      memryx/mx3
+  qualcomm/iq9075
 ```
+
+(`qualcomm/iq9075` is never fetched — its context binaries are build products of
+the board itself. See **Qualcomm specifics**.)
 
 resolved relative to the binary, so the working directory doesn't matter. It runs
 on a background thread — the window opens immediately and each row becomes
@@ -309,15 +351,18 @@ config; they are never fetched, and are used only if you drop them in yourself:
 
 **Models**
 
-| Model | Task | Hailo | DeepX | Axelera | MemryX |
-| ----- | ---- | :---: | :---: | :-----: | :----: |
-| YOLOv8s / YOLOv8m | person detection, 640×640 | ✅ | ✅ | ✅ | ✅ |
-| SCRFD-500M / 2.5G / 10G | face detection, 640×640 | ✅ | ✅ | — | — |
-| OSNet x1.0 | person re-identification, 256×128 | ✅ | local | ✅ | — |
-| ArcFace MobileFaceNet | face recognition, 112×112 | ✅ | ✅ | local | — |
-| ResNet-50 | image classification, 224×224 | ✅ | ✅ | ✅ | ✅ |
+| Model | Task | Hailo | DeepX | Axelera | MemryX | Qualcomm |
+| ----- | ---- | :---: | :---: | :-----: | :----: | :------: |
+| YOLOv8s | person detection, 640×640 | ✅ | ✅ | ✅ | ✅ | — |
+| YOLOv8m | person detection, 640×640 | ✅ | ✅ | ✅ | ✅ | local |
+| SCRFD-500M / 2.5G / 10G | face detection, 640×640 | ✅ | ✅ | — | — | local |
+| OSNet x1.0 | person re-identification, 256×128 | ✅ | local | ✅ | — | local |
+| ArcFace MobileFaceNet | face recognition, 112×112 | ✅ | ✅ | local | — | local |
+| ResNet-50 | image classification, 224×224 | ✅ | ✅ | ✅ | ✅ | — |
 
-(✅ = downloaded automatically; *local* = no public source, see below.)
+(✅ = downloaded automatically; *local* = no public source, see below. Every
+Qualcomm entry is local by nature, and the two gaps are models with no context
+binary built yet rather than a limitation of the part.)
 
 **Pipelines** — every stage runs once per benchmark frame, in order, on the same
 card:

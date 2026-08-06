@@ -107,6 +107,13 @@ const char* accel_name(Accel a) {
         case Accel::DeepX:   return "DeepX";
         case Accel::Axelera: return "Axelera";
         case Accel::MemryX:  return "MemryX";
+        // Deliberately the vendor, not the board. QualcommIQProbe names itself
+        // after the device tree ("IQ9075", "QCS9075", …) because a thermal row
+        // wants to say which board it is; this name has to be stable across
+        // parts, since it labels a checkbox, a settings tab and a graph series.
+        // Consequence: the Graphs/Accelerators filter cannot fold the board's
+        // thermal rows onto this card — see MainWindow::apply_graph_filter.
+        case Accel::Qualcomm: return "Qualcomm";
     }
     return "?";
 }
@@ -117,6 +124,7 @@ const char* accel_vendor(Accel a) {
         case Accel::DeepX:   return "deepx";
         case Accel::Axelera: return "axelera";
         case Accel::MemryX:  return "memryx";
+        case Accel::Qualcomm: return "qualcomm";
     }
     return "?";
 }
@@ -143,6 +151,12 @@ bool accel_compiled_in(Accel a) {
 #endif
         case Accel::MemryX:
 #ifdef MB_HAVE_MEMRYX
+            return true;
+#else
+            return false;
+#endif
+        case Accel::Qualcomm:
+#ifdef MB_HAVE_QUALCOMM
             return true;
 #else
             return false;

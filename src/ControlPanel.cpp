@@ -137,13 +137,14 @@ ControlPanel::ControlPanel(const Catalog& catalog)
         async_radio_.set_active(true);
         sync_radio_.set_tooltip_text(
             "One frame at a time, waiting for each — what a latency-bound "
-            "real-time pipeline does. Native on Hailo, DeepX and Axelera; "
-            "emulated on MemryX, whose SDK has no blocking call.");
+            "real-time pipeline does. Native on Hailo, DeepX, Axelera and "
+            "Qualcomm; emulated on MemryX, whose SDK has no blocking call.");
         async_radio_.set_tooltip_text(
             "Keep several frames in flight — peak throughput. Native on Hailo "
-            "(run_async), DeepX (RunAsync/Wait) and MemryX (connect_stream); "
+            "(run_async), DeepX (RunAsync/Wait) and MemryX (connect_stream). "
             "Axelera has no async API, so it falls back to the runtime's own "
-            "double buffering.");
+            "double buffering; Qualcomm has none either, so it keeps several "
+            "engines in flight per NSP on host threads.");
         api_row->append(sync_radio_);
         api_row->append(async_radio_);
         box->append(*api_row);
@@ -159,7 +160,8 @@ ControlPanel::ControlPanel(const Catalog& catalog)
         threads_spin_.set_tooltip_text(
             "How many frames each card keeps in flight in Async mode — DeepX "
             "job depth, MemryX stream depth, Hailo's async queue (its own "
-            "reported queue size is the ceiling). Axelera has no async API, so "
+            "reported queue size is the ceiling), Qualcomm engines per NSP. "
+            "Axelera has no async API, so "
             "this does not apply to it; use its AIPU cores control instead.\n\n"
             "Ignored in Sync mode, where exactly one frame is outstanding.");
         threads_row->append(threads_spin_);
@@ -213,7 +215,8 @@ ControlPanel::ControlPanel(const Catalog& catalog)
                 if (!syncing_accels_) accel_wanted_[i] = cb->get_active();
             });
             accel_check_[i] = cb;
-            accel_grid->attach(*cb, i % 4, i / 4, 1, 1);
+            // One row of kAccelCount, wrapping only if the enum grows past it.
+            accel_grid->attach(*cb, i % kAccelCount, i / kAccelCount, 1, 1);
         }
         accel_row->append(*accel_grid);
         box->append(*accel_row);
@@ -353,6 +356,74 @@ ControlPanel::ControlPanel(const Catalog& catalog)
                     "the default is 2.");
                 row->append(axelera_cores_);
                 page->append(*row);
+            } else if (a == Accel::Qualcomm) {
+                // NSPs. Unlike Axelera's cores there is no cliff here — nothing
+                // wedges — so the default is the maximum. Measured on OSNet:
+                // 1556 fps on one NSP, 3571 on two (2.30x).
+                auto* nrow = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+                auto* nlbl = Gtk::make_managed<Gtk::Label>("NSPs");
+                nlbl->set_xalign(0.0);
+                nrow->append(*nlbl);
+                qualcomm_nsps_.set_adjustment(Gtk::Adjustment::create(2, 1, 2, 1, 1));
+                qualcomm_nsps_.set_numeric(true);
+                qualcomm_nsps_.set_tooltip_text(
+                    "Hexagon NSPs this model claims. QCS9075 has two, each with "
+                    "its own 8 MB VTCM, addressed as QNN device ids 0 and 1 — "
+                    "this SoC's real concurrency primitive.\n\n"
+                    "Measured on OSNet x1.0 in burst: 1556 fps on one NSP, "
+                    "3571 on two. The runner clamps this to however many the "
+                    "backend actually reports.");
+                nrow->append(qualcomm_nsps_);
+                page->append(*nrow);
+
+                // Performance mode. Not a cosmetic knob: the spread across
+                // modes is ~1.8x, so a Qualcomm frame rate without a stated
+                // mode is not comparable to anything.
+                auto* prow = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+                auto* plbl = Gtk::make_managed<Gtk::Label>("Performance");
+                plbl->set_xalign(0.0);
+                prow->append(*plbl);
+                for (const char* m : {"burst", "sustained_high_performance",
+                                      "high_performance", "balanced", "power_saver"})
+                    qualcomm_perf_.append(m);
+                qualcomm_perf_.set_active_text("burst");
+                qualcomm_perf_.set_tooltip_text(
+                    "HTP DCVS mode, applied at load. The NPU runs under a "
+                    "governor, and left alone a short inference can finish "
+                    "before it ramps.\n\n"
+                    "Measured on OSNet across two NSPs: burst 3381, "
+                    "sustained_high_performance 2818, balanced 2384, "
+                    "power_saver 1886 fps. Use burst for peak figures and "
+                    "sustained_high_performance for steady-state — burst "
+                    "thermally throttles on a passively-cooled board.");
+                prow->append(qualcomm_perf_);
+                page->append(*prow);
+
+                // Backend. The SoC has three compute units and the shim can
+                // dlopen all of them, but a context binary is built for one:
+                // measured here, libQnnGpu.so rejects an HTP .bin with
+                // GPU_ERROR_INVALID_VERSION and libQnnCpu.so reports no devices
+                // at all. Offered anyway so a GPU/CPU-compiled artifact would
+                // just work — the failure is loud and names the real cause.
+                auto* brow = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+                auto* blbl = Gtk::make_managed<Gtk::Label>("Backend");
+                blbl->set_xalign(0.0);
+                brow->append(*blbl);
+                qualcomm_backend_.append("HTP (Hexagon NPU)");
+                qualcomm_backend_.append("GPU (Adreno)");
+                qualcomm_backend_.append("CPU (reference)");
+                qualcomm_backend_.set_active(0);
+                qualcomm_backend_.set_tooltip_text(
+                    "Which QNN backend library to load the model onto.\n\n"
+                    "The catalog ships HTP context binaries, and a context "
+                    "binary is compiled for one backend: selecting GPU or CPU "
+                    "with these artifacts fails at load (the GPU reports "
+                    "\"Context deserialization verification failure\", the CPU "
+                    "backend reports no devices). They are offered so a GPU- or "
+                    "CPU-compiled artifact dropped into the models tree runs "
+                    "without a code change.");
+                brow->append(qualcomm_backend_);
+                page->append(*brow);
             }
 
             page->append(*note);
@@ -474,6 +545,11 @@ std::vector<BenchItem> ControlPanel::selection() const {
         if (a == Accel::MemryX) it.freq_mhz = memryx_freq_mhz();
         it.threads = threads();
         if (a == Accel::Axelera) it.cores = axelera_cores();
+        if (a == Accel::Qualcomm) {
+            it.nsps = qualcomm_nsps();
+            it.perf_mode = qualcomm_perf_mode();
+            it.qnn_backend = qualcomm_backend();
+        }
         out.push_back(std::move(it));
     }
     return out;
@@ -490,6 +566,27 @@ ApiMode ControlPanel::api_mode() const {
 int ControlPanel::memryx_freq_mhz() const {
     const std::string s = memryx_freq_.get_active_text();
     try { return std::stoi(s); } catch (...) { return 0; }  // 0 = leave alone
+}
+
+int ControlPanel::qualcomm_nsps() const {
+    return static_cast<int>(qualcomm_nsps_.get_value());
+}
+
+std::string ControlPanel::qualcomm_perf_mode() const {
+    const std::string s = qualcomm_perf_.get_active_text();
+    // Empty would mean "leave the governor alone", which is never what the
+    // combo is trying to say — fall back to the default it displays.
+    return s.empty() ? "burst" : s;
+}
+
+std::string ControlPanel::qualcomm_backend() const {
+    // The combo shows what the unit *is*; the runner needs the library name.
+    switch (qualcomm_backend_.get_active_row_number()) {
+        case 1: return "libQnnGpu.so";
+        case 2: return "libQnnCpu.so";
+        default: break;
+    }
+    return "libQnnHtp.so";
 }
 
 GraphArea::RangeMode ControlPanel::range_mode() const {
@@ -525,6 +622,9 @@ void ControlPanel::set_running(bool running) {
     fps_spin_.set_sensitive(!running && !max_speed_.get_active());
     memryx_freq_.set_sensitive(!running);
     axelera_cores_.set_sensitive(!running);
+    qualcomm_nsps_.set_sensitive(!running);
+    qualcomm_perf_.set_sensitive(!running);
+    qualcomm_backend_.set_sensitive(!running);
     threads_spin_.set_sensitive(!running && !sync_radio_.get_active());
     refresh_accel_sensitivity();
 }

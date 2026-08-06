@@ -84,6 +84,26 @@ else()
   message(STATUS "MemryX MX3 backend: disabled (libmx_accl / MxAccl.h not found)")
 endif()
 
+# Qualcomm Hexagon NSP via QAIRT (QNN "AI Engine Direct"). On Ubuntu for
+# Dragonwing this comes from the ubuntu-qcom-iot/qcom-ppa archive as
+# qairt-headers (/usr/include/QNN) + qairt-libs + qairt-dsp-binaries.
+#
+# Nothing is linked against QNN: the shim dlopen's whichever backend library is
+# selected (libQnnHtp.so / libQnnGpu.so / libQnnCpu.so), so only libdl is
+# needed. That is deliberate — it is also what would let the same binary drive
+# the SoC's GPU and CPU backends given artifacts built for them.
+#
+# The SDK headers include each other with quoted relative paths, so the QNN
+# include root itself has to be on the search path — /usr/include is not enough.
+find_path(QNN_INC QnnInterface.h PATHS /usr/include/QNN /opt/qcom/aistack/qairt/include/QNN)
+if(QNN_INC)
+  set(MB_HAVE_QUALCOMM ON)
+  message(STATUS "Qualcomm NSP backend: ENABLED (${QNN_INC})")
+else()
+  set(MB_HAVE_QUALCOMM OFF)
+  message(STATUS "Qualcomm NSP backend: disabled (QNN headers not found)")
+endif()
+
 # libftdi1 (optional) — external reference-grade power from INA228 sensors on an
 # FT232H USB->I2C bridge. Without watts the efficiency graphs stay at zero for
 # any card that has no on-die power sensor.
@@ -94,7 +114,8 @@ else()
   message(STATUS "INA228 power:      disabled (libftdi1 not found)")
 endif()
 
-if(NOT MB_HAVE_HAILO AND NOT MB_HAVE_DEEPX AND NOT MB_HAVE_AXELERA AND NOT MB_HAVE_MEMRYX)
+if(NOT MB_HAVE_HAILO AND NOT MB_HAVE_DEEPX AND NOT MB_HAVE_AXELERA AND NOT MB_HAVE_MEMRYX
+   AND NOT MB_HAVE_QUALCOMM)
   message(WARNING "No accelerator SDK found — the GUI will build but can run "
                   "no benchmarks (telemetry only).")
 endif()
@@ -167,6 +188,17 @@ if(MB_HAVE_MEMRYX)
     target_link_libraries(mb-benchmark PRIVATE ${MEMX_LIB})
   endif()
   target_compile_definitions(mb-benchmark PRIVATE MB_HAVE_MEMRYX=1)
+endif()
+
+if(MB_HAVE_QUALCOMM)
+  target_sources(mb-benchmark PRIVATE src/bench_qualcomm.cpp src/qnnruntime.cpp)
+  target_include_directories(mb-benchmark PRIVATE ${QNN_INC})
+  target_link_libraries(mb-benchmark PRIVATE ${CMAKE_DL_LIBS})
+  # The vendor's own *_INIT macros do not initialise every member of their
+  # structs; that warning is theirs, not ours.
+  set_source_files_properties(src/qnnruntime.cpp PROPERTIES
+    COMPILE_OPTIONS "-Wno-missing-field-initializers")
+  target_compile_definitions(mb-benchmark PRIVATE MB_HAVE_QUALCOMM=1)
 endif()
 
 if(FTDI_FOUND)
