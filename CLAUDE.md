@@ -107,6 +107,37 @@ Three layers, cleanly separated. Keep it that way.
   (the original describes a Vala caller). QNN is never linked — the shim
   `dlopen`s a backend library and asks it for an interface struct, which is why
   CMake needs only headers and `libdl`.
+- **A card the build has no backend for is hidden completely.** `accel_present()`
+  in `Catalog.h` is the single question every UI site asks: no Inference
+  checkbox, no settings tab, no Graphs filter checkbox, no legend entry, no
+  trace, and no mention on the model rows' card line.
+
+  **This reverses the original design**, which showed every card greyed out with
+  its reason — so don't "restore" it without being asked. Two things drove the
+  change: on a host that builds one or two backends (the IQ-9075 builds Hailo
+  and Qualcomm only) the greyed majority was most of the panel; and greying
+  carried two unrelated meanings at once — "no SDK in this build" and "this
+  model has no artifact for that card" looked identical. Greying now means only
+  the second, which is why `refresh_accel_sensitivity()` no longer has an
+  "SDK not found" tooltip branch.
+
+  Three implementation notes that are easy to get wrong:
+  - **`accel_present()` is build-time only** (`accel_compiled_in()`). It
+    deliberately does *not* detect a compiled-in card whose hardware is
+    unplugged: that needs each vendor's enumeration API on the GUI thread at
+    startup, and a false negative would hide a working card — worse than showing
+    one that then reports a clear load error. Extend there, not at the call
+    sites.
+  - **Series counts do not change.** `fps_`/`eff_`/`energy_` still have
+    `kAccelCount` series in `Accel` order; a hidden card keeps its slot and is
+    hidden with `set_series_visible(i, false)`. The engine still folds onto
+    fixed slots, and `GraphArea::push()` still no-ops on a size mismatch.
+  - **A null widget pointer now means two opposite things.** In
+    `graph_accel_mask()` a hidden card must clear its bit, while a *present*
+    card is briefly null during construction and must default to visible —
+    hence the explicit `accel_present()` test rather than a bare null check.
+    The legend and checkbox rows track a separate `col` counter so hiding a
+    card leaves no gap in the row.
 - **`Catalog.{h,cpp}`** — pure data, no GTK. The `Accel` enum
   (Hailo/MemryX/DeepX/Axelera/Qualcomm, order fixes every graph's series order)
   plus an INI reader for `config/models.conf`. **Append to that enum, never
@@ -1072,25 +1103,59 @@ Measured 2026-08-04 through the app's own headless driver, **burst, async,
 | SCRFD-2.5G | 3504 | 378 ms |
 | Face Recognition · SCRFD-500M | 2865 | 458 ms |
 | Face Recognition · SCRFD-2.5G | 2471 | 470 ms |
+| ResNet-50 | 2178 | 511 ms |
 | SCRFD-10G | 1869 | 416 ms |
 | Face Recognition · SCRFD-10G | 1527 | 476 ms |
+| YOLOv8s (split) | 966 | 465 ms |
+| People Tracking · YOLOv8s | 789 | 556 ms |
 | YOLOv8m (split) | 507 | 529 ms |
 | People Tracking · YOLOv8m | 454 | 631 ms |
 
 Sanity checks these numbers pass, worth re-checking after any runner change: a
-pipeline is slower than its slowest stage, and SCRFD scales the right way with
-model size (10G < 2.5G < 500M).
+pipeline is slower than its slowest stage, SCRFD scales the right way with model
+size (10G < 2.5G < 500M), and YOLOv8s is ~2x YOLOv8m.
+
+**All 8 models and all 5 pipelines now run on this card.** For contrast on the
+same board, Hailo-8 async depth 4: ResNet-50 801, YOLOv8s 359, OSNet 214 fps.
 
 **Qualcomm artifacts are build products of this board, not downloads.** They are
 context binaries locked to HTP v73, produced by `qnn-context-binary-generator`
-via `~/envic_models/run_local.sh` after AI Hub compiles the `.dlc` — hence
-`fetch = none` and `qualcomm.source = local` on every entry. The aarch64
-packages ship **no converter and no quantizer** (`qairt-tools` is runtime-only),
-so ONNX → `.dlc` cannot happen on this board; that step is AI Hub or an x86
-host. `qai_hub` 0.53.0 lives in `~/qaihub-venv`, not on the system python.
+via `~/envic_models/run_local.sh` (or `gen_ctx_bench.sh`) after AI Hub compiles
+the `.dlc` — hence `fetch = none` and `qualcomm.source = local` on every entry.
+The aarch64 packages ship **no converter and no quantizer** (`qairt-tools` is
+runtime-only), so ONNX → `.dlc` cannot happen on this board; that step is AI Hub
+or an x86 host. `qai_hub` 0.53.0 lives in `~/qaihub-venv`, not the system python.
 
-`resnet50` and `yolov8s` have no Qualcomm build yet — they are the two rows
-where this card shows nothing, and closing that gap needs new AI Hub jobs.
+**Quantize inside the compile job, not as a separate AI Hub job** — measured
+2026-08-07 while adding ResNet-50, and it cost four round trips to find:
+
+- `submit_quantize_job()` on ResNet-50 produced a QDQ ONNX with **168 tensors
+  marked EXTERNAL that also carry inline `float_data`**. AI Hub's *own* compiler
+  rejects it ("stored externally and should not have data field.float_data"), so
+  the two-step path cannot complete at all for this model.
+- The two copies are **not duplicates** — for `resnetv17_conv0_weight` the
+  external copy has std 0.116047 against the inline copy's 0.116064, i.e. the
+  inline data is a stale pre-quantization version. The ONNX spec makes external
+  authoritative when `data_location` is EXTERNAL, so a repair must clear
+  `float_data`, not `raw_data`.
+- Repairing it lets the compile succeed, but the resulting DLC **will not
+  compose on HTP**: `in[1].shape[0] and in[1].shape[1] must be [1,1]` /
+  `Failed to validate op resnetv17_conv0_fwd`. That is a *shape* complaint, so
+  it cannot be caused by which weight copy the repair kept.
+- Not our toolchain either: **AI Hub's own profile job, on a real IQ-9075**,
+  fails identically with `QnnModel_composeGraphsFromDlc: MODEL_GRAPH_ERROR`.
+  Identical with and without `--force_channel_last_input`, so not layout.
+- **The fix is `--quantize_full_type int8` on `submit_compile_job()`** with
+  `calibration_data=`, skipping `submit_quantize_job()` entirely. Note the
+  option takes `int8`, **not** `w8a8` (valid: int8, int16, float16, w8a16,
+  w4a8, w4a16). The other five models predate this and used the two-step path
+  successfully — it is not universally broken, but when a DLC will not compose,
+  try this before suspecting the model.
+
+**A compile job reporting SUCCESS is not evidence the artifact loads.** Both the
+broken ResNet-50 DLCs compiled cleanly and only failed at `qnn-context-binary-
+generator`. `gen_ctx_bench.sh` composes on the board as part of the build for
+exactly this reason; keep any new recipe doing the same.
 
 ### Driving the GUI
 

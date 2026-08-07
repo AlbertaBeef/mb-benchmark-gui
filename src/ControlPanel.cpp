@@ -94,21 +94,29 @@ public:
         refresh();
     }
 
-    // Repaint the card line from the subject's current readiness.
+    // Repaint the card line from the subject's current readiness. Cards this
+    // build has no backend for are left out entirely — naming a model's DeepX
+    // artifact on a host that cannot drive a DeepX is noise, and it made every
+    // row look far better supported than it is.
     void refresh() {
         std::string on;
         for (int i = 0; i < kAccelCount; ++i) {
-            if (!subject->configured(accel_at(i))) continue;
+            const Accel a = accel_at(i);
+            if (!accel_present(a) || !subject->configured(a)) continue;
             if (!on.empty()) on += " · ";
-            const std::string nm = accel_name(accel_at(i));
+            const std::string nm = accel_name(a);
             on += subject->ready[i] ? nm : "(" + nm + ")";
         }
-        if (on.empty()) on = "no build configured";
+        if (on.empty()) on = "no build for this host";
         cards_->set_markup("<small>" + Glib::Markup::escape_text(on) + "</small>");
-        // Selectable only once at least one card can actually run it.
+        // Selectable only once a card that is actually here can run it —
+        // `runnable()` alone would light up a row whose only artifact belongs to
+        // an absent card, and pressing Start would then do nothing.
         bool any = false;
-        for (int i = 0; i < kAccelCount; ++i)
-            if (subject->runnable(accel_at(i))) any = true;
+        for (int i = 0; i < kAccelCount; ++i) {
+            const Accel a = accel_at(i);
+            if (accel_present(a) && subject->runnable(a)) any = true;
+        }
         set_sensitive(any);
     }
 
@@ -198,22 +206,26 @@ ControlPanel::ControlPanel(const Catalog& catalog)
         auto* accel_grid = Gtk::make_managed<Gtk::Grid>();
         accel_grid->set_column_spacing(16);
         accel_grid->set_row_spacing(2);
+        // Absent cards get no checkbox at all, so `col` tracks the visible ones
+        // rather than the enum index — otherwise hiding a card would leave a
+        // hole in the row.
+        int col = 0;
         for (int i = 0; i < kAccelCount; ++i) {
             const Accel a = accel_at(i);
-            auto* cb = Gtk::make_managed<Gtk::CheckButton>(accel_name(a));
-            const bool usable = accel_compiled_in(a);
-            accel_wanted_[i] = usable;
-            cb->set_active(usable);
-            if (!usable) {
-                cb->set_sensitive(false);
-                cb->set_tooltip_text(accel_unavailable_reason(a));
+            if (!accel_present(a)) {
+                accel_check_[i] = nullptr;
+                accel_wanted_[i] = false;
+                continue;
             }
+            auto* cb = Gtk::make_managed<Gtk::CheckButton>(accel_name(a));
+            accel_wanted_[i] = true;
+            cb->set_active(true);
             cb->signal_toggled().connect([this, cb, i] {
                 if (!syncing_accels_) accel_wanted_[i] = cb->get_active();
             });
             accel_check_[i] = cb;
-            // One row of kAccelCount, wrapping only if the enum grows past it.
-            accel_grid->attach(*cb, i % kAccelCount, i / kAccelCount, 1, 1);
+            accel_grid->attach(*cb, col % kAccelCount, col / kAccelCount, 1, 1);
+            ++col;
         }
         accel_row->append(*accel_grid);
         box->append(*accel_row);
@@ -273,6 +285,7 @@ ControlPanel::ControlPanel(const Catalog& catalog)
         filt->append(*flbl);
         for (int i = 0; i < kAccelCount; ++i) {
             const Accel a = accel_at(i);
+            if (!accel_present(a)) { graph_accel_[i] = nullptr; continue; }
             auto* b = Gtk::make_managed<Gtk::CheckButton>(accel_name(a));
             b->set_active(true);   // everything shown by default
             b->set_tooltip_text(
@@ -298,17 +311,19 @@ ControlPanel::ControlPanel(const Catalog& catalog)
     {
         for (int i = 0; i < kAccelCount; ++i) {
             const Accel a = accel_at(i);
+            // No tab for a card this build has no backend for.
+            if (!accel_present(a)) { depth_spin_[i] = nullptr; continue; }
             auto* page = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 4);
             page->set_margin(8);
+            // Only shown on cards with nothing beyond API/Depth. The
+            // "unavailable" wording this used to carry is gone with the greyed
+            // tabs — an absent card has no tab to explain itself on.
             auto* note = Gtk::make_managed<Gtk::Label>();
-            const char* why = accel_unavailable_reason(a);
-            note->set_markup(
-                "<small>" +
-                Glib::Markup::escape_text(
-                    *why ? std::string(accel_name(a)) + ": " + why
-                         : std::string("No ") + accel_name(a) +
-                               "-specific controls yet.") +
-                "</small>");
+            note->set_markup("<small>" +
+                             Glib::Markup::escape_text(
+                                 std::string("No ") + accel_name(a) +
+                                 "-specific controls yet.") +
+                             "</small>");
             note->set_xalign(0.0);
             note->set_wrap(true);
             note->add_css_class("dim-label");
@@ -484,7 +499,11 @@ ControlPanel::ControlPanel(const Catalog& catalog)
                 page->append(*brow);
             }
 
-            page->append(*note);
+            // Cards with real controls do not need the placeholder telling the
+            // user there are none.
+            if (a != Accel::MemryX && a != Accel::Axelera && a != Accel::Qualcomm) {
+                page->append(*note);
+            }
             accel_notebook_.append_page(*page, accel_name(a));
         }
         append(accel_notebook_);
@@ -568,14 +587,14 @@ void ControlPanel::refresh_accel_sensitivity() {
     syncing_accels_ = true;
     for (int i = 0; i < kAccelCount; ++i) {
         const Accel a = accel_at(i);
-        const bool compiled = accel_compiled_in(a);
+        // A hidden card has no widget, so every checkbox reaching here belongs
+        // to a card this build can drive — the old "SDK not found" tooltip case
+        // is gone with it, and greying now means only "no artifact".
+        if (!accel_check_[i]) continue;
         const bool has_model = s && s->runnable(a);
-        const bool usable = compiled && has_model && !running_;
-        accel_check_[i]->set_sensitive(usable);
-        accel_check_[i]->set_active(compiled && has_model && accel_wanted_[i]);
-        if (!compiled) {
-            accel_check_[i]->set_tooltip_text(accel_unavailable_reason(a));
-        } else if (!has_model) {
+        accel_check_[i]->set_sensitive(has_model && !running_);
+        accel_check_[i]->set_active(has_model && accel_wanted_[i]);
+        if (!has_model) {
             const bool pending = s && s->configured(a);
             accel_check_[i]->set_tooltip_text(
                 !s ? "Select a model first"
@@ -594,8 +613,8 @@ std::vector<BenchItem> ControlPanel::selection() const {
     if (!s) return out;
     for (int i = 0; i < kAccelCount; ++i) {
         const Accel a = accel_at(i);
-        if (!accel_check_[i]->get_active()) continue;
-        if (!accel_compiled_in(a) || !s->runnable(a)) continue;
+        if (!accel_check_[i] || !accel_check_[i]->get_active()) continue;
+        if (!accel_present(a) || !s->runnable(a)) continue;
         BenchItem it;
         it.label = s->name;
         it.accel = a;
@@ -675,8 +694,14 @@ GraphArea::RangeMode ControlPanel::range_mode() const {
 
 unsigned ControlPanel::graph_accel_mask() const {
     unsigned m = 0;
-    for (int i = 0; i < kAccelCount; ++i)
+    for (int i = 0; i < kAccelCount; ++i) {
+        // Two distinct reasons the pointer can be null, and they mean opposite
+        // things: a hidden card never gets a checkbox and must stay out of the
+        // plots, while a present card is briefly null during construction and
+        // should default to visible.
+        if (!accel_present(accel_at(i))) continue;
         if (!graph_accel_[i] || graph_accel_[i]->get_active()) m |= 1u << i;
+    }
     return m;
 }
 

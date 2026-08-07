@@ -170,6 +170,8 @@ const char* accel_unavailable_reason(Accel a) {
     return "SDK not found at build time";
 }
 
+bool accel_present(Accel a) { return accel_compiled_in(a); }
+
 bool BenchSubject::configured_anywhere() const {
     for (int i = 0; i < kAccelCount; ++i)
         if (!members[i].empty()) return true;

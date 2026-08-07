@@ -131,9 +131,16 @@ The first four are M.2 cards; the fifth is the **SoC-integrated** NPU on a
 Qualcomm Dragonwing IQ-9075 EVK (QCS9075, Hexagon HTP v73), so the app builds and
 runs on **aarch64** as well as x86_64.
 
-Each backend is **optional and auto-detected at build time**. A card whose SDK is
-absent still appears in the UI, greyed out with the reason, and its telemetry
-still graphs — the build works on any host.
+Each backend is **optional and auto-detected at build time**, and the window
+adapts to what the build found: a card whose SDK is absent is **not shown at
+all** — no checkbox, no settings tab, no legend swatch and no trace — so on a
+host with two backends you get a two-card UI rather than three greyed-out
+placeholders. Its telemetry still graphs if the hardware is there, since that
+comes from sysfs rather than the SDK. The build works on any host.
+
+Greying therefore has exactly one meaning: the card is here, but the selected
+model has no artifact for it (hover for which — not downloaded yet, or no build
+configured).
 
 ### Qualcomm specifics
 
@@ -402,16 +409,16 @@ config; they are never fetched, and are used only if you drop them in yourself:
 
 | Model | Task | Hailo | DeepX | Axelera | MemryX | Qualcomm |
 | ----- | ---- | :---: | :---: | :-----: | :----: | :------: |
-| YOLOv8s | person detection, 640×640 | ✅ | ✅ | ✅ | ✅ | — |
+| YOLOv8s | person detection, 640×640 | ✅ | ✅ | ✅ | ✅ | local |
 | YOLOv8m | person detection, 640×640 | ✅ | ✅ | ✅ | ✅ | local |
 | SCRFD-500M / 2.5G / 10G | face detection, 640×640 | ✅ | ✅ | — | — | local |
 | OSNet x1.0 | person re-identification, 256×128 | ✅ | local | ✅ | — | local |
 | ArcFace MobileFaceNet | face recognition, 112×112 | ✅ | ✅ | local | — | local |
-| ResNet-50 | image classification, 224×224 | ✅ | ✅ | ✅ | ✅ | — |
+| ResNet-50 | image classification, 224×224 | ✅ | ✅ | ✅ | ✅ | local |
 
 (✅ = downloaded automatically; *local* = no public source, see below. Every
-Qualcomm entry is local by nature, and the two gaps are models with no context
-binary built yet rather than a limitation of the part.)
+Qualcomm entry is local by nature — a context binary is a build product of the
+board it runs on — and all eight models plus all five pipelines are built.)
 
 **Pipelines** — every stage runs once per benchmark frame, in order, on the same
 card:

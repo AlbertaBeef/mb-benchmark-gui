@@ -36,11 +36,28 @@ const char* accel_name(Accel a);
 // Lowercase vendor key used in the config and in the models path ("hailo").
 const char* accel_vendor(Accel a);
 
-// Was this backend's SDK found at build time? A backend that wasn't compiled in
-// still appears in the UI (greyed out, with the reason) rather than vanishing.
+// Was this backend's SDK found at build time?
 bool accel_compiled_in(Accel a);
 // Why a backend is unavailable, or "" when it is fine.
 const char* accel_unavailable_reason(Accel a);
+
+// Should this card appear in the UI at all?
+//
+// A card that fails this is hidden *completely* — no Inference checkbox, no
+// settings tab, no Graphs filter checkbox, no legend entry and no trace on the
+// benchmark graphs. This replaced showing every card greyed-out with its
+// reason: on a host that builds one or two backends (the IQ-9075 builds Hailo
+// and Qualcomm only) the greyed majority was most of the panel, and a Qualcomm
+// card greyed because a model has no artifact looked identical to a MemryX card
+// greyed because the SDK is absent.
+//
+// Today this is purely build-time. It deliberately does NOT try to detect a
+// compiled-in card whose hardware is unplugged: that needs each vendor's
+// enumeration API on the GUI thread at startup, and a false negative would hide
+// a working card — worse than showing one that then reports a clear load error.
+// Extend *here* if runtime detection is ever wanted; every UI site asks this
+// one question.
+bool accel_present(Accel a);
 
 // How a vendor's artifacts are obtained.
 enum class Fetch {

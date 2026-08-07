@@ -356,7 +356,16 @@ MainWindow::AccelSection MainWindow::build_accel_section(
     grid->set_column_spacing(20);
     grid->set_halign(Gtk::Align::START);
 
+    // The series vector stays kAccelCount long — the engine folds onto fixed
+    // slots in Accel order and GraphArea::push() no-ops on a size mismatch — so
+    // a hidden card keeps its slot and is simply never drawn. `col` tracks the
+    // visible cards so the legend has no gaps.
+    int col = 0;
     for (int i = 0; i < kAccelCount; ++i) {
+        if (!accel_present(accel_at(i))) {
+            graph->set_series_visible(i, false);
+            continue;
+        }
         auto* cell = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
 
         const Gdk::RGBA c = accel_color_[i];
@@ -386,9 +395,10 @@ MainWindow::AccelSection MainWindow::build_accel_section(
         sec.value[i] = val;
         cell->append(*val);
 
-        // All the cards on one row (wrapping past four), so the legend is a
-        // single compact strip under each graph rather than a tall block.
-        grid->attach(*cell, i % kAccelCount, i / kAccelCount, 1, 1);
+        // All the cards on one row (wrapping past kAccelCount), so the legend is
+        // a single compact strip under each graph rather than a tall block.
+        grid->attach(*cell, col % kAccelCount, col / kAccelCount, 1, 1);
+        ++col;
     }
     box->append(*grid);
     sec.root = box;
@@ -568,6 +578,8 @@ void MainWindow::on_start_stop() {
 // neither.
 void MainWindow::apply_graph_filter() {
     const unsigned mask = controls_->graph_accel_mask();
+    // graph_accel_mask() already clears the bit for a hidden card, so this one
+    // test covers both "unticked by the user" and "not on this host".
     auto shown = [&](int accel_idx) {
         return (mask >> accel_idx) & 1u;
     };
@@ -669,10 +681,12 @@ bool MainWindow::on_tick() {
     fps_.graph->push(fps);
     eff_.graph->push(eff);
     energy_.graph->push(jpf);
+    // A hidden card has no legend labels; its slot in the pushed vectors still
+    // exists (and stays 0) so the series count never changes.
     for (int i = 0; i < kAccelCount; ++i) {
-        fps_.value[i]->set_text(fmt_fps(fps[i]));
-        eff_.value[i]->set_text(fmt_eff(eff[i]));
-        energy_.value[i]->set_text(fmt_eff(jpf[i]));
+        if (fps_.value[i]) fps_.value[i]->set_text(fmt_fps(fps[i]));
+        if (eff_.value[i]) eff_.value[i]->set_text(fmt_eff(eff[i]));
+        if (energy_.value[i]) energy_.value[i]->set_text(fmt_eff(jpf[i]));
     }
 
     const auto& tv = probes_.temp_values();
