@@ -10,7 +10,7 @@ it links each vendor's runtime directly and drives inference itself, so the
 frame rate on the graph and the watts underneath it come from the same moment on
 the same card.
 
-![NPU Benchmarking GUI](assets/screenshot.png)
+![NPU Benchmarking GUI](assets/mb-benchmark-gui-take01-resnet50.gif)
 
 ## What it does
 
