@@ -723,7 +723,11 @@ void ControlPanel::set_running(bool running) {
     run_button_.set_label(running ? "Stop benchmark" : "Start benchmark");
     run_button_.remove_css_class(running ? "suggested-action" : "destructive-action");
     run_button_.add_css_class(running ? "destructive-action" : "suggested-action");
-    notebook_.set_sensitive(!running);
+    // Both flags gate the selection, and both paths must agree: set_running(false)
+    // fires the instant Stop is pressed, while set_busy(true) only arrives on the
+    // next 1 Hz tick — and set_busy early-returns when its flag is unchanged, so
+    // an unconditional re-enable here would never be undone.
+    notebook_.set_sensitive(!running && !busy_);
     // Per-card API radios: lock them all while a run is in flight, same as the
     // other per-card settings.
     for (int i = 0; i < kAccelCount; ++i) {
@@ -745,6 +749,11 @@ void ControlPanel::set_busy(bool busy) {
     if (busy_ == busy) return;
     busy_ = busy;
     run_button_.set_sensitive(!busy);
+    // Lock the selection too, not just Start. A previous run's workers are still
+    // draining, so an edit made now cannot be acted on until they are gone —
+    // leaving the lists live invites a change the panel will not honour, and
+    // makes a stall look like it was caused by the edit.
+    notebook_.set_sensitive(!busy && !running_);
 }
 
 void ControlPanel::set_status(const std::string& text) {

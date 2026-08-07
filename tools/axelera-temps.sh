@@ -5,16 +5,17 @@
 # because the card's runtime firmware is RAM-only — nothing loads it at boot:
 #
 #   1. App firmware. Idle after a reboot the Metis sits in bootloader firmware
-#      and reports something like `v1.3.2+bl1-stage0`; axcmd/triton_trace then
-#      refuse with a version mismatch. **Running any inference loads it** — that
-#      is the normal path, and on a desktop it is the preferred one. `axcmd
-#      --fwload` (RAM, *not* --flashload, which would write flash) exists for
-#      the headless/at-boot case where nothing is going to run a model.
+#      and reports something like `v1.3.2+bl1`; axcmd/triton_trace then refuse
+#      with a version mismatch. **This script does NOT load it** — see the long
+#      note at the gate-1 check. Running any model loads it safely through the
+#      runtime; loading it here with `axcmd --fwload` breaks inference until a
+#      power cycle. So: run a model first, then run this.
 #   2. Collector log level. The firmware only emits `core_temps=[...]` at the
 #      `inf` level; the default is `err`, so the line never appears. This one is
-#      passive and safe to set at any time.
+#      passive and safe to set at any time, and is all this script now does.
 #
-# Gate 2 alone is enough whenever something has already loaded the firmware.
+# Exit status: 0 either way — collector set, or card still in bootloader with
+# nothing to do until something runs a model. Neither is a failure.
 #
 # Idempotent: safe to run repeatedly, and a no-op once both gates are clear.
 set -uo pipefail
@@ -37,39 +38,42 @@ done
 [ -n "$DEV" ] || { log "no /dev/metis-* after 30s — card absent?"; exit 0; }
 log "device $DEV"
 
-# --- gate 1: app firmware ---
-# A bootloader-only card answers --fwver with a version-mismatch complaint or a
-# `bl1` build string rather than a plain runtime version.
+# --- gate 1: app firmware — REPORTED, NEVER LOADED HERE ---
+# This script used to run `axcmd --fwload` when it found a card in bootloader.
+# Do not put that back. Measured repeatedly on 2026-08-07: firmware uploaded that
+# way leaves the card in a state where inference fails on the SECOND frame with
+#   [ERROR][waitForQueueBinaryCompletion]: Wait kernel failed with return code -1433
+#   [ERROR][axeCommandQueueExecuteCommandLists]: Failed with error code: 1879048193
+# (0x70000001 = ZE_RESULT_ERROR_DEVICE_LOST), with no DMA errors and no link drop
+# — the card looks perfectly healthy and every model still refuses to run. Only a
+# power cycle clears it; a driver reload does not, because card RAM survives it.
+#
+# The runtime's own load path is fine: axr_device_connect() loads the firmware on
+# a cold card, and every benchmark that let it do so has worked. The evidence is
+# one-sided — every boot where this script uploaded, inference failed; the one
+# boot where the runtime loaded it, four consecutive runs passed.
+#
+# So the correct order is: run a model FIRST (which loads the firmware), then run
+# this script for temperatures. On a headless boot with nothing to run a model,
+# temperatures simply are not available yet, and saying so is better than
+# uploading firmware that breaks the card for inference.
+#
 # Capture first, then match. Piping into `grep -q` under `set -o pipefail` is a
 # trap: grep exits at the first match, the producer takes SIGPIPE, and the
-# pipeline reports failure — so the match would be read as "no match" and the
-# firmware would silently never load.
+# pipeline reports failure — so the match would read as "no match".
 fwver=$("$AXBIN/axcmd" --device "$DEV" --fwver 2>&1)
 if grep -qi "mismatch\|bl1" <<<"$fwver"; then
-    # Never reload firmware underneath a live session. Every axr_device_connect()
-    # already makes the runtime reload it; doing our own upload at the same time
-    # means two writers to the same device. If a client is attached, leave gate 1
-    # to it — it will load the firmware itself as soon as it connects.
-    if command -v fuser >/dev/null 2>&1 && fuser -s "$NODE" 2>/dev/null; then
-        log "card is in bootloader but a process has $DEV open — leaving the"
-        log "firmware to that client (any inference loads it). Skipping --fwload."
-    elif [ -z "${FW:-}" ]; then
-        log "bootloader firmware, but no start_axelera_runtime.elf found"
-    else
-        log "bootloader firmware detected — loading $FW into RAM"
-        out=$("$AXBIN/axcmd" --device "$DEV" --fwload "$FW" 2>&1)
-        # Verify rather than assume: the upload is a ~3.8 MB bulk DMA write, and
-        # it is exactly the thing that fails when the card has wedged.
-        fwver=$("$AXBIN/axcmd" --device "$DEV" --fwver 2>&1)
-        if grep -qi "mismatch\|bl1" <<<"$fwver"; then
-            log "FIRMWARE UPLOAD FAILED — the card is still in bootloader."
-            grep -qi "timed out\|Failed to write ELF" <<<"$out" && \
-                log "  the ELF write timed out: the card's bulk-DMA path is wedged."
-            log "  A driver reload does NOT clear this; only a full power-off does."
-            log "  See 'Known issues' in the repo README before blaming a client."
-            exit 1
-        fi
-    fi
+    log "card is in BOOTLOADER — not loading firmware from here, on purpose."
+    log "  Run any model first (the runtime loads the firmware safely), then"
+    log "  re-run this script for temperatures."
+    log "  Uploading with 'axcmd --fwload' leaves inference broken until a power"
+    log "  cycle — see the comment above this check, and Known issues in README."
+    log "firmware: $(tr -d '\n' <<<"$fwver")"
+    # Exit 0, not an error code: "no firmware yet" is a legitimate state, not a
+    # failure. The boot service is Type=oneshot, so a non-zero exit would leave
+    # the unit permanently red on every cold boot — which is exactly the state
+    # this script can no longer do anything about.
+    exit 0
 fi
 log "firmware: $("$AXBIN/axcmd" --device "$DEV" --fwver 2>&1 | tr -d '\n')"
 

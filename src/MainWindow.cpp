@@ -209,7 +209,7 @@ MainWindow::MainWindow() {
                              "MemryX SDK; otherwise it takes an external meter "
                              "(INA228). Without watts, the efficiency graphs "
                              "below stay at zero.",
-                             &power_max_labels_)));
+                             &power_max_labels_, &power_rows_)));
 
     graphs->append(make_section(
         "Temperature (°C)",
@@ -217,7 +217,7 @@ MainWindow::MainWindow() {
                              colors_for(probes_.temp_metrics()),
                              /*fixed_temp_axis=*/true, fmt_temp, temp_graph_,
                              temp_values_, "No temperature sensors detected.",
-                             &temp_avg_labels_)));
+                             &temp_avg_labels_, &temp_rows_)));
 
     // Clock, right after temperature because the two are read together: a
     // frequency that sags while a die heats is thermal throttling, and seeing
@@ -235,7 +235,7 @@ MainWindow::MainWindow() {
                              "per chip via the SDK, and Axelera per AI core via "
                              "axcmd --clock-all-actual. The Qualcomm NSP does "
                              "not — its probe is passive thermal only.",
-                             &freq_avg_labels_, /*min_axis_max=*/1000.0),
+                             &freq_avg_labels_, &freq_rows_, /*min_axis_max=*/1000.0),
         /*expanded=*/false));
 
     fps_ = build_accel_section(fmt_fps, /*min_axis_max=*/30.0);
@@ -394,6 +394,7 @@ MainWindow::AccelSection MainWindow::build_accel_section(
         val->set_width_chars(7);
         sec.value[i] = val;
         cell->append(*val);
+        sec.cell[i] = cell;
 
         // All the cards on one row (wrapping past kAccelCount), so the legend is
         // a single compact strip under each graph rather than a tall block.
@@ -409,7 +410,8 @@ Gtk::Widget& MainWindow::build_metric_section(
     const std::vector<MetricInfo>& metrics, const std::vector<Gdk::RGBA>& colors,
     bool temp_axis, std::function<std::string(double)> value_fmt,
     GraphArea*& graph_out, std::vector<Gtk::Label*>& value_labels_out,
-    const char* empty_note, std::vector<AggEntry>* agg_out, double min_axis_max) {
+    const char* empty_note, std::vector<AggEntry>* agg_out,
+    std::vector<LegendRow>* rows_out, double min_axis_max) {
     auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 8);
     box->set_vexpand(true);
 
@@ -446,6 +448,7 @@ Gtk::Widget& MainWindow::build_metric_section(
     grid->set_halign(Gtk::Align::START);
 
     value_labels_out.assign(n, nullptr);
+    if (rows_out) rows_out->clear();
     int i = 0, row = 0;
     while (i < n) {
         const int dev = metrics[i].device;
@@ -458,6 +461,9 @@ Gtk::Widget& MainWindow::build_metric_section(
         dn->set_xalign(0.0);
         dn->set_margin_end(6);
         grid->attach(*dn, 0, row, 1, 1);
+        LegendRow lr;
+        lr.device = dname;
+        lr.widgets.push_back(dn);
 
         int col = 1;
         const int agg_start = i;
@@ -468,6 +474,7 @@ Gtk::Widget& MainWindow::build_metric_section(
             agg_label->set_margin_end(6);
             agg_label->add_css_class("dim-label");
             grid->attach(*agg_label, col, row, 1, 1);
+            lr.widgets.push_back(agg_label);
             ++col;
         }
 
@@ -506,10 +513,12 @@ Gtk::Widget& MainWindow::build_metric_section(
             cell->append(*val);
 
             grid->attach(*cell, col, row, 1, 1);
+            lr.widgets.push_back(cell);
             ++col;
             ++i;
         }
         if (agg_out) agg_out->push_back({agg_label, agg_start, i - agg_start});
+        if (rows_out) rows_out->push_back(std::move(lr));
         ++row;
     }
     box->append(*grid);
@@ -578,36 +587,48 @@ void MainWindow::on_start_stop() {
 // neither.
 void MainWindow::apply_graph_filter() {
     const unsigned mask = controls_->graph_accel_mask();
-    // graph_accel_mask() already clears the bit for a hidden card, so this one
-    // test covers both "unticked by the user" and "not on this host".
-    auto shown = [&](int accel_idx) {
-        return (mask >> accel_idx) & 1u;
+    auto shown = [&](int accel_idx) { return (mask >> accel_idx) & 1u; };
+
+    // Is this device name one of the cards, and is that card shown? A metric
+    // belonging to no card at all — an unmapped INA228, the board ambient
+    // sensor — has no bit to consult and always stays visible.
+    auto device_shown = [&](const std::string& dev) {
+        for (int a = 0; a < kAccelCount; ++a)
+            if (dev == accel_name(accel_at(a))) return static_cast<bool>(shown(a));
+        return true;
     };
 
-    // Telemetry graphs: one series per metric, matched on the owning device. A
-    // metric whose device is not one of the four cards (an unmapped INA228, the
-    // board ambient sensor) has no bit to consult, so it stays visible.
-    auto by_device = [&](GraphArea* g, const std::vector<MetricInfo>& m) {
-        if (!g) return;
-        for (size_t i = 0; i < m.size(); ++i) {
-            bool vis = true;
-            for (int a = 0; a < kAccelCount; ++a) {
-                if (m[i].device_name == accel_name(accel_at(a))) {
-                    vis = shown(a);
-                    break;
-                }
-            }
-            g->set_series_visible(static_cast<int>(i), vis);
+    // Telemetry graphs: one series per metric, matched on the owning device,
+    // and the legend row for that device hidden with it.
+    auto by_device = [&](GraphArea* g, const std::vector<MetricInfo>& m,
+                         const std::vector<LegendRow>& rows) {
+        if (g) {
+            for (size_t i = 0; i < m.size(); ++i)
+                g->set_series_visible(static_cast<int>(i),
+                                      device_shown(m[i].device_name));
+        }
+        for (const auto& r : rows) {
+            const bool vis = device_shown(r.device);
+            for (Gtk::Widget* w : r.widgets)
+                if (w) w->set_visible(vis);
         }
     };
-    by_device(power_graph_, probes_.power_metrics());
-    by_device(temp_graph_, probes_.temp_metrics());
-    by_device(freq_graph_, probes_.freq_metrics());
+    by_device(power_graph_, probes_.power_metrics(), power_rows_);
+    by_device(temp_graph_, probes_.temp_metrics(), temp_rows_);
+    by_device(freq_graph_, probes_.freq_metrics(), freq_rows_);
 
-    // Benchmark graphs: exactly one series per card, in Accel order.
-    for (GraphArea* g : {fps_.graph, eff_.graph, energy_.graph}) {
-        if (!g) continue;
-        for (int i = 0; i < kAccelCount; ++i) g->set_series_visible(i, shown(i));
+    // Benchmark graphs: exactly one series per card, in Accel order, with the
+    // legend cell beside it.
+    for (AccelSection* sec : {&fps_, &eff_, &energy_}) {
+        for (int i = 0; i < kAccelCount; ++i) {
+            // graph_accel_mask() already clears the bit for a card absent from
+            // the build, so shown(i) is false for one. The explicit check is
+            // belt-and-braces: build_accel_section() hid that series once, and
+            // a future change to the mask must not silently re-show it here.
+            const bool vis = accel_present(accel_at(i)) && shown(i);
+            if (sec->graph) sec->graph->set_series_visible(i, vis);
+            if (sec->cell[i]) sec->cell[i]->set_visible(vis);
+        }
     }
 }
 

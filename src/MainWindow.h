@@ -43,6 +43,15 @@ private:
 
     // A per-device aggregate label spanning metrics [start, start+count) in the
     // aligned value vector: mean for temperature, max for power.
+    // One device's legend row on a telemetry graph: its name label, its
+    // aggregate label and its per-metric cells, so the Graphs filter can hide
+    // the whole row. Keyed by device_name because that is what a metric carries
+    // and what a folded INA228 inherits.
+    struct LegendRow {
+        std::string device;
+        std::vector<Gtk::Widget*> widgets;
+    };
+
     struct AggEntry {
         Gtk::Label* label;
         int start;
@@ -57,6 +66,7 @@ private:
                                       std::vector<Gtk::Label*>& value_labels_out,
                                       const char* empty_note,
                                       std::vector<AggEntry>* agg_out = nullptr,
+                                      std::vector<LegendRow>* rows_out = nullptr,
                                       double min_axis_max = 10.0);
 
     // --- benchmark sections (one series per accelerator) ---
@@ -65,6 +75,9 @@ private:
         Gtk::Widget* root = nullptr;  // graph + legend, to hand to make_section
         GraphArea* graph = nullptr;
         Gtk::Label* value[kAccelCount] = {};
+        // The legend cell (swatch + name + value) for each card, so the Graphs
+        // filter can hide the entry along with the trace.
+        Gtk::Widget* cell[kAccelCount] = {};
     };
 
     // Push the control panel's Range choice onto every graph.
@@ -102,12 +115,15 @@ private:
     GraphArea* power_graph_ = nullptr;
     std::vector<Gtk::Label*> power_values_;
     std::vector<AggEntry> power_max_labels_;
+    std::vector<LegendRow> power_rows_;
 
     GraphArea* temp_graph_ = nullptr;
     std::vector<Gtk::Label*> temp_values_;
     std::vector<AggEntry> temp_avg_labels_;
+    std::vector<LegendRow> temp_rows_;
 
     GraphArea* freq_graph_ = nullptr;
     std::vector<Gtk::Label*> freq_values_;
     std::vector<AggEntry> freq_avg_labels_;
+    std::vector<LegendRow> freq_rows_;
 };

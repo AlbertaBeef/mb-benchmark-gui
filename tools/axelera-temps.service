@@ -5,25 +5,22 @@
 # collector at the default `err` level, so `core_temps=[...]` is never emitted
 # and mb-benchmark-gui / mb-powermon-gui show the Axelera row with no values.
 #
-# At boot nothing has the card open, which is the one moment an out-of-band
-# firmware upload is unambiguously safe — that is what this unit is for. Run
-# interactively the script skips the upload whenever a client already holds the
-# device, and leaves the firmware to that client (any inference loads it).
+# SCOPE — read this before expecting it to do much. The script no longer loads
+# firmware; it only sets the collector log level. On a cold boot the Metis is in
+# bootloader, so this unit will report that and exit 0 with temperatures still
+# unavailable. They appear once something runs a model, which is what loads the
+# firmware safely — after that, re-run the script (or just let the next boot
+# service run pick it up if a model has already run).
 #
-# SCOPE: this covers boot only. The collector level is volatile device state and
-# also resets on a driver reload, so `modprobe -r metis && modprobe metis`
-# mid-session silently takes temperatures away again with the unit still shown
-# as active (Type=oneshot + RemainAfterExit). Re-run the script by hand after
-# any modprobe cycle:
+# Firmware is deliberately NOT uploaded here. `axcmd --fwload` leaves the card in
+# a state where inference fails on the second frame with ZE_RESULT_ERROR_DEVICE_
+# LOST and needs a power cycle; see the long note in axelera-temps.sh.
+#
+# The collector level is also volatile: it resets on a driver reload
+# (modprobe -r metis) as well as on reboot, and this unit is Type=oneshot with
+# RemainAfterExit, so it will still read "active" while temperatures are gone.
+# Re-run by hand after any modprobe cycle:
 #   sudo /usr/local/sbin/axelera-temps.sh
-#
-# The script is installed to /usr/local/sbin rather than run from the repo, and
-# that is load-bearing on this host: the repo sits on /media/abbeefepyc/Nauvoo,
-# which udisks mounts *on behalf of uid 1000* when the user logs into GNOME —
-# 44 s after boot in one measured case, and never at all if nobody logs in. An
-# ExecStart pointing into the repo would therefore race the login or fail
-# outright. The script depends on nothing in the repo (only /opt/axelera and
-# /dev/metis-*), so copying it out costs nothing.
 #
 # Install:
 #   sudo install -m 755 tools/axelera-temps.sh /usr/local/sbin/axelera-temps.sh
@@ -40,7 +37,7 @@
 #   sudo rm /etc/systemd/system/axelera-temps.service /usr/local/sbin/axelera-temps.sh
 
 [Unit]
-Description=Axelera Metis: load runtime firmware (if free) and enable the temperature collector
+Description=Axelera Metis: enable the temperature collector
 Documentation=https://github.com/AlbertaBeef/mb-benchmark-gui
 # Ordering only. The node is created by the metis driver, not by this service,
 # and the script waits up to 30 s for /dev/metis-* itself — so this is belt and

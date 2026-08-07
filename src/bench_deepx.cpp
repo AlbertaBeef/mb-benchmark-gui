@@ -22,6 +22,8 @@ class DeepXBenchRunner : public BenchRunner {
 public:
     explicit DeepXBenchRunner(ApiMode mode) : mode_(mode) {}
 
+    ~DeepXBenchRunner() override { drain(); }
+
     void configure(const BenchItem& item) override {
         if (item.depth >= 1) async_depth_ = static_cast<size_t>(item.depth);
     }
@@ -81,6 +83,32 @@ public:
     std::string describe() const override { return describe_; }
 
 private:
+    // Retire every outstanding job before the engine is destroyed.
+    //
+    // DXRT delivers completions on a SysV message queue, and `RunAsync` leaves
+    // up to `async_depth_ - 1` jobs in flight when the loop exits on stop.
+    // Destroying the engine with those still queued leaves their responses to
+    // arrive with nobody to consume them; a later run's `Wait()` can then take a
+    // stale response, leaving its own unconsumed, and the Wait after that blocks
+    // in `do_msgrcv` forever — with the card perfectly healthy. That is the
+    // "waiting for the device to release" stall.
+    //
+    // Same class of bug as Hailo's `Stage::drain()`. Note this CAN block if a
+    // job genuinely never completes, but it blocks on the detached reaper
+    // thread, never the GUI — and it is strictly better than poisoning the queue
+    // for the next run. DXRT's Wait() takes no timeout, so there is nothing to
+    // bound it with.
+    void drain() {
+        for (auto& st : stages_) {
+            if (!st->engine) continue;
+            while (!st->jobs.empty()) {
+                (void)st->engine->Wait(st->jobs.front());
+                st->jobs.pop_front();
+            }
+        }
+        stages_.clear();
+    }
+
     struct Stage {
         std::unique_ptr<dxrt::InferenceEngine> engine;
         std::vector<std::uint8_t> input;

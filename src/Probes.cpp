@@ -578,19 +578,52 @@ private:
             std::smatch m;
             static const std::regex vm(
                 R"RX(Actual="([^"]+)"\s+Expected="([^"]+)")RX");
-            if (std::regex_search(out, m, vm))
+            if (std::regex_search(out, m, vm)) {
                 note_ = "device firmware " + m[1].str() + " vs tool " +
                         m[2].str() +
                         " — version mismatch, temps unavailable "
-                        "(align firmware/runtime)";
-            else
+                        "(run a model: the runtime loads the firmware)";
+                // Card is back in bootloader (reboot, or a driver reload). The
+                // collector level lives in volatile device state and went with
+                // it, so allow one more attempt once firmware returns.
+                collector_set_ = false;
+            } else if (!collector_set_ && !collector_disabled()) {
+                // Firmware is fine but nothing is emitting core_temps, which
+                // means the collector is at its default `err` level. Raise it
+                // once, here, so temperatures work after every boot without the
+                // user remembering to run tools/axelera-temps.sh.
+                //
+                // This is the ONE piece of device state this probe changes, and
+                // it is a *global* device log level — another client sharing the
+                // card sees the busier log ring too. That is why it was
+                // originally left to the script; it is done here now because
+                // "temps never work after a boot" was the practical outcome.
+                // $MB_AXELERA_NO_COLLECTOR=1 restores the passive behaviour.
+                //
+                // Deliberately NOT the firmware: uploading that with
+                // `axcmd --fwload` breaks inference until a power cycle (see
+                // tools/axelera-temps.sh). Only the runtime may load firmware.
+                collector_set_ = true;
+                run_capture("timeout 2 " + cli_ + " --device " + device_ +
+                            " --slog-level inf:collector >/dev/null 2>&1");
+                note_ = "enabling the temperature collector…";
+            } else {
                 note_ = "collector idle — temps appear once a Metis "
                         "app/collector is running";
+            }
         }
         return last;
     }
 
+    static bool collector_disabled() {
+        const char* e = std::getenv("MB_AXELERA_NO_COLLECTOR");
+        return e && *e && std::string(e) != "0";
+    }
+
     std::string cli_, device_, axcmd_;
+    // One attempt per firmware-present episode; reset when the card falls back
+    // to bootloader so a reboot or driver reload re-arms it.
+    bool collector_set_ = false;
 };
 
 // ---------------------------------------------------------------------------

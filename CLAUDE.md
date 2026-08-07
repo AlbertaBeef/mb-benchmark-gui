@@ -189,10 +189,19 @@ Three layers, cleanly separated. Keep it that way.
   its throughput *and* its watts, so per-model fps/W and mJ/frame would be
   meaningless. This is why the lists are single-selection and the three benchmark
   graphs are fixed at exactly `kAccelCount` series.
-- **Fixed per-accelerator series.** `fps_`/`eff_`/`energy_` always have 4 series
-  in `Accel` order, regardless of what's running; `on_tick` folds the engine's
-  variable-length `series()` onto them and leaves the rest at 0. An idle card
-  really is doing 0 fps — don't special-case it to a gap.
+- **Fixed per-accelerator series.** `fps_`/`eff_`/`energy_` always have exactly
+  `kAccelCount` series in `Accel` order, regardless of what is running or what
+  is on screen; `on_tick` folds the engine's variable-length `series()` onto
+  them and leaves the rest at 0. An idle card really is doing 0 fps — don't
+  special-case it to a gap.
+
+  **Nothing removes a series — hiding is always `set_series_visible()`.** That
+  holds for both reasons a card can be off screen: absent from the build
+  (`accel_present()`, hidden once at construction) and unticked in Graphs →
+  Accelerators. `set_series()` is called once with `kAccelCount` colours and the
+  engine folds onto fixed slots, so shortening the vector would silently
+  misalign every card's colour and identity. If a future change needs to drop a
+  card from a graph, hide it.
 - **Colour means one card, everywhere.** `util::device_accent()` in `util.h`
   fixes it: Hailo coral, MemryX sage, DeepX slate blue, Axelera amber, Qualcomm
   plum. Shared verbatim with `mb-powermon-gui`, so a card looks the same in both
@@ -278,8 +287,9 @@ Three layers, cleanly separated. Keep it that way.
   an ungated sentinel would always win and become that zone's temperature.
   **Never widen this to "just clamp it"**: a fabricated in-range number next to
   genuine readings is worse than a gap.
-- **The Graphs / Accelerators filter hides series, it does not drop samples.**
-  Choosing one card calls `GraphArea::set_series_visible()` on every graph;
+- **The Graphs / Accelerators filter hides series and legend entries; it does
+  not drop samples.** Unticking a card calls `GraphArea::set_series_visible()`
+  on every graph and hides that card's legend widgets;
   `push()` still receives every reading. That matters twice over: the filter is
   **retroactive** (the ten minutes already on screen disappear too, where masking
   new samples to NaN would have left them until they scrolled off), and a hidden
@@ -299,8 +309,15 @@ Three layers, cleanly separated. Keep it that way.
   `device_name` (so a mapped INA228 folded onto a card is kept with it), while
   the three benchmark graphs are one series per card in `Accel` order. A metric
   belonging to no card at all — an unmapped INA228, the board ambient sensor —
-  has no bit to consult and stays visible. The legends deliberately keep
-  updating for hidden cards: the filter is about the plot, not about what runs.
+  has no bit to consult and stays visible.
+
+  **The legend entry is hidden with the trace**, not left running. The handles
+  for that are collected at build time — `AccelSection::cell[]` for the
+  benchmark graphs, `LegendRow{device, widgets}` for the telemetry ones, where a
+  row is the device-name label plus its aggregate label plus its per-metric
+  cells. They have to be captured during construction because the telemetry
+  legend is a `Gtk::Grid` laid out by device, with nothing to walk back to
+  afterwards.
 
   **Qualcomm is deliberately one of those unmatched metrics, and this is the one
   place a fifth card is not seamless.** `accel_name(Accel::Qualcomm)` is the
@@ -381,7 +398,8 @@ single-model benchmark only `aicore0` ramps to 800 MHz — `aicore1..3` stay at
 being asked for 4 sub-devices. That is a large part of the ~18%-of-vendor
 ResNet-50 result, and it is a *core utilisation* problem, not the
 stream-parallelism story originally assumed. Verified safe: polling `axcmd`
-during a run does not disturb the benchmark, so the probe stays passive enough.
+during a run does not disturb the benchmark. The probe is otherwise passive —
+its one write is the collector level, once (see `tools/`).
 
 **MemryX's clock is DVFS-managed** and it is the one that visibly moves: 300 MHz
 idle, 600 MHz (its configured target) under load. A low idle reading is *not*
@@ -821,27 +839,60 @@ Use `/proc/modules`, not `lsmod`, for module checks — `/usr/sbin` is not on a
 normal user's `PATH`, so `lsmod` silently reports every driver missing in the
 unprivileged status view. That bug was in the first version of this script.
 
-`axelera-temps.sh` + `axelera-temps.service` clear the two gates Axelera core
-temperatures need — app firmware loaded (RAM-only, gone every reboot) and the
-collector at `inf`. The GUI's probe deliberately does **not** do this itself:
-the collector level is a *global* device log setting, so the probe stays passive
-and reports `collector idle` instead of changing device state behind the user's
-back. The service is the explicit opt-in; install it with the commands in the
-unit's header comment.
+`axelera-temps.sh` + `axelera-temps.service` are now only for the **headless**
+case. In the GUI both gates clear themselves:
+
+- **App firmware** — the runtime loads it on the first `axr_device_connect()`,
+  i.e. the first Axelera benchmark. Nothing else may load it; see the
+  firmware-load note below.
+- **Collector level** — `AxeleraProbe::read_temps()` raises it to
+  `inf:collector` once, on seeing firmware present but no `core_temps`. The flag
+  resets when it next sees a version mismatch, so a reboot or a `modprobe -r
+  metis` re-arms it. `$MB_AXELERA_NO_COLLECTOR=1` opts out.
+
+**This reverses an earlier decision, deliberately.** The probe used to stay
+passive because the collector level is *global* device state — another client
+sharing the card gets the busier log ring too. That reasoning is still true; it
+lost to "temperatures never work after a boot", which was the actual outcome
+every single boot. The code comment carries the trade so it does not read as a
+forgotten rule.
+
+Note what the probe still will **not** do: load firmware. That is the one thing
+that must stay with the runtime.
 
 Two things in that script are load-bearing:
 - **Never pipe into `grep -q` under `set -o pipefail`.** grep exits at the first
   match, the producer takes SIGPIPE, and the pipeline reports failure — so a
   match reads as "no match". This silently skipped the firmware load. Capture to
   a variable, then match.
-- The firmware-load branch **runs and reports success, but "success" here only
-  means temperatures started flowing** (2026-08-03). On a genuine post-reboot
-  bootloader card `axcmd --fwver` answered `Version mismatch!
-  Actual="v1.3.2+bl1"`, `--fwload .../start_axelera_runtime.elf` reported
-  `v1.7.0`, and `core_temps` appeared. **Inference was never checked afterwards**,
-  and it was broken. Do not record this branch as "verified" on the strength of
-  temperatures alone — verify a benchmark runs too. See the Axelera entry under
-  Known issues for what the failure actually turned out to be.
+- **The firmware-load branch is gone, and must not come back.** The script used
+  to run `axcmd --fwload` on a card it found in bootloader. Measured repeatedly
+  on 2026-08-07: firmware uploaded that way leaves the card unable to run
+  inference — the *second* frame fails with
+
+  ```
+  [ERROR][waitForQueueBinaryCompletion]: Wait kernel failed with return code -1433
+  [ERROR][axeCommandQueueExecuteCommandLists]: Failed with error code: 1879048193
+  ```
+
+  `0x70000001` is `ZE_RESULT_ERROR_DEVICE_LOST`. There are **no DMA errors, no
+  link drop and no page faults during the run** — the card looks healthy,
+  `axcmd --fwver` answers, temps flow, and every model still refuses to run. A
+  driver reload does not clear it (card RAM survives), only a power cycle.
+
+  The runtime's own path is fine: `axr_device_connect()` loads firmware on a cold
+  card and inference works. The evidence is one-sided — every boot where the
+  script uploaded, inference failed; the one boot where the runtime loaded it,
+  four consecutive runs passed (358.7 / 574.0 / 658.6 / 694.9 fps).
+
+  **Correct order: run a model first, then run the script for temperatures.**
+  The script now reports a bootloader card and exits 0 without touching it.
+
+  This was diagnosed, then wrongly retracted, then re-confirmed. The retraction
+  came from seeing a `fwtrace: detached for firmware reload` with no service
+  installed and assuming the app's runtime had done it — the user had run the
+  script by hand. **Do not re-litigate this from a single reload event in the
+  journal; check who invoked it.**
 
 **The unit runs `/usr/local/sbin/axelera-temps.sh`, not the repo copy, and that
 matters here.** This checkout lives on `/media/abbeefepyc/Nauvoo` (`/dev/sda`),

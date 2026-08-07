@@ -42,10 +42,13 @@ share the setting:
 | **Max** *(default)* | Start at the resting top, grow to **10 % above the highest reading** once the data reaches it, and never shrink back — so successive runs stay on one comparable scale. |
 | **Dynamic** | Track the data at **both ends** — the axis runs from just below the lowest reading to just above the highest, with 10 % of the span as margin. Four dies sitting between 37 °C and 42 °C fill the plot instead of occupying five pixels of a 0–100 axis. The scale moves as the data does, so runs are not comparable by eye. |
 
-**Graphs → Accelerators** picks whose traces are drawn — one checkbox per card,
-all ticked by default, any subset selectable. It is a view filter, not a run
-filter: every card keeps running and its legend value keeps updating; only the
-traces are hidden. Two things follow from hiding rather than discarding: the
+**Graphs → Accelerators** picks which cards the graphs show — one checkbox per
+card, all ticked by default, any subset selectable. Unticking a card hides both
+its **traces and its legend entry**, on all six graphs, so the section shows only
+the cards you are looking at.
+
+It is a view filter, not a run filter: every card keeps running and keeps
+producing numbers. Two things follow from hiding rather than discarding: the
 change applies to the history already on screen, and unticked cards drop out of
 the axis calculation, so the ones you kept fill the plot. To choose what actually
 *runs*, use the Accelerators checkboxes in the Inference section.
@@ -756,12 +759,31 @@ If you see one of these again, this is what it means:
   with `DVM_ALREADY_IN_USE` — stop one.
 - **Axelera temperatures need two gates cleared, and both are lost on every
   reboot** — the card's runtime firmware is RAM-only and nothing loads it at
-  boot. Until then the Axelera row shows no values and the app logs
-  `collector idle`. [`tools/axelera-temps.sh`](tools/axelera-temps.sh) clears
-  both (loads the firmware if the card is still in bootloader state, then sets
-  the collector to `inf`), and
-  [`tools/axelera-temps.service`](tools/axelera-temps.service) runs it once per
-  boot:
+  boot. **The app now clears them for you**, in the order that works:
+
+  1. **App firmware** — loaded by the *runtime* the first time you run a model
+     on the Metis. The app never uploads it itself, and neither does the script:
+     doing that with `axcmd --fwload` leaves the card unable to run inference
+     (the second frame fails with `ZE_RESULT_ERROR_DEVICE_LOST`) until a power
+     cycle, while `axr_device_connect()`'s own load is fine.
+  2. **Collector log level** — the firmware only emits `core_temps` at the `inf`
+     level, and the default is `err`. The probe raises it once, automatically,
+     as soon as it sees firmware present but no temperatures.
+
+  So in normal use: run a model, and temperatures appear a second or two later
+  and keep working. Nothing to install, nothing to remember after a reboot.
+
+  The collector level is *global* device state — another client sharing the card
+  sees the busier log ring too. The probe used to stay passive for that reason
+  and report `collector idle` instead, but "temperatures never work after a
+  boot" was the practical result. Set `MB_AXELERA_NO_COLLECTOR=1` to restore the
+  passive behaviour.
+
+  [`tools/axelera-temps.sh`](tools/axelera-temps.sh) still exists for the
+  headless case — no GUI to run a model, no probe to notice. It sets only the
+  collector level; on a bootloader card it says so and exits without touching
+  the firmware. [`tools/axelera-temps.service`](tools/axelera-temps.service)
+  runs it once per boot:
 
   ```bash
   sudo install -m 755 tools/axelera-temps.sh /usr/local/sbin/axelera-temps.sh
@@ -777,9 +799,5 @@ If you see one of these again, this is what it means:
   headless boot. The script needs nothing from the repo, only `/opt/axelera` and
   `/dev/metis-*`. Re-run the `install` line after editing the script.
 
-  The script is idempotent, so running it by hand at any time is safe. Note the
-  collector level is a *global* device log setting — that is why the app's probe
-  never sets it itself, staying passive and reporting `collector idle` instead
-  of changing device state behind your back.
 - Kill stray instances with `pkill -x mb-benchmark` (exact name) — `pkill -f
   build/mb-benchmark` also matches your own shell command.
