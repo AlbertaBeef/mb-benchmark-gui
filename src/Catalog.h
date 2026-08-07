@@ -100,6 +100,15 @@ struct BenchSubject {
 };
 
 // A single unit of work handed to the engine: one subject on one card.
+// Which of a vendor's two inference APIs to drive. Lives here rather than in
+// Bench.h because BenchItem carries it per card, and Bench.h already includes
+// this header; putting it the other way round would invert the dependency.
+//
+// The five SDKs are NOT symmetric — see accel_has_both_api_modes(). Hailo,
+// DeepX and MemryX ship both a blocking and an async/streaming surface; Axelera
+// and Qualcomm have no async inference API at all.
+enum class ApiMode { Sync, Async };
+
 struct BenchItem {
     std::string label;  // "YOLOv8s"
     Accel accel = Accel::Hailo;
@@ -114,10 +123,20 @@ struct BenchItem {
     // from that cliff (see bench_axelera.cpp and Known issues).
     int cores = 2;
     int freq_mhz = 0;   // MemryX: MPU clock to request, 0 = don't touch it
-    // Frames each card keeps outstanding in Async mode. Sync is always 1.
-    // Axelera has no async API and ignores this — its knob is `cores`.
-    // Qualcomm reads it as engines in flight *per NSP*.
-    int threads = 4;
+    // Which inference API this card drives. Per card, not per run: the SDKs are
+    // not symmetric, so one global choice offered a mode that does not exist on
+    // some of them. Cards without both modes ignore this and always run the one
+    // they have.
+    ApiMode api_mode = ApiMode::Async;
+    // Frames this card keeps in flight. Every backend has some form of it, but
+    // the mechanism differs — see the Depth control in each tab:
+    //   Hailo    async queue depth (capped by get_async_queue_size())
+    //   DeepX    RunAsync job depth
+    //   MemryX   connect_stream permit depth
+    //   Axelera  double_buffer — the card's ONLY buffering knob, so 1 or 2
+    //   Qualcomm engines in flight per NSP
+    // On a card offering both API modes, Sync forces it to 1 by definition.
+    int depth = 4;
     // Qualcomm: how many of the SoC's NSPs to claim. QCS9075 has 2, each with
     // its own VTCM, addressed as QNN device ids 0 and 1. Measured ~2.3x on
     // OSNet, so unlike Axelera's cores there is no reason to default below the

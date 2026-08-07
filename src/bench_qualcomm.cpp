@@ -92,7 +92,10 @@ public:
         if (!item.perf_mode.empty()) perf_mode_ = item.perf_mode;
         if (!item.qnn_backend.empty()) backend_ = item.qnn_backend;
         // Async depth is engines in flight per NSP; Sync is one by definition.
-        depth_ = mode_ == ApiMode::Async ? std::max(1, item.threads) : 1;
+        // Engines in flight per NSP. NOT gated on the API mode: QNN has no async
+        // graph-execute, so this card shows no mode radio and depth would
+        // otherwise be stuck at 1 — losing the measured ~1.45x it is worth.
+        depth_ = std::max(1, item.depth);
     }
 
     void load(const std::vector<BenchMember>& members) override {
@@ -232,8 +235,8 @@ private:
             out += dtype_name(d.data_type);
         }
         out += " · " + std::to_string(nsps_) + (nsps_ == 1 ? " NSP" : " NSPs");
-        if (mode_ == ApiMode::Async) {
-            out += " · " + std::to_string(depth_) + " in flight/NSP";
+        if (depth_ > 1) {
+            out += " · depth " + std::to_string(depth_) + "/NSP";
         }
         out += " · " + perf_mode_;
         return out;

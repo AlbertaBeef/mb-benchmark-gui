@@ -106,13 +106,11 @@ BenchEngine::~BenchEngine() {
     }
 }
 
-void BenchEngine::start(const std::vector<BenchItem>& items, double target_fps,
-                        ApiMode mode) {
+void BenchEngine::start(const std::vector<BenchItem>& items, double target_fps) {
     stop();
     if (items.empty()) return;
 
     target_fps_ = target_fps;
-    mode_ = mode;
     workers_.clear();
     series_.clear();
     workers_.reserve(items.size());
@@ -122,7 +120,7 @@ void BenchEngine::start(const std::vector<BenchItem>& items, double target_fps,
         auto w = std::make_unique<Worker>();
         w->item = it;
         w->target_fps = target_fps;
-        w->mode = mode;
+        w->mode = it.api_mode;
 
         Series s;
         s.label = it.label;

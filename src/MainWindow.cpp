@@ -526,26 +526,34 @@ void MainWindow::on_start_stop() {
     // start/stop, so successive runs can be compared against each other on the
     // same axis instead of each one wiping the last.
 
-    engine_.start(items, controls_->target_fps(), controls_->api_mode());
+    engine_.start(items, controls_->target_fps());
     controls_->set_running(true);
 
+    // Each card carries its own API mode now, so name them individually. A run
+    // that mixes modes is legitimate but is NOT a like-for-like comparison, and
+    // the status line has to say so rather than let the graphs imply one.
     std::string on;
+    bool mixed = false;
     for (const auto& it : items) {
         if (!on.empty()) on += ", ";
-        on += accel_name(it.accel);
+        on += std::string(accel_name(it.accel)) + " " + api_mode_name(it.api_mode);
+        if (it.api_mode != items.front().api_mode) mixed = true;
     }
     const double t = controls_->target_fps();
-    const ApiMode mode = controls_->api_mode();
     run_status_ = "Running <b>" + Glib::Markup::escape_text(items[0].label) +
                   "</b> on " + Glib::Markup::escape_text(on) + " · " +
-                  (t > 0 ? fmt_fps(t) + " fps target" : "max speed") + " · " +
-                  api_mode_name(mode);
+                  (t > 0 ? fmt_fps(t) + " fps target" : "max speed");
+    if (mixed) {
+        run_status_ +=
+            "\n<small><b>Mixed API modes</b> — these cards are not directly "
+            "comparable with each other.</small>";
+    }
 
-    // A card whose SDK has no native call for this mode must still say so —
+    // A card whose SDK has no native call for its mode must still say so —
     // this used to ride in the frame-rate legend, which no longer carries text.
     // Without it the chart would silently imply a parity the APIs don't offer.
     for (const auto& it : items) {
-        const char* emu = api_mode_note(it.accel, mode);
+        const char* emu = api_mode_note(it.accel, it.api_mode);
         if (!*emu) continue;
         run_status_ += "\n<small>" + Glib::Markup::escape_text(accel_name(it.accel)) +
                        ": " + Glib::Markup::escape_text(emu) + "</small>";

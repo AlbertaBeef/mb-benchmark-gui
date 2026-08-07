@@ -23,21 +23,21 @@
 
 #include "Catalog.h"
 
-// Which of a vendor's two inference APIs to drive.
-//
-// The four SDKs are not symmetric here, and the UI must not pretend otherwise:
-// Hailo and DeepX ship both a blocking call and a real async/job API; Axelera
-// exposes only a blocking `axr_run_model_instance` (its sole concurrency knob
-// is the runtime's own `double_buffer`); MemryX exposes only the streaming
-// callback API and has no blocking call at all. So in each mode exactly one
-// backend is emulated, and `api_mode_note()` says which.
-enum class ApiMode { Sync, Async };
+// `enum class ApiMode` lives in Catalog.h — BenchItem carries it per card.
 
 const char* api_mode_name(ApiMode m);
 // True when the backend implements `m` with a native SDK API.
 bool api_mode_is_native(Accel a, ApiMode m);
 // Short qualifier for the legend when a mode is not native, else "".
 const char* api_mode_note(Accel a, ApiMode m);
+// True when the vendor ships BOTH a blocking and an async inference API, i.e.
+// when offering the user a choice is honest. False for Axelera and Qualcomm,
+// whose runtimes have no async inference entry point at all.
+bool accel_has_both_api_modes(Accel a);
+// For a card with only one mode: the mode it always runs, and why, e.g.
+// "Sync only - the runtime has no async inference API". Empty when the card
+// has both.
+const char* accel_sole_api_mode_note(Accel a);
 
 // One backend's inference loop, minus the threading. Implemented per SDK in
 // bench_<backend>.cpp and compiled out when that SDK is absent.
@@ -102,7 +102,8 @@ public:
     ~BenchEngine();
 
     // Start one worker per item. target_fps <= 0 means "run flat out".
-    void start(const std::vector<BenchItem>& items, double target_fps, ApiMode mode);
+    // Each item carries its own `api_mode`; there is no run-wide mode.
+    void start(const std::vector<BenchItem>& items, double target_fps);
     // Signal every worker to stop. Returns **immediately** — the join happens
     // on a detached reaper thread. A worker only notices `stop_flag` between
     // frames, so joining here would freeze the caller until the device came
@@ -114,7 +115,6 @@ public:
     // is false, or a new run would race the old one for the device.
     bool stopping() const { return pending_stops_->load() > 0; }
     double target_fps() const { return target_fps_; }
-    ApiMode mode() const { return mode_; }
 
     // Refresh the per-series numbers. `dt_s` is the elapsed wall time since the
     // previous call; `watts[i]` is the power drawn by accelerator i right now
@@ -133,5 +133,4 @@ private:
     std::vector<Series> series_;
     bool active_ = false;
     double target_fps_ = 0.0;
-    ApiMode mode_ = ApiMode::Sync;
 };

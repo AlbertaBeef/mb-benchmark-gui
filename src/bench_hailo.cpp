@@ -218,7 +218,7 @@ public:
     }
 
     void configure(const BenchItem& item) override {
-        if (item.threads >= 1) want_depth_ = item.threads;
+        if (item.depth >= 1) want_depth_ = item.depth;
     }
 
     void load(const std::vector<BenchMember>& members) override {
@@ -247,7 +247,7 @@ public:
             st->configured = std::make_unique<ConfiguredInferModel>(
                 unwrap(st->model->configure(), "InferModel::configure"));
 
-            // The Threads control asks for a depth; HailoRT's own reported
+            // The Depth control asks for a depth; HailoRT's own reported
             // queue size is a hard ceiling, so take the smaller of the two.
             size_t depth = std::max<size_t>(1, static_cast<size_t>(want_depth_));
             if (auto q = st->configured->get_async_queue_size()) {
@@ -292,7 +292,7 @@ public:
                     describe_ = std::to_string(shape.height) + "x" +
                                 std::to_string(shape.width) + "x" +
                                 std::to_string(shape.features) + " uint8 · " +
-                                std::to_string(depth) + " in flight";
+                                "depth " + std::to_string(depth);
                 }
             }
             stages_.push_back(std::move(st));
@@ -390,7 +390,7 @@ private:
     std::unique_ptr<VDevice> device_;
     std::vector<std::unique_ptr<Stage>> stages_;
     std::string describe_;
-    // Requested in-flight depth (the Threads control). HailoRT's own reported
+    // Requested in-flight depth (the Depth control). HailoRT's own reported
     // async queue size still caps it — asking for more than the SDK will queue
     // would just fail at bind time.
     int want_depth_ = 4;

@@ -38,11 +38,15 @@ public:
     // Target frame rate, or <= 0 for "max speed".
     double target_fps() const;
 
-    // Which of the vendors' two inference APIs to drive.
-    ApiMode api_mode() const;
+    // Which inference API a given card should drive. Per card: the SDKs are not
+    // symmetric, so a single global choice offered modes that do not exist.
+    // Cards without both modes always report the one they have.
+    ApiMode api_mode(Accel a) const;
 
-    // How many frames each card keeps in flight in Async mode.
-    int threads() const;
+    // How many frames a given card keeps in flight. Per card: the mechanism
+    // differs per vendor and so does the useful range (Axelera's only knob is a
+    // boolean, so it tops out at 2).
+    int depth(Accel a) const;
 
     // How every graph's axis top should respond to its data.
     GraphArea::RangeMode range_mode() const;
@@ -87,6 +91,9 @@ private:
     // Grey out accelerators the selected subject has no compiled model for.
     void refresh_accel_sensitivity();
     void select_first_runnable();
+    // Depth means nothing on a card running Sync (one frame by definition), so
+    // grey that card's spin button when its own API radio says Sync.
+    void refresh_depth_sensitivity();
 
     const Catalog& catalog_;
 
@@ -96,7 +103,7 @@ private:
 
     Gtk::CheckButton max_speed_{"Max"};
     Gtk::SpinButton fps_spin_;
-    Gtk::SpinButton threads_spin_;   // in-flight depth per card (Async only)
+    Gtk::SpinButton* depth_spin_[kAccelCount] = {};  // one per tab
 
     // Graphs / Range. Max is the default: it is the behaviour the graphs have
     // had since the headroom rule landed, and the one that never clips.
@@ -110,9 +117,12 @@ private:
     Gtk::CheckButton* graph_accel_[kAccelCount] = {nullptr, nullptr, nullptr,
                                                    nullptr, nullptr};
 
-    // Labelled just "Sync"/"Async"; the adjacent "API" label supplies the noun.
-    Gtk::CheckButton sync_radio_{"Sync"};
-    Gtk::CheckButton async_radio_{"Async"};
+    // Per-card API radios, in Accel order. Only populated for cards where the
+    // vendor ships both a blocking and an async inference API
+    // (accel_has_both_api_modes()); the rest get a static label instead, so the
+    // UI never offers a mode the runtime does not have.
+    Gtk::CheckButton* api_sync_[kAccelCount] = {};
+    Gtk::CheckButton* api_async_[kAccelCount] = {};
 
     // Per-accelerator controls, one tab each. Empty scaffolding for now — the
     // enable/disable checkboxes live in the Inference frame, since they choose

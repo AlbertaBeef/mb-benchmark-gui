@@ -373,23 +373,61 @@ new addition here and has *not* been ported there yet.
 
 ## API modes (Sync / Async)
 
-The control panel switches every backend between a vendor's blocking call and
-its async/streaming one. **The five SDKs are not symmetric** — this was verified
-against the installed headers and exported symbols, not assumed:
+**The mode is per card, chosen in that card's tab — not once for the whole run.**
+`BenchItem::api_mode` carries it (`enum class ApiMode` lives in `Catalog.h`, not
+`Bench.h`, precisely so `BenchItem` can hold it); `BenchEngine::start()` takes no
+mode argument and each `Worker` uses its own item's. A run may therefore mix
+modes, which is legitimate but is **not** a like-for-like comparison — the status
+line says "Mixed API modes" when enabled cards disagree.
+
+The five SDKs are not symmetric. Verified 2026-08-04 against installed headers
+**and** `nm -D` on the shipped libraries, not assumed:
 
 | | Sync | Async |
 | --- | --- | --- |
-| Hailo | `InferVStreams::infer()` | `InferModel` → `run_async()` → `AsyncInferJob` (`hailo/infer_model.hpp`) |
+| Hailo | `InferVStreams::infer()` | `ConfiguredInferModel::run_async()` + `AsyncInferJob` |
 | DeepX | `InferenceEngine::Run()` | `RunAsync()` → jobId → `Wait()` |
+| MemryX | **`MxAcclMT::run()`** | `MxAccl::connect_stream()` |
 | Axelera | `axr_run_model_instance()` | **none exists** |
-| MemryX | **none exists** | `connect_stream(in_cb, out_cb)` + `start`/`stop` |
 | Qualcomm | `QnnGraph_execute()` | **none exists** |
 
-So in each mode some vendor is emulated, and the **status line** says which, via
-`api_mode_note()` (it was the frame-rate legend until that legend's text was
-dropped — if the status line is ever reworked, this must land somewhere). **Do
-not quietly present an emulated mode as equivalent** — that tag is the whole
-reason the toggle is honest. **Async is the default mode.**
+`accel_has_both_api_modes()` drives the UI: Hailo, DeepX and MemryX get radios;
+Axelera and Qualcomm get a static line from `accel_sole_api_mode_note()` instead,
+so the UI never offers a mode the runtime does not have. Neither switch has a
+`default:`, so `-Wswitch` catches a newly added `Accel` — unlike `make_runner()`,
+which does have one and will not warn.
+
+- **MemryX has both modes natively — the SDK, not the class.** An earlier version
+  of this file recorded "MemryX: none exists" for Sync and emulated it with a
+  permit counter at depth 1. That was wrong: `MxAccl` has no blocking call, but
+  **`MxAcclMT`** — same `MxAcclBase` parent, same constructor shape — provides
+  `run(in, out, model_id, stream_id, timeout)`, which blocks until the frame
+  completes. `bench_memryx.cpp` now has `MemryXSyncRunner` (MxAcclMT) alongside
+  `MemryXAsyncRunner` (MxAccl streams), the way `bench_hailo.cpp` has always been
+  split. Three things to know about it:
+  - **`MxAcclMT` has no `start()`/`stop()`** — construct, `run()`, destruct. Do
+    not go looking for the symmetric call; `MxAccl::stop()` is separately a
+    **deprecated no-op** in 2.2.5 (it links and does nothing).
+  - **The timeout must be finite.** `timeout = 0` blocks forever and the engine
+    only tests `stop_flag` *between* frames, so an infinite wait on a wedged MX3
+    would strand the worker. `kRunTimeoutMs` is 10 s and a timeout throws.
+  - The SDK documents `run()` as a synchronous *facade* over an async internal
+    pipeline, and the class serialises on a private mutex — so it is honest
+    one-frame-at-a-time throughput, but not a clean single-frame latency probe.
+- **Measured after the split** (ResNet-50, this host): Hailo 298.1 / 1217.2,
+  DeepX 384.0 / 1085.5, MemryX **259.9** / 1104.4 (sync / async). The MemryX sync
+  figure is new — the old emulated one is not comparable and should not be quoted
+  against it.
+- **Axelera really has no async API.** All 41 `axr_*` symbols enumerated; exactly
+  one is inference and it blocks. The 233 `ze*` symbols are the statically linked
+  oneAPI Level Zero loader — headers, pkg-config and CMake are all shipped, but it
+  is model-agnostic, so driving inference through it means reimplementing
+  `axr_load_model` against internal types. "Async" there sets the runtime's own
+  `double_buffer=1` property, worth ~7-18%.
+- **Qualcomm's "none exists" could not be re-verified here.** It was checked on
+  the aarch64 IQ-9075; the QNN headers are absent on x86_64, where the backend is
+  not even compiled. The shim contains no `executeAsync` reference anywhere,
+  which is as far as an x86 host can confirm it.
 
 - **Axelera concurrency is AIPU cores, not async and not host threads.** A model
   claims cores via `num_sub_devices` on `axr_device_connect()` — that is the
@@ -428,6 +466,51 @@ reason the toggle is honest. **Async is the default mode.**
   and one sub-device each.** That is why the runner sets `instances_ = cores_`
   and gives every instance its own connection.
 
+  **The prebuilt zip ships four compilations of every model — 1, 2, 3 and 4
+  cores — and taking the 1-core one is correct.** `config/models.conf` has
+  `strip = build/%m/%m/1`, which looked like an oversight and is not. The
+  compiler moves constants from DDR into L2 as the core count rises:
+
+  | build | kernel_function*.c | L2 const | DDR const |
+  | --- | --- | --- | --- |
+  | 1-core | 1 | 7.6 MB | 20 MB |
+  | 2-core | 2 | 16 MB | 12 MB |
+  | 3-core | 3 | 23 MB | 4.3 MB |
+  | 4-core | 4 | 28 MB | none |
+
+  That looks like it should be faster, and for *latency* it is — one frame is
+  spread across N cores. For **throughput it is worse**, measured 2026-08-04 on
+  ResNet-50 with both configurations occupying exactly two cores (confirmed by
+  sampling `axcmd --clock-all-actual` mid-run, `aicore0+1` at 800 MHz in both):
+
+  | | fps |
+  | --- | ---: |
+  | 2-core build, `num_sub_devices=2`, 1 instance | 317.6 |
+  | **1-core build, `num_sub_devices=1`, 2 instances** | **574.0** |
+
+  1.81x in favour of N independent instances. The 2-core build on two cores is
+  even slower than the 1-core build on *one* (358.7). Don't "fix" the strip glob.
+
+  **Scaling of the shipped arrangement** (1-core build, one connection and one
+  sub-device per instance), same session:
+
+  | instances / cores busy | 1 | 2 | 3 | 4 |
+  | --- | ---: | ---: | ---: | ---: |
+  | fps | 358.7 | 574.0 | 658.6 | 694.9 |
+
+  Strongly sublinear — 1.94x for 4x the cores, saturating around three. That is
+  a property of the card, not of this runner.
+
+  **The vendor's 2054 fps on ResNet-50 remains unexplained**, and it is a real
+  measurement: it comes from Voyager's `End2EndTracer`, which reports
+  `1 / mean(inter-frame interval)` with **no multiplier** (unlike `AipuTracer` /
+  `HostTracer`, which do multiply by core count — don't confuse the two, they
+  live in different modules with the same class names). Ruled out so far: a
+  second API, batching (both builds are batch 1), and the multi-core builds. The
+  untested difference is `--enable-opencl` with real video streams, where the
+  pipeline may feed the NPU through **dmabuf** — `input_dmabuf` / `output_dmabuf`
+  are real instance properties we do not use.
+
   The cold-card race is handled by *ordering*, not by avoiding connections: the
   **first** connect is made alone and allowed to complete (it is the one that
   uploads the 3.8 MB firmware ELF), and only then are the rest opened.
@@ -435,7 +518,7 @@ reason the toggle is honest. **Async is the default mode.**
   exists in the `mxa` module and nowhere in `memx.h` or `MxAccl`, so
   `configure()` shells out to the venv interpreter once at load. ~4 s of Python
   startup, alongside model loading, never in the timed loop.
-- **Axelera really has no async API.** 38 `axr_*` entry points, exactly one is
+- **Axelera really has no async API.** 41 `axr_*` entry points, exactly one is
   inference, and it blocks. The `zeCommandQueue*` symbols in `libaxruntime.so`
   are Level Zero internals (the runtime is built on oneAPI L0), not public API.
   "Async" there sets the runtime's own `double_buffer=1` property — worth only
@@ -494,18 +577,53 @@ reason the toggle is honest. **Async is the default mode.**
 - **`run_frame()` must retire exactly one frame in both modes.** An async runner
   tops its pipeline up and *then* blocks for one completion, so the engine's
   frame counter needs no special case. Keep that contract.
-- **Async depth is the `Threads` control** (1-8, default 4), reaching the runners
-  as `BenchItem::threads`. It was three hardcoded constants before. Per backend:
-  DeepX's `RunAsync` job depth, MemryX's `connect_stream` depth, and Hailo's
-  requested queue depth — Hailo takes `min(requested, get_async_queue_size())`,
-  because asking for more than HailoRT will queue fails at bind time; Qualcomm
-  reads it as engines in flight **per NSP**. **Axelera ignores it entirely**: no
-  async API, so its knob is AIPU cores. The control is greyed out in Sync mode,
-  where the depth is 1 by definition.
+- **Depth is per card, in that card's tab** (`BenchItem::depth`, was a single
+  global "Threads" control). Every backend has some form of frames-in-flight, but
+  the mechanism and the useful range differ, so the range is per card:
 
-  Measured on DeepX/ResNet-50: 1 → 401.5 fps, 4 → 1077.9, 8 → 1051.1. Depth pays
-  until the device saturates and nothing after, which is why 4 is the default and
-  why the old hardcoded 4 was a reasonable guess.
+  | card | what depth sets | range | gated on API mode? |
+  | --- | --- | --- | --- |
+  | Hailo | requested async queue depth, `min(requested, get_async_queue_size())` | 1-8 | yes — Sync forces 1 |
+  | DeepX | outstanding `RunAsync` jobs | 1-8 | yes — Sync forces 1 |
+  | MemryX | `connect_stream` permit depth | 1-8 | yes — Sync uses `MxAcclMT::run()` |
+  | Axelera | `double_buffer` — a **boolean**, so 2 is as deep as it goes | 1-2 | **no** |
+  | Qualcomm | engines in flight per NSP, one host thread each | 1-8 | **no** |
+
+  **Axelera's 1-2 is not an arbitrary cap — 2 is the ceiling the API has.**
+  Verified 2026-08-04 against the shipped library, because "why not 1-8?" is an
+  obvious question:
+  - The runtime's own log string is `' has depth=<n>, overriding to depth=2 for
+    double buffering.`, next to `axr::ze_utils::LockstepExecutor::
+    get_pipeline_depth()`. So double buffering *is* depth 2, in its own words.
+  - `depth` is **internal, not settable**. Passing `depth=4` to
+    `axr_load_model_instance` fails with `Invalid properties: Unknown property
+    key: depth` — the same error as a made-up key. It appears in the binary only
+    as that log message and the executor's accessor.
+  - `double_buffer` is effectively boolean: `double_buffer=4` measured 379.7 fps
+    against `double_buffer=1`'s 379.6 — the same run, because any truthy value
+    just turns it on.
+
+  So a 1-8 range would have 3..8 silently behave as 2, and a run could later be
+  recorded as "Axelera at depth 8" when no such thing happened. Measured ladder,
+  one core: no property 362.2 fps, `double_buffer=1` 379.6. At two cores:
+  573.7 → 589.6.
+
+  **The two sync-only cards deliberately ignore the API mode here.** Axelera and
+  Qualcomm show no mode radios (they have no async API), so gating depth on
+  "Async" would leave it permanently at 1 and silently drop the concurrency each
+  one *does* have — Axelera's double buffering and Qualcomm's measured ~1.45x
+  host pipelining. Both regressed exactly that way when the mode control first
+  moved into the tabs; depth is now independent for them.
+
+  A card with both modes reports depth 1 in Sync regardless of where its spin
+  button sits, because that is what Sync *is*, and its spin button greys out.
+
+  Measured on ResNet-50: DeepX 1 → 402.2 fps, 4 → 1085.1, 8 → 1061.6 — depth pays
+  until the device saturates and nothing after, which is why 4 is the default.
+  Axelera 1 → 573.7, 2 → 589.6.
+
+  `describe()` reports it uniformly as `· depth N`. It used to say
+  `· N in flight`, and Axelera said `· double-buffered`; both are gone.
 
 ## Measurement choices (don't quietly change these)
 
@@ -905,11 +1023,11 @@ gains 4× — the medium model is NPU-compute-bound, so there is little transfer
 latency left to hide. A small async gain is a property of the workload, not a
 sign the async path is broken.
 
-Axelera ResNet-50 scaled 437 / 671 / 805 fps over what the old UI called
-1 / 2 / 4 "streams" — which were really **1 / 2 / 4 AIPU cores**, since the core
-count was derived from the stream count. Anything quoting a one-core Axelera
-number is measuring a quarter of the card. These figures predate the cores
-rework and have not been re-measured.
+Axelera ResNet-50, re-measured 2026-08-04 through a direct libaxruntime probe
+(one connection and one sub-device per instance): **358.7 / 574.0 / 658.6 /
+694.9 fps** at 1 / 2 / 3 / 4 cores. The older 437 / 671 / 805 figures predate the
+cores rework and were taken differently; prefer these. Anything quoting a
+one-core Axelera number is measuring a quarter of the card.
 
 The People Tracking pipeline roughly halves the YOLOv8s figures. Note DeepX
 *leads* on ResNet-50 sync while trailing badly on YOLOv8s sync — its weak

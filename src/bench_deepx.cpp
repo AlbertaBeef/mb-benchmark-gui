@@ -23,7 +23,7 @@ public:
     explicit DeepXBenchRunner(ApiMode mode) : mode_(mode) {}
 
     void configure(const BenchItem& item) override {
-        if (item.threads >= 1) async_depth_ = static_cast<size_t>(item.threads);
+        if (item.depth >= 1) async_depth_ = static_cast<size_t>(item.depth);
     }
 
     void load(const std::vector<BenchMember>& members) override {
@@ -51,7 +51,7 @@ public:
                     }
                     describe_ = shape + " uint8";
                     if (mode_ == ApiMode::Async)
-                        describe_ += " · " + std::to_string(async_depth_) + " in flight";
+                        describe_ += " · depth " + std::to_string(async_depth_);
                 }
             }
             stages_.push_back(std::move(st));
@@ -91,7 +91,7 @@ private:
     // Enough outstanding jobs to keep the NPU fed without turning the figure
     // into a latency-hiding contest; matches a realistic pipeline depth.
     static constexpr size_t kDefaultAsyncDepth = 4;
-    size_t async_depth_ = kDefaultAsyncDepth;  // set from the Threads control
+    size_t async_depth_ = kDefaultAsyncDepth;  // set from the Depth control
     ApiMode mode_ = ApiMode::Sync;
 
     std::vector<std::unique_ptr<Stage>> stages_;

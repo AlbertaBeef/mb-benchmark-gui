@@ -65,6 +65,11 @@ public:
 
     void configure(const BenchItem& item) override {
         cores_ = std::max(1, std::min(4, item.cores));
+        // Depth is this card's only buffering knob: `double_buffer` is a boolean,
+        // so 2 is as deep as the Metis goes. It is NOT gated on the API mode —
+        // libaxruntime has no async API, so there is no mode radio here and
+        // depth would otherwise be unreachable.
+        depth_ = std::max(1, std::min(2, item.depth));
         // One model instance occupies exactly ONE AI core, whatever
         // num_sub_devices the connection asked for. Measured 2026-08-04 with the
         // clocks sampled mid-run: cores=4 with a single instance leaves
@@ -177,7 +182,7 @@ public:
                 }
                 describe_ = shape + " int8 · " + std::to_string(instances_) +
                             (instances_ == 1 ? " core" : " cores");
-                if (mode_ == ApiMode::Async) describe_ += " · double-buffered";
+                if (depth_ > 1) describe_ += " · depth " + std::to_string(depth_);
             }
             stages_.push_back(std::move(st));
         }
@@ -325,7 +330,7 @@ private:
     // and the status line says so rather than implying parity.
     axrModelInstance* make_instance(axrConnection* conn, Stage& st) {
         axrProperties* props = nullptr;
-        if (mode_ == ApiMode::Async) {
+        if (depth_ > 1) {
             props = axr_create_properties(ctx_, "double_buffer=1");
         }
         axrModelInstance* mi = axr_load_model_instance(conn, st.model, props);
@@ -337,7 +342,8 @@ private:
     axrDeviceInfo device_{};
     std::vector<std::unique_ptr<Stage>> stages_;
     std::string describe_;
-    ApiMode mode_ = ApiMode::Sync;
+    ApiMode mode_ = ApiMode::Sync;   // no async API; kept for make_runner's signature
+    int depth_ = 2;                  // double_buffer on by default
     int cores_ = 4;
     int instances_ = 1;
 

@@ -113,8 +113,8 @@ anything else (unmapped bridges, the board ambient sensor) falls back to a
 cycling palette.
 
 The legends are a single compact row of swatches and values and carry no
-explanatory text; what is running, which cards are emulated in the current API
-mode, and any load failure all go to the **status line** under the Start button
+explanatory text; what is running, each card's API mode, whether a run mixes
+modes, and any load failure all go to the **status line** under the Start button
 — so a card sitting at 0 always has a reason visible somewhere.
 
 ## Supported accelerators
@@ -124,7 +124,7 @@ mode, and any load failure all go to the **status line** under the Start button
 | **Hailo-8** | `InferVStreams::infer()` | `InferModel::run_async()` | firmware `POW` + INA228 | `TS0` / `TS1`, clock `CLK` |
 | **DeepX M1** | `InferenceEngine::Run()` | `RunAsync()` / `Wait()` | INA228 (no on-die sensor) | `T0`–`T2`, clock `C0`–`C2` |
 | **Axelera Metis** | `axr_run_model_instance()` | **none** — `double_buffer` only | INA228 | `SYS` / `AI0`–`AI3` (needs a live collector), clock `C0`–`C3` |
-| **MemryX MX3** | **none** — 1 frame in flight | `connect_stream()` | MemryX SDK + INA228 | `T0`–`T3`, clock `C0`–`C3` |
+| **MemryX MX3** | `MxAcclMT::run()` | `MxAccl::connect_stream()` | MemryX SDK + INA228 | `T0`–`T3`, clock `C0`–`C3` |
 | **Qualcomm Hexagon NSP** | `QnnGraph_execute()` | **none** — host threads per NSP | **none exists** — see below | `N0-0`–`N1-2` from the TSENS zones, no clock |
 
 The first four are M.2 cards; the fifth is the **SoC-integrated** NPU on a
@@ -168,52 +168,80 @@ overlay is the way to get real watts here.
 
 ## Sync API vs Async API
 
-The **Inference API** control switches every backend between a vendor's blocking
-call and its asynchronous/streaming one. This is the single biggest lever on the
-numbers — far bigger than the model choice — so it is worth understanding what
-each mode actually drives.
+Each card chooses its own API mode, in **its own tab** — there is no run-wide
+setting. This is the single biggest lever on the numbers, far bigger than the
+model choice, so it is worth understanding what each mode actually drives.
 
-The four SDKs are **not symmetric**, and the UI does not pretend otherwise. In
-each mode exactly one vendor has no native equivalent and is emulated; the
-status line under the Start button names that card and how, e.g.
-`Axelera: double-buffered · no async API`.
+The five SDKs are **not symmetric**, and the UI does not pretend otherwise:
 
-**Async is the default**, because it is what the hardware can actually do.
+| Card | Sync | Async | Tab shows |
+| ---- | ---- | ----- | --------- |
+| **Hailo-8** | `InferVStreams::infer()` | `run_async()` + `AsyncInferJob` | Sync / Async radios |
+| **DeepX M1** | `InferenceEngine::Run()` | `RunAsync()` → `Wait()` | Sync / Async radios |
+| **MemryX MX3** | `MxAcclMT::run()` | `MxAccl::connect_stream()` | Sync / Async radios |
+| **Axelera Metis** | `axr_run_model_instance()` | **none exists** | *"Sync only"* |
+| **Qualcomm NSP** | `QnnGraph_execute()` | **none exists** | *"Sync only"* |
+
+Cards whose runtime has only one inference API get a static line naming it
+rather than radios, so the UI never offers a mode that does not exist. Every
+mode the UI *does* offer is backed by a real vendor API — nothing is emulated
+any more. (`api_mode_note()` still exists for the emulated case and is exercised
+by the headless drivers, which can set any mode on any card; it no longer fires
+from the GUI.)
+
+**A run may mix modes**, which is useful (Hailo in Sync beside DeepX in Async)
+but is not a like-for-like comparison. The status line flags it: *"Mixed API
+modes — these cards are not directly comparable with each other."*
+
+**Async is the default** on every card that offers the choice, because it is
+what the hardware can actually do. Axelera and Qualcomm have no choice to make —
+they always run their blocking call, with **Depth** as their concurrency knob.
 
 - **Sync** — one frame at a time, waiting for each. What a latency-bound
-  real-time pipeline does. Native on Hailo, DeepX and Axelera. MemryX has no
-  blocking call at all, so it is emulated by holding exactly one frame in flight.
+  real-time pipeline does. Native everywhere: Hailo, DeepX, Axelera, Qualcomm,
+  and MemryX via `MxAcclMT` (a *different class* from the streaming `MxAccl` —
+  earlier versions of this app wrongly reported MemryX as having no blocking
+  call and emulated one).
 - **Async** — several frames outstanding. Peak throughput. Native on Hailo
-  (`run_async` + `AsyncInferJob`), DeepX (`RunAsync`/`Wait`, 4 jobs deep) and
-  MemryX (`connect_stream`, 4 deep). Axelera's runtime exposes **no async
-  inference API whatsoever** — 38 `axr_*` entry points, exactly one of which is
-  inference, and it blocks — so "async" there means enabling the runtime's own
+  (`run_async` + `AsyncInferJob`), DeepX (`RunAsync`/`Wait`) and
+  MemryX (`connect_stream`, depth from the Depth control). Axelera's runtime
+  exposes **no async inference API whatsoever** — 41 `axr_*` entry points,
+  exactly one of which is inference, and it blocks — so overlap there comes from
+  the runtime's own
   `double_buffer` property, which is a much weaker mechanism.
 
-### Threads
+### Depth
 
-**Threads** (1–8, default 4) sets how many frames each card keeps outstanding in
-Async mode. It is greyed out in Sync, where the depth is 1 by definition, and
-locked while a run is in flight.
+**Depth** is per card, in that card's tab — how many frames it keeps in flight.
+Every backend has some form of it, but the mechanism differs and so does the
+useful range:
 
-| Card | What it sets |
-| ---- | ------------ |
-| **DeepX M1** | `RunAsync` job depth |
-| **MemryX MX3** | `connect_stream` depth |
-| **Hailo-8** | requested async queue depth, **capped by HailoRT's own reported queue size** — asking for more than the SDK will queue fails at bind time |
-| **Axelera Metis** | nothing: it has no async API at all. Use **AIPU cores** instead |
+| Card | What depth sets | Range |
+| ---- | --------------- | ----- |
+| **Hailo-8** | requested async queue depth, capped by HailoRT's own reported queue size | 1–8 |
+| **DeepX M1** | outstanding `RunAsync` jobs | 1–8 |
+| **MemryX MX3** | `connect_stream` permit depth | 1–8 |
+| **Axelera Metis** | `double_buffer` — 2 is the ceiling the API has, see below | 1–2 |
+| **Qualcomm NSP** | engines in flight per NSP, one host thread each | 1–8 |
 
-Depth buys a lot up to the point the device saturates, and nothing after.
-Measured on DeepX with ResNet-50:
+Axelera's 1–2 is the API's own limit, not a chosen one: the runtime logs
+*"overriding to depth=2 for double buffering"*, an explicit `depth=4` property is
+rejected with `Unknown property key: depth`, and `double_buffer=4` measures the
+same as `double_buffer=1`. Anything above 2 would silently be 2.
 
-| Threads | fps |
-| ------: | --: |
-| 1 | 401.5 |
-| 4 | **1077.9** |
-| 8 | 1051.1 |
+On a card that offers both API modes, depth greys out in **Sync** — one frame at
+a time is what Sync means. On the two cards with no async API (Axelera,
+Qualcomm) depth is their *only* concurrency knob besides cores/NSPs, so it stays
+live.
 
-4 is the default because it is where all three async-capable cards level off; the
-control is there for checking that, not because 8 is better.
+Depth buys a lot until the device saturates and nothing after. Measured on
+ResNet-50:
+
+| DeepX depth | fps | | Axelera depth | fps |
+| ----------: | --: | --- | ----------: | --: |
+| 1 | 402.2 | | 1 | 573.7 |
+| 4 | **1085.1** | | 2 | **589.6** |
+| 8 | 1061.6 | | | |
 
 Measured on this host, max speed:
 
@@ -221,13 +249,13 @@ Measured on this host, max speed:
 | ------- | ---: | ----: | --- |
 | Hailo-8 | 123.0 | **490.7** | 4.0× |
 | DeepX M1 | 32.2 | **148.1** | 4.6× |
-| Axelera Metis | 131.2 | 154.3 | 1.2× *(double-buffered)* |
+| Axelera Metis | 131.2 | 154.3 | 1.2× *(depth 1 → 2)* |
 
 | ResNet-50 | Sync | Async | |
 | --------- | ---: | ----: | --- |
 | Hailo-8 | 297.3 | **1370.1** | 4.6× |
 | DeepX M1 | 392.9 | **1086.7** | 2.8× |
-| Axelera Metis | 352.1 | 376.1 | 1.1× *(double-buffered)* |
+| Axelera Metis | 352.1 | 376.1 | 1.1× *(depth 1 → 2)* |
 
 Two things worth drawing out. DeepX's poor *sync* YOLOv8s figure is an artifact
 of the mode, not the card — DXRT is built around its job queue, and in async it
@@ -240,8 +268,15 @@ answers to different questions.
 
 ## Per-accelerator controls
 
-Below the `Inference` frame is a tab per card, for settings that configure the
-*device* rather than the run:
+Below the `Inference` frame is a tab per card. Every tab leads with the two
+controls each card has, then whatever else that device exposes:
+
+- **API** — `Sync` / `Async` radios where the vendor ships both, a static line
+  naming the only mode where it does not. See
+  [Sync API vs Async API](#sync-api-vs-async-api).
+- **Depth** — frames in flight; range and meaning are per card, see
+  [Depth](#depth). Greys out on a card running Sync, where the depth is 1 by
+  definition.
 
 - **MemryX — Core frequency** (200–850 MHz, default 600). 600 is the 14 TOPS
   mode, 850 the 20 TOPS one. Applied before the run starts. There is no C++
@@ -275,13 +310,27 @@ divides the card between its stages, so the request is capped at
 
 A core is lit by a **model instance**, and an instance occupies exactly one core
 regardless of what its connection asked for — so *N* cores means *N* connections
-with one instance each. Measured on ResNet-50 (async), clocks sampled mid-run:
+with one instance each. Measured on ResNet-50, clocks sampled mid-run:
 
 | connections × instances | aicore0..3 during run | fps |
 | --- | --- | --- |
 | 1 × 1, asking for 4 cores | `800 · 50 · 50 · 50` | 375.6 |
 | 1 × 4 on one connection | collides — `Failed to wait for MSI` | 201.7 |
 | **4 × 1** | **`800 · 800 · 800 · 800`** | **694.9** |
+
+Scaling is strongly sublinear — 358.7 / 574.0 / 658.6 / 694.9 fps at 1 / 2 / 3 /
+4 cores, i.e. 1.94× for four times the silicon, saturating around three. That is
+the card, not the harness.
+
+**On the vendor's multi-core builds.** Axelera's prebuilt zip ships four
+compilations of each model (1, 2, 3 and 4 cores); the compiler moves constants
+from DDR into L2 as the count rises, from 7.6 MB L2 / 20 MB DDR at one core to
+28 MB L2 and no DDR at four. We deliberately use the **1-core** build. Those
+builds spread a *single* frame across cores, which lowers latency but costs
+throughput: at two cores occupied, the 2-core build managed **317.6 fps** against
+**574.0** for two instances of the 1-core build — and it is slower than the
+1-core build on a single core. For a throughput benchmark, N independent
+instances is the right shape.
 
 The control was previously labelled "Streams" and the core count was *derived*
 from it. The mechanism was right but the name hid it, and the first connect on a

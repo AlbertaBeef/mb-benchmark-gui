@@ -17,6 +17,44 @@ constexpr int kMaxFps = 1000;
 // the cards this subject can run on; one still downloading is shown in
 // parentheses so a half-populated models tree reads as "not yet" rather than
 // "not supported".
+namespace {
+
+// Depth means something different on every card — say which, at the control.
+const char* depth_tooltip(Accel a) {
+    switch (a) {
+        case Accel::Hailo:
+            return "Frames in flight: the requested async queue depth. HailoRT's "
+                   "own reported queue size is a hard ceiling, so asking for "
+                   "more than it will queue is clamped, not an error.\n\n"
+                   "Greyed out in Sync, where the depth is 1 by definition.";
+        case Accel::DeepX:
+            return "Frames in flight: outstanding RunAsync jobs. Measured on "
+                   "ResNet-50: 1 -> 401 fps, 4 -> 1078, 8 -> 1051 — depth pays "
+                   "until the device saturates and nothing after.\n\n"
+                   "Greyed out in Sync, where the depth is 1 by definition.";
+        case Accel::MemryX:
+            return "Frames in flight on the connect_stream pipeline, applied as "
+                   "a permit count in the input callback.\n\n"
+                   "Greyed out in Sync, which uses the blocking MxAcclMT::run() "
+                   "instead — one frame by definition.";
+        case Accel::Axelera:
+            return "The Metis's only buffering knob is the runtime's boolean "
+                   "double_buffer property, which overlaps the next frame's DMA "
+                   "with the current run — so depth is 1 (off) or 2 (on), and "
+                   "there is nothing deeper to ask for.\n\n"
+                   "Always live: libaxruntime has no async API, so this is the "
+                   "card's only concurrency control besides AIPU cores.";
+        case Accel::Qualcomm:
+            return "Engines in flight per NSP, each on its own host thread. "
+                   "Measured on OSNet: 1.43x at depth 4, saturating by 8.\n\n"
+                   "Always live: QNN has no async graph-execute, so this is "
+                   "host-side pipelining and the card's concurrency knob.";
+    }
+    return "";
+}
+
+}  // namespace
+
 class ControlPanel::SubjectRow : public Gtk::ListBoxRow {
 public:
     explicit SubjectRow(const BenchSubject& s) : subject(&s) {
@@ -127,47 +165,6 @@ ControlPanel::ControlPanel(const Catalog& catalog)
             l->set_width_chars(kLabelChars);
             return l;
         };
-
-        // --- API ---
-        auto* api_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
-        api_row->append(*row_label("API"));
-        async_radio_.set_group(sync_radio_);
-        // Async by default: it is what the hardware can actually do (4-5x on
-        // Hailo and DeepX), so it is the fairer first impression of a card.
-        async_radio_.set_active(true);
-        sync_radio_.set_tooltip_text(
-            "One frame at a time, waiting for each — what a latency-bound "
-            "real-time pipeline does. Native on Hailo, DeepX, Axelera and "
-            "Qualcomm; emulated on MemryX, whose SDK has no blocking call.");
-        async_radio_.set_tooltip_text(
-            "Keep several frames in flight — peak throughput. Native on Hailo "
-            "(run_async), DeepX (RunAsync/Wait) and MemryX (connect_stream). "
-            "Axelera has no async API, so it falls back to the runtime's own "
-            "double buffering; Qualcomm has none either, so it keeps several "
-            "engines in flight per NSP on host threads.");
-        api_row->append(sync_radio_);
-        api_row->append(async_radio_);
-        box->append(*api_row);
-
-        // --- threads (in-flight depth) ---
-        // Sits under API because it only means anything in Async mode: it is the
-        // number of frames each card keeps outstanding. Greyed out in Sync,
-        // where the depth is 1 by definition.
-        auto* threads_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
-        threads_row->append(*row_label("Threads"));
-        threads_spin_.set_adjustment(Gtk::Adjustment::create(4, 1, 8, 1, 1));
-        threads_spin_.set_numeric(true);
-        threads_spin_.set_tooltip_text(
-            "How many frames each card keeps in flight in Async mode — DeepX "
-            "job depth, MemryX stream depth, Hailo's async queue (its own "
-            "reported queue size is the ceiling), Qualcomm engines per NSP. "
-            "Axelera has no async API, so "
-            "this does not apply to it; use its AIPU cores control instead.\n\n"
-            "Ignored in Sync mode, where exactly one frame is outstanding.");
-        threads_row->append(threads_spin_);
-        box->append(*threads_row);
-        conns_.push_back(sync_radio_.signal_toggled().connect(
-            [this] { threads_spin_.set_sensitive(!sync_radio_.get_active()); }));
 
         // --- frame rate ---
         auto* rate_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
@@ -316,8 +313,69 @@ ControlPanel::ControlPanel(const Catalog& catalog)
             note->set_wrap(true);
             note->add_css_class("dim-label");
 
-            // Per-card controls. Only two cards have anything to configure
-            // today; the rest keep the placeholder note alone.
+            // API mode, first row of every tab. Radios where the vendor ships
+            // both a blocking and an async inference API; a plain label where it
+            // ships only one, so the UI never offers a mode that does not exist.
+            {
+                auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+                auto* lbl = Gtk::make_managed<Gtk::Label>("API");
+                lbl->set_xalign(0.0);
+                row->append(*lbl);
+                if (accel_has_both_api_modes(a)) {
+                    auto* sy = Gtk::make_managed<Gtk::CheckButton>("Sync");
+                    auto* as = Gtk::make_managed<Gtk::CheckButton>("Async");
+                    as->set_group(*sy);
+                    as->set_active(true);   // async is the default everywhere
+                    sy->set_tooltip_text(
+                        "One frame at a time, waiting for each — what a "
+                        "latency-bound real-time pipeline does.");
+                    as->set_tooltip_text(
+                        "Several frames in flight — peak throughput. Depth is "
+                        "the Depth control just below.");
+                    row->append(*sy);
+                    row->append(*as);
+                    api_sync_[i] = sy;
+                    api_async_[i] = as;
+                    for (auto* b : {sy, as}) {
+                        conns_.push_back(b->signal_toggled().connect(
+                            [this] { refresh_depth_sensitivity(); }));
+                    }
+                } else {
+                    auto* only = Gtk::make_managed<Gtk::Label>(
+                        accel_sole_api_mode_note(a));
+                    only->set_xalign(0.0);
+                    only->set_wrap(true);
+                    only->add_css_class("dim-label");
+                    row->append(*only);
+                }
+                page->append(*row);
+            }
+
+            // Depth — every backend has some form of it, but the mechanism and
+            // the useful range differ, so the range is per card rather than one
+            // shared 1-8. On a card with both API modes it is greyed out in
+            // Sync, where the depth is 1 by definition; on a card with only a
+            // blocking API it is that card's *only* concurrency knob and stays
+            // live (Axelera's double_buffer, Qualcomm's engines per NSP).
+            {
+                auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+                auto* lbl = Gtk::make_managed<Gtk::Label>("Depth");
+                lbl->set_xalign(0.0);
+                row->append(*lbl);
+                auto* sp = Gtk::make_managed<Gtk::SpinButton>();
+                const int max_depth = (a == Accel::Axelera) ? 2 : 8;
+                const int def_depth = (a == Accel::Axelera) ? 2 : 4;
+                sp->set_adjustment(
+                    Gtk::Adjustment::create(def_depth, 1, max_depth, 1, 1));
+                sp->set_numeric(true);
+                sp->set_tooltip_text(depth_tooltip(a));
+                row->append(*sp);
+                depth_spin_[i] = sp;
+                page->append(*row);
+            }
+
+            // Per-card controls. Only some cards have anything else to
+            // configure; the rest keep the placeholder note alone.
             if (a == Accel::MemryX) {
                 auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
                 auto* lbl = Gtk::make_managed<Gtk::Label>("Core frequency");
@@ -543,7 +601,8 @@ std::vector<BenchItem> ControlPanel::selection() const {
         it.accel = a;
         it.members = s->members[i];
         if (a == Accel::MemryX) it.freq_mhz = memryx_freq_mhz();
-        it.threads = threads();
+        it.depth = depth(a);
+        it.api_mode = api_mode(a);
         if (a == Accel::Axelera) it.cores = axelera_cores();
         if (a == Accel::Qualcomm) {
             it.nsps = qualcomm_nsps();
@@ -559,8 +618,27 @@ double ControlPanel::target_fps() const {
     return max_speed_.get_active() ? 0.0 : fps_spin_.get_value();
 }
 
-ApiMode ControlPanel::api_mode() const {
-    return async_radio_.get_active() ? ApiMode::Async : ApiMode::Sync;
+ApiMode ControlPanel::api_mode(Accel a) const {
+    const int i = accel_index(a);
+    // A card with only one mode always reports it, whatever the caller asked.
+    if (!accel_has_both_api_modes(a))
+        return api_mode_is_native(a, ApiMode::Sync) ? ApiMode::Sync : ApiMode::Async;
+    if (i >= 0 && i < kAccelCount && api_sync_[i] && api_sync_[i]->get_active())
+        return ApiMode::Sync;
+    return ApiMode::Async;
+}
+
+// Depth is meaningless on a card running Sync (one frame by definition), so
+// each card's spin button follows its own API radio.
+void ControlPanel::refresh_depth_sensitivity() {
+    for (int i = 0; i < kAccelCount; ++i) {
+        if (!depth_spin_[i]) continue;
+        const Accel a = accel_at(i);
+        // Live unless this card is running Sync with a real choice of modes.
+        const bool meaningful =
+            !accel_has_both_api_modes(a) || api_mode(a) == ApiMode::Async;
+        depth_spin_[i]->set_sensitive(!running_ && meaningful);
+    }
 }
 
 int ControlPanel::memryx_freq_mhz() const {
@@ -602,8 +680,13 @@ unsigned ControlPanel::graph_accel_mask() const {
     return m;
 }
 
-int ControlPanel::threads() const {
-    return static_cast<int>(threads_spin_.get_value());
+int ControlPanel::depth(Accel a) const {
+    const int i = accel_index(a);
+    if (i < 0 || i >= kAccelCount || !depth_spin_[i]) return 1;
+    // Sync means exactly one frame outstanding — that is what Sync *is* — so a
+    // dual-mode card reports 1 regardless of where its spin button sits.
+    if (accel_has_both_api_modes(a) && api_mode(a) == ApiMode::Sync) return 1;
+    return static_cast<int>(depth_spin_[i]->get_value());
 }
 
 int ControlPanel::axelera_cores() const {
@@ -616,8 +699,12 @@ void ControlPanel::set_running(bool running) {
     run_button_.remove_css_class(running ? "suggested-action" : "destructive-action");
     run_button_.add_css_class(running ? "destructive-action" : "suggested-action");
     notebook_.set_sensitive(!running);
-    sync_radio_.set_sensitive(!running);
-    async_radio_.set_sensitive(!running);
+    // Per-card API radios: lock them all while a run is in flight, same as the
+    // other per-card settings.
+    for (int i = 0; i < kAccelCount; ++i) {
+        if (api_sync_[i]) api_sync_[i]->set_sensitive(!running);
+        if (api_async_[i]) api_async_[i]->set_sensitive(!running);
+    }
     max_speed_.set_sensitive(!running);
     fps_spin_.set_sensitive(!running && !max_speed_.get_active());
     memryx_freq_.set_sensitive(!running);
@@ -625,7 +712,7 @@ void ControlPanel::set_running(bool running) {
     qualcomm_nsps_.set_sensitive(!running);
     qualcomm_perf_.set_sensitive(!running);
     qualcomm_backend_.set_sensitive(!running);
-    threads_spin_.set_sensitive(!running && !sync_radio_.get_active());
+    refresh_depth_sensitivity();
     refresh_accel_sensitivity();
 }
 

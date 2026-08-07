@@ -1,21 +1,29 @@
-// MemryX MX3 benchmark runner (MxAccl C++ runtime).
+// MemryX MX3 benchmark runner (MxAccl / MxAcclMT C++ runtimes).
 //
-// MemryX is the mirror image of Axelera: its SDK exposes *only* a streaming
-// API. `connect_stream(in_cb, out_cb, ...)` hands the runtime two callbacks and
-// `start()` drives them from its own worker threads — there is no blocking
-// single-frame call anywhere in the public surface. So:
+// BOTH modes are native here, but they live on two different classes — which is
+// why an earlier version of this file claimed MemryX had no blocking call and
+// emulated Sync with a permit counter. It is the *class* that lacks one, not
+// the SDK (verified against /usr/include/memx/accl/, memx-accl 2.2.5):
 //
-//   Async  — native. Up to kAsyncDepth frames outstanding.
-//   Sync   — emulated by allowing exactly one frame in flight, which is the
-//            closest honest equivalent of the other cards' blocking call.
+//   Async — MxAccl::connect_stream(in_cb, out_cb) + start(). The runtime drives
+//           the callbacks from its own worker threads; depth is the Threads
+//           control, applied as a permit counter in the input callback (parking
+//           a worker is the intended way to throttle; returning false would
+//           tear the stream down).
+//   Sync  — MxAcclMT::run(in, out, model, stream, timeout). Blocks until the
+//           frame completes. No start()/stop() lifecycle — construct, run,
+//           destruct — and it serialises internally on a private mutex, which
+//           is exactly the one-frame-at-a-time semantics we want.
 //
-// Backpressure is applied by making the input callback wait for a permit; that
-// parks one of MxAccl's worker threads, which is the intended way to throttle a
-// stream (returning false instead would tear it down).
+// Two caveats the SDK documents about MxAcclMT::run(): it is a synchronous
+// *facade* over an async internal pipeline, so it is not a clean single-frame
+// latency probe; and MxAccl::stop() is a deprecated no-op in 2.2.5 (it links
+// and does nothing), so teardown must not depend on it.
 //
-// MemryX takes float input, unlike the uint8/int8 of the other three — that is
-// the SDK's contract, and the conversion is done once at load, not per frame.
+// MemryX takes float input, unlike the uint8/int8 of the other cards — that is
+// the SDK's contract, and the buffers are filled once at load, not per frame.
 #include "memx/accl/MxAccl.h"
+#include "memx/accl/MxAcclMT.h"
 
 #include <unistd.h>
 
@@ -47,36 +55,37 @@ std::string find_memryx_python() {
     return {};
 }
 
-class MemryXBenchRunner : public BenchRunner {
+// set_mpu_frequency lives only in the Python `mxa` module — neither memx.h nor
+// MxAccl exposes it — so this is a one-shot interpreter call at load time rather
+// than an API call. ~4 s of Python startup, once per run, alongside model
+// loading; never in the timed loop. Shared by both runners: the clock is a
+// property of the card, nothing to do with which API drives it.
+void apply_mpu_clock(int freq_mhz) {
+    if (freq_mhz <= 0) return;
+    const std::string py = find_memryx_python();
+    if (py.empty()) return;
+    const std::string script =
+        "import sys\n"
+        "from memryx import mxa\n"
+        "f=int(sys.argv[1])\n"
+        "n=int(mxa.get_total_chip_count(0))\n"
+        "[mxa.set_mpu_frequency(0,g,f) for g in range(n)]\n";
+    const std::string cmd = "timeout 30 " + py + " -c '" + script + "' " +
+                            std::to_string(freq_mhz) + " >/dev/null 2>&1";
+    if (std::system(cmd.c_str()) != 0) { /* best effort — the clock stays where
+        it was, and the Frequency graph shows that plainly rather than us
+        pretending it changed */ }
+}
+
+class MemryXAsyncRunner : public BenchRunner {
 public:
-    explicit MemryXBenchRunner(ApiMode mode)
-        : depth_(mode == ApiMode::Sync ? 1 : kAsyncDepth), mode_(mode) {}
+    MemryXAsyncRunner() : depth_(kAsyncDepth) {}
 
-    ~MemryXBenchRunner() override { shutdown(); }
+    ~MemryXAsyncRunner() override { shutdown(); }
 
-    // set_mpu_frequency lives only in the Python `mxa` module — neither memx.h
-    // nor MxAccl exposes it — so this is a one-shot interpreter call at load
-    // time rather than an API call. ~4 s of Python startup, once per run,
-    // alongside model loading; not in the timed loop.
     void configure(const BenchItem& item) override {
-        // Async depth from the Threads control; Sync means exactly one frame
-        // outstanding, which is the whole point of emulating it here.
-        if (mode_ == ApiMode::Async && item.threads >= 1)
-            depth_ = static_cast<size_t>(item.threads);
-        if (item.freq_mhz <= 0) return;
-        const std::string py = find_memryx_python();
-        if (py.empty()) return;
-        const std::string script =
-            "import sys\n"
-            "from memryx import mxa\n"
-            "f=int(sys.argv[1])\n"
-            "n=int(mxa.get_total_chip_count(0))\n"
-            "[mxa.set_mpu_frequency(0,g,f) for g in range(n)]\n";
-        const std::string cmd = "timeout 30 " + py + " -c '" + script + "' " +
-                                std::to_string(item.freq_mhz) + " >/dev/null 2>&1";
-        if (std::system(cmd.c_str()) != 0) { /* best effort — the
-            clock stays where it was, and the Frequency graph will
-            show that plainly rather than us pretending it changed */ }
+        if (item.depth >= 1) depth_ = static_cast<size_t>(item.depth);
+        apply_mpu_clock(item.freq_mhz);
     }
 
     void load(const std::vector<BenchMember>& members) override {
@@ -94,7 +103,7 @@ public:
                 /*stream_id=*/0);
             st->accl->start();
 
-            if (describe_.empty()) describe_ = std::to_string(depth_) + " in flight";
+            if (describe_.empty()) describe_ = "depth " + std::to_string(depth_);
             stages_.push_back(std::move(st));
         }
         // Geometry is only known once the runtime has handed us a FeatureMap,
@@ -108,7 +117,7 @@ public:
         if (!shape_done_ && !stages_.empty()) {
             const std::string s = stages_.front()->shape_text();
             if (!s.empty()) {
-                describe_ = s + " float32 · " + std::to_string(depth_) + " in flight";
+                describe_ = s + " float32 · " + "depth " + std::to_string(depth_);
                 shape_done_ = true;
             }
         }
@@ -216,11 +225,94 @@ private:
     std::string describe_;
     bool shape_done_ = false;
     size_t depth_ = 1;
-    ApiMode mode_ = ApiMode::Sync;
+};
+
+// ---------------------------------------------------------------------------
+// Sync — MxAcclMT::run() blocks until the frame completes. Same shape as the
+// other cards' blocking path, so no permit counter and no callbacks.
+// ---------------------------------------------------------------------------
+class MemryXSyncRunner : public BenchRunner {
+public:
+    ~MemryXSyncRunner() override { stages_.clear(); }
+
+    void configure(const BenchItem& item) override {
+        apply_mpu_clock(item.freq_mhz);
+    }
+
+    void load(const std::vector<BenchMember>& members) override {
+        for (const auto& m : members) {
+            auto st = std::make_unique<Stage>();
+            st->reps = m.reps > 0 ? m.reps : 1;
+            // No start()/stop() on this class — construct, run, destruct.
+            st->accl = std::make_unique<MX::Runtime::MxAcclMT>(m.path);
+
+            const MX::Types::MxModelInfo info = st->accl->get_model_info(0);
+            st->in_bufs.resize(static_cast<size_t>(info.num_in_featuremaps));
+            st->out_bufs.resize(static_cast<size_t>(info.num_out_featuremaps));
+            for (size_t i = 0; i < st->in_bufs.size(); ++i) {
+                const size_t n = i < info.in_featuremap_sizes.size()
+                                     ? info.in_featuremap_sizes[i] : 1;
+                st->in_bufs[i].resize(n ? n : 1);
+                // Filled once, here — re-filling per frame would time our own
+                // memset rather than the accelerator.
+                fill_pattern(st->in_bufs[i].data(),
+                             st->in_bufs[i].size() * sizeof(float));
+                st->in_ptrs.push_back(st->in_bufs[i].data());
+            }
+            for (size_t i = 0; i < st->out_bufs.size(); ++i) {
+                const size_t n = i < info.out_featuremap_sizes.size()
+                                     ? info.out_featuremap_sizes[i] : 1;
+                st->out_bufs[i].resize(n ? n : 1);
+                st->out_ptrs.push_back(st->out_bufs[i].data());
+            }
+
+            if (describe_.empty() && !info.in_raw_shapes.empty()) {
+                std::string shape;
+                for (auto d : info.in_raw_shapes[0]) {
+                    if (!shape.empty()) shape += "x";
+                    shape += std::to_string(d);
+                }
+                describe_ = shape + " float32 · depth 1";
+            }
+            stages_.push_back(std::move(st));
+        }
+    }
+
+    void run_frame() override {
+        for (auto& st : stages_) {
+            for (int r = 0; r < st->reps; ++r) {
+                // A finite timeout, deliberately: 0 means block forever, and
+                // the engine only tests its stop flag *between* frames, so an
+                // infinite wait on a wedged MX3 would strand the worker.
+                if (!st->accl->run(st->in_ptrs, st->out_ptrs, /*model_id=*/0,
+                                   /*stream_id=*/0, kRunTimeoutMs)) {
+                    throw std::runtime_error(
+                        "MemryX: MxAcclMT::run() timed out after " +
+                        std::to_string(kRunTimeoutMs / 1000) + "s");
+                }
+            }
+        }
+    }
+
+    std::string describe() const override { return describe_; }
+
+private:
+    static constexpr std::int32_t kRunTimeoutMs = 10000;
+
+    struct Stage {
+        std::unique_ptr<MX::Runtime::MxAcclMT> accl;
+        std::vector<std::vector<float>> in_bufs, out_bufs;
+        std::vector<float*> in_ptrs, out_ptrs;
+        int reps = 1;
+    };
+
+    std::vector<std::unique_ptr<Stage>> stages_;
+    std::string describe_;
 };
 
 }  // namespace
 
 std::unique_ptr<BenchRunner> make_memryx_runner(ApiMode mode) {
-    return std::make_unique<MemryXBenchRunner>(mode);
+    if (mode == ApiMode::Sync) return std::make_unique<MemryXSyncRunner>();
+    return std::make_unique<MemryXAsyncRunner>();
 }
