@@ -928,12 +928,33 @@ Computed 2026-08-08 from the source ONNX in
 | YOLOv8s | 640x640 | 14.301 | **28.60** | 11.2 M |
 | YOLOv8m | 640x640 | 39.468 | **78.94** | 25.9 M |
 
+**The counter is `tools/model-ops.py`** — it was ad-hoc when this section was
+first written; it is now in the repo, with `--check` reproducing every row above
+(worst deviation 0.56%, which is rounding in the quoted values). Use it rather
+than retyping numbers.
+
 The counter is validated three ways, which is why these are worth quoting:
 YOLOv8s/m reproduce Ultralytics' published 28.6 / 78.9 **exactly** (confirming
 their "GFLOPs" are 2xMAC, a common factor-of-two trap), and a ResNet-50 backbone
 comes out at 4.087 GMAC against the published 4.09. ResNet-50's own ONNX is not
 in the tree; its row is measured from `ai_deepx/models/deepmar_resnet50-1.onnx`,
 which is that backbone plus a small attribute head.
+
+**That ResNet-50 row is 5.9% high for a plain ResNet-50, and the reason is worth
+knowing.** The Qualcomm artifact is built from ONNX Model Zoo `resnet50-v1-12`,
+which measures **3.858 GMAC / 7.72 GOP** — not 4.087 / 8.17. The gap is the
+classic **v1 vs v1.5** distinction: v1 puts the stride on the 1x1 convolution,
+v1.5 on the 3x3, and v1.5 is the more expensive. Verified structurally rather
+than assumed — `resnet50-v1-12` has **six stride-2 1x1 convs and zero stride-2
+3x3 convs**, so it is v1. `deepmar_resnet50-1.onnx` carries the v1.5-style cost
+plus its attribute head.
+
+Consequence: **Hailo's artifact is `resnet_v1_50.hef`**, i.e. v1 by name, so its
+utilisation below is probably computed against a ~6% too-large GOP figure. The
+other three cards' artifacts are compiled binaries whose topology cannot be
+inspected here, so this is flagged rather than corrected — but if the M.2
+utilisation numbers are ever re-derived, establish which variant each vendor
+actually ships first.
 
 **The SCRFD names understate what we run by exactly 4/3.** InsightFace quotes
 those flops at VGA 640x480; our artifacts are 640x640. `13.341 x 0.75 = 10.006`
@@ -985,6 +1006,67 @@ nameplate**, and even the vendor's own unexplained 2054 fps would be only 7.8%.
 That reframes the open "18% of vendor" question under **API modes**: the gap to
 the *datasheet* is far larger than the gap to the vendor's own benchmark, so
 whatever is being missed is not a small tuning matter.
+
+### Card utilisation — the IQ-9075 (Hexagon NSP)
+
+Rated **100 dense TOPS INT8** (200 sparse) for the dual-HTP subsystem — the
+official Dragonwing figure, and it covers **both** NSPs, which is what our 2-NSP
+measurements should be compared against. Measured with the app's own headless
+driver, burst, async, 2 NSPs, depth 4; GOP from `tools/model-ops.py`.
+
+Unlike the M.2 table above, this is every model rather than ResNet-50 alone —
+and the spread is the finding:
+
+| model | GOP/frame | fps | achieved | utilisation |
+| --- | ---: | ---: | ---: | ---: |
+| SCRFD-500M | 1.47 | 4325 | 6.4 TOPS | **6.4%** |
+| ArcFace MobileFaceNet | 0.88 | 10112 | 8.9 TOPS | **8.9%** |
+| OSNet x1.0 | 1.96 | 4576 | 9.0 TOPS | **9.0%** |
+| ResNet-50 | 7.72 | 2178 | 16.8 TOPS | **16.8%** |
+| SCRFD-2.5G | 6.86 | 3504 | 24.0 TOPS | **24.0%** |
+| YOLOv8s | 28.60 | 966 | 27.6 TOPS | **27.6%** |
+| YOLOv8m | 78.94 | 507 | 40.0 TOPS | **40.0%** |
+| SCRFD-10G | 26.68 | 1869 | 49.9 TOPS | **49.9%** |
+
+**Utilisation tracks model size, not model identity.** The three sub-2-GOP
+models all land at 6-9% however different they are, and the two heaviest reach
+40-50%. At 10112 fps ArcFace retires a frame every 99 us, so what is being
+measured there is per-frame overhead — the FastRPC round trip and host
+threading — not the HMX array. **Do not read 6.4% as "the NSP is bad at
+SCRFD-500M";** read it as "SCRFD-500M is too small to occupy this part".
+
+**The ResNet-50 row is the only like-for-like comparison with the M.2 table
+above, and it is 16.8%** — below all three healthy M.2 cards. Same reason: at
+7.72 GOP against 100 TOPS nameplate, saturating this part would need ~12950 fps.
+
+**Peak observed is 49.9 TOPS on SCRFD-10G**, which is a hard measured lower
+bound on the silicon regardless of what one believes about the nameplate. It is
+also the best datasheet fraction anything in this project reaches on its
+heaviest model.
+
+**The two NSPs scale cleanly, so the shortfall is per-NSP, not contention.**
+OSNet on one NSP is 2313 fps = 4.5 TOPS against that NSP's 50, i.e. **9.1%**,
+against 9.0% for two NSPs at 4576 fps. Identical to within noise — adding the
+second NSP buys a full second NSP's worth. Whatever caps a small model is
+per-engine overhead, and it is not fixed by more silicon.
+
+### The same Hailo-8 is 41% slower on this board than on the x86 host
+
+Worth stating separately because it is a trap for cross-host comparison. The
+IQ-9075 carries a Hailo-8 as well, running the same artifacts:
+
+| ResNet-50 | fps | achieved | of 26 TOPS |
+| --- | ---: | ---: | ---: |
+| Hailo-8 on x86_64 EPYC | 1369 | 10.6 TOPS | 40.6% |
+| Hailo-8 on IQ-9075 | 801 | 6.2 TOPS | 23.8% |
+
+Same card, same HEF, **59% of the frame rate**. On OSNet it is far worse —
+214 fps, 0.42 TOPS, **1.6%** of nameplate — because a 1.96 GOP model on a card
+this fast is entirely host-bound, and the IQ-9075's Kryo cores are much weaker
+than the EPYC's. So: **never compare a frame rate across the two hosts**, and
+treat this board's Hailo numbers as a floor rather than a measurement of the
+card. (Both figures here use 7.72 GOP for ResNet-50, per the v1 note above; the
+M.2 table's 43% uses 8.17 and is not directly comparable to the 40.6% here.)
 
 ## Build / verify
 
