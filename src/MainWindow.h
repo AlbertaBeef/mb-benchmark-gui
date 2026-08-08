@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "Bench.h"
+#include "Automation.h"
 #include "Logger.h"
 #include "Catalog.h"
 #include "ControlPanel.h"
@@ -30,7 +31,8 @@
 
 class MainWindow : public Gtk::ApplicationWindow {
 public:
-    MainWindow();
+    // `plan` is disabled unless --automation named a file.
+    explicit MainWindow(AutomationPlan plan = {});
     ~MainWindow() override;
 
 private:
@@ -38,6 +40,15 @@ private:
     // Poll the downloader and refresh the lists as artifacts land.
     void poll_downloads();
     void on_start_stop();
+
+    // One state-machine step for unattended automation, called once per tick.
+    // Deliberately driven from the existing 1 Hz tick rather than its own
+    // timer: it has to observe exactly the engine state the UI is showing, and
+    // a second timer could fire in the window between stop() and the workers
+    // actually being joined.
+    void tick_automation();
+    void advance_automation_step();
+    void tick_automation_end();
     void on_about();
 
     // --- telemetry sections (one row per device, as in mb-powermon-gui) ---
@@ -115,6 +126,25 @@ private:
     // Series carries no config — so the configuration has to be stashed here to
     // be loggable. Cleared on stop.
     std::vector<BenchItem> run_items_;
+
+    // Automation state. `auto_phase_s_` counts seconds inside the current phase
+    // (running or idling); `auto_owns_run_` distinguishes a run automation
+    // started from one the user started by hand, which it must never cut short.
+    AutomationPlan auto_plan_;
+    std::size_t auto_step_ = 0;      // index into auto_plan_.steps
+    bool auto_first_ = true;         // nothing has been started yet
+    bool auto_done_ = false;         // a non-looping plan finished
+    double auto_phase_s_ = 0.0;
+    bool auto_owns_run_ = false;
+    // Seconds spent waiting for a stop to complete. A worker wedged inside a
+    // vendor SDK call may never return, and automation cannot start anything
+    // while it still holds the device — so this exists purely to notice and
+    // *say so* rather than idle forever looking like it is still working.
+    double auto_stopping_s_ = 0.0;
+    bool auto_stalled_ = false;
+    // Seconds counted since the plan finished, for the `end` delay before the
+    // app closes itself.
+    double auto_end_s_ = 0.0;
     // Last error string seen per card, so a persistent failure is logged once
     // rather than every tick.
     std::string last_error_[kAccelCount];

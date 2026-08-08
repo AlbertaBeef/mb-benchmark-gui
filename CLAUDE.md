@@ -190,6 +190,88 @@ Three layers, cleanly separated. Keep it that way.
   single-selection `Gtk::ListBox`es (Models / Pipelines), the frame-rate controls,
   the per-accelerator checkboxes, Start/Stop, status. `selection()` turns the
   current row plus the ticked cards into `std::vector<BenchItem>`.
+- **`Automation.{h,cpp}`** — unattended schedules, `--automation <file>`. Pure
+  data, no GTK, like `Catalog`/`Probes`/`Logger`, and it deliberately does **not**
+  resolve ids against the catalog — that is `MainWindow`'s job, and keeping it
+  out means a plan parses and validates with no models tree present.
+
+  **This replaced a set of control-panel checkboxes** (Unattended / Sweep Models
+  / Sweep Pipelines / two durations), and the reversal was deliberate: checkboxes
+  could only say "every model" or "every pipeline", which is the least
+  interesting thing to want, and they left **no trace in the log** — a finished
+  CSV could not be read back to say what had been configured. A file is
+  explicit, ordered, repeatable and reviewable. Don't reintroduce them.
+
+  The format is line-oriented rather than sectioned INI, because the step list is
+  **ordered** and INI sections are not: `initial`/`benchmark`/`idle` (minutes,
+  fractions allowed), `loop`, accelerator defaults, then repeated
+  `model =`/`pipeline =` lines. `[headers]` are accepted and ignored so a file
+  can still be laid out readably. Steps name the **catalog id** (`resnet50`) and
+  never the display name — ids carry no spaces, so nothing needs quoting.
+  Shipped plans: `config/automation-{models,pipelines,test}.conf`.
+
+  **`start` is deliberately separate from `idle`.** The beginning of a session
+  wants a longer settle — cards just powered, app just launched, `Fetcher` still
+  landing artifacts — and folding that into `idle` would pay it between every
+  run. **`end` is the mirror**: hold that long after the last step, then
+  `close()` the window. Default is < 0, meaning stay open, so a plan that says
+  nothing behaves as before; it is only reachable with `loop = false`.
+
+  **`tick_automation_end()` will not close while `stopping()`.** Quitting with a
+  worker still inside a vendor SDK call is precisely what leaves an MX3 session
+  unreclaimed and makes the next launch block in `memx_fops_open` before
+  `main()` — the hang under **Known issues**. After `kAutoStallSeconds` it logs
+  that it is *not* closing and stays open. It also stands down entirely if the
+  user starts a run after the plan finished: the app is theirs again. The `end`
+  delay is deliberately spent still logging, so the cards' cool-down to idle is
+  on record.
+
+  **Every per-card control is settable per step**, written `<vendor>.<knob>`
+  (`hailo.api`, `axelera.cores`, `qualcomm.perf`), plus an `accelerators =`
+  whitelist. `[automation]` holds the defaults and a step overlays them field by
+  field — `AccelSettings::overlay()`, where every field has a `kUnset` sentinel
+  so a step can change one knob without restating the rest. Step options are
+  **named, not positional**: with a dozen knobs a positional list would be
+  unreadable and unextendable, which is why the earlier `, bench, idle` form was
+  dropped before it shipped.
+
+  Settings reach the engine through `ControlPanel::apply_automation_settings()`,
+  which drives **the widgets** rather than a parallel state. Two reasons: the
+  panel keeps showing what is actually running, and `selection()` stays the one
+  place a `BenchItem` is built. `set_value()` clamps to each adjustment, so a
+  plan asking Axelera for depth 8 lands on its real ceiling of 2 rather than
+  being rejected.
+
+  **The shipped plans deliberately do not set `accelerators`.** Unset means
+  "whatever the panel has ticked", which is every card the build has; pinning a
+  list would silently exclude Qualcomm on the IQ-9075, or the four M.2 cards on
+  x86_64, depending on which host the file was written for.
+
+  A plan that fails to load is **fatal at startup**, not a warning: the user
+  asked for an unattended session and would otherwise return hours later to an
+  idle app. `main()` strips `--automation` from argv before `Gtk::Application`
+  sees it, since an unknown long option makes GTK exit.
+
+  The driver is `MainWindow::tick_automation()`, one step per the existing 1 Hz
+  tick — **not its own timer**, because it must observe exactly the engine state
+  the UI is showing, and a separate timer could fire in the window between
+  `stop()` and the workers being joined. It acts only through `on_start_stop()`,
+  so an automated run is indistinguishable downstream: same status line, same
+  CSV, same teardown. Four behaviours that are deliberate:
+  - **A hand-started run is never cut short.** `auto_owns_run_` separates a run
+    automation started from one the user did.
+  - **A stuck `stopping()` is reported, not worked around.** A card wedged
+    inside a vendor SDK call never reaches the between-frames `stop_flag` check,
+    so `stopping()` can last forever — seen 2026-08-08, a MemryX timeout held it
+    for 3m38s until the app was killed, with automation sitting silent. Nothing
+    is safe to *do* (starting anyway would fight a card that still holds the
+    device), so after `kAutoStallSeconds` it says so in the status line and the
+    log. **Never "fix" this by starting the next run anyway.**
+  - **Unrunnable steps are skipped and named**, rather than started and left
+    producing nothing for a whole benchmark duration.
+  - **Every automation transition is logged**, because the plan's durations
+    appear nowhere else in the CSV and a timed stop would otherwise be
+    indistinguishable from a card dying.
 - **`MainWindow.{h,cpp}`** — `Gtk::Paned`: controls left, a scrolling column of
   five `Gtk::Expander` graph sections right. Owns the 1 Hz tick.
 

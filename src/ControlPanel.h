@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 
+#include "Automation.h"
 #include "Bench.h"
 #include "Catalog.h"
 #include "GraphArea.h"
@@ -47,6 +48,17 @@ public:
     // differs per vendor and so does the useful range (Axelera's only knob is a
     // boolean, so it tops out at 2).
     int depth(Accel a) const;
+
+    // Push an automation step's settings into the controls, so `selection()`
+    // then builds exactly the run the plan asked for. Deliberately drives the
+    // *widgets* rather than a parallel state: the panel keeps showing what is
+    // actually running, and there is still only one source of truth.
+    void apply_automation_settings(const AutomationSettings& s);
+
+    // Select a subject by its catalog id, for --automation. Returns false if
+    // no row has that id or no card can run it. Ids rather than display names:
+    // ids are what a config file can carry without quoting.
+    bool select_subject_by_id(const std::string& id, bool is_pipeline);
 
     // How every graph's axis top should respond to its data.
     GraphArea::RangeMode range_mode() const;

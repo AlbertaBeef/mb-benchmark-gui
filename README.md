@@ -615,6 +615,99 @@ and feeds nothing. Search order:
    from any working directory
 3. `$XDG_CONFIG_HOME/mb-benchmark-gui/ina228.conf` (else `~/.config/…`)
 
+## Automation
+
+Unattended sweeps, for leaving the machine to it overnight. The schedule is a
+file rather than a set of checkboxes, so it is explicit, ordered, repeatable and
+reviewable — and it says what a log came from:
+
+```bash
+./build/mb-benchmark --automation config/automation-models.conf
+```
+
+Three are shipped: `automation-models.conf` (all eight models),
+`automation-pipelines.conf` (all five pipelines), and `automation-test.conf`, an
+8-minute smoke test that exercises every path before you commit to five hours.
+
+```ini
+[automation]
+start     = 5       # minutes before the FIRST run only
+benchmark = 30      # minutes per run
+idle      = 10      # cool-down between runs, 0 for back-to-back
+end       = 10      # keep logging this long after the last run, then close
+loop      = false   # wrap at the end, or stop after one pass
+
+# Default accelerator configuration for every step below
+hailo.api     = async
+hailo.depth   = 4
+axelera.cores = 2
+
+[plan]
+model    = resnet50
+model    = yolov8s, benchmark=60, hailo.api=sync
+pipeline = track_yolov8s, accelerators=hailo deepx, axelera.cores=1
+```
+
+`start` is separate from `idle` because the beginning of a session usually wants
+a longer settle — the cards have just been powered, the app has just launched,
+downloads may still be landing — without paying that between every later run.
+
+`end` closes the app once the plan finishes, which is what makes an overnight
+run genuinely unattended: the devices are released and the CSV is finalised
+without anyone at the keyboard. The delay before closing is not cosmetic — it
+keeps logging while the cards cool back to idle, which is the only record of
+what they settle to. Omit `end` to leave the window open. It only applies with
+`loop = false`, since a looping plan never finishes.
+
+**The app will not close while a card still holds its device.** Quitting with a
+worker wedged inside a vendor SDK call is exactly what leaves a MemryX session
+unreclaimed and makes every later launch hang before it can draw a window, so if
+the final stop never completes the app says so and stays open.
+
+**Every accelerator control is settable per step**, with the `[automation]`
+values as defaults:
+
+| key | values |
+| --- | --- |
+| `accelerators` | `all`, `none`, or a space-separated list (`hailo deepx`) |
+| `<vendor>.api` | `sync`, `async` |
+| `<vendor>.depth` | frames in flight (Axelera's ceiling is 2) |
+| `axelera.cores` | 1–4 — **2 is the safe default**, see below |
+| `memryx.freq` | MPU clock in MHz |
+| `qualcomm.nsps` | 1–2 |
+| `qualcomm.perf` | `burst`, `sustained_high_performance`, `balanced`, `power_saver` |
+| `qualcomm.backend` | `htp`, `gpu`, `cpu` |
+
+`<vendor>` is `hailo`, `memryx`, `deepx`, `axelera` or `qualcomm`. A step states
+only what it changes; everything else falls through to the defaults, and then to
+whatever the control panel shows. That makes "the same model across four depths"
+or "this one on Hailo alone" a three-line plan.
+
+Options are named rather than positional, so you can set one knob without
+restating the rest. Steps name the **catalog id** — the part after the colon in
+a `[model:…]` section of `models.conf`, not the display name. Ids carry no
+spaces, so nothing needs quoting. `[headers]` are decorative.
+
+Settings are pushed into the actual controls before each run, so the panel keeps
+showing what is really running and the `<vendor>_cfg` columns in the CSV record
+it.
+
+A subject no card can run is skipped and named in the log rather than started
+and left producing nothing. **A run you start by hand is never cut short by the
+timer** — Start/Stop keeps working throughout, and the schedule picks up when
+you stop. A plan that will not load is a startup error, not a warning: you would
+otherwise come back hours later to an idle app.
+
+> **Do not set `axelera.cores = 4` in an unattended plan.** Claiming all four
+> AIPU cores wedges the card — every MSI vector times out, the PCIe link drops,
+> and only a full power-off recovers it. 3 is the highest value observed stable.
+
+If a card wedges mid-run the engine can sit in *stopping* indefinitely — the
+worker never returns from the vendor SDK. Automation cannot start anything then
+(the card still holds the device), so after a minute it says so in the status
+line and writes it to the CSV rather than idling silently. That is a real
+failure worth catching: it has cost a whole overnight session.
+
 ## Logging
 
 Every run writes a CSV, always, from app start — one row per 1 Hz tick, the same

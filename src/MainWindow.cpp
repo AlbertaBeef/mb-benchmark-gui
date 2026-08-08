@@ -65,9 +65,22 @@ std::string fmt_eff(double v) {
     std::snprintf(b, sizeof(b), "%.2f", v);
     return b;
 }
+// Countdown for the automation status line. Minutes:seconds rather than a bare
+// second count, because the interesting values are tens of minutes.
+// How long a stop may take before automation reports it as stalled. Generous:
+// a legitimate teardown of a slow model takes seconds, not minutes.
+constexpr double kAutoStallSeconds = 60.0;
+
+std::string fmt_mmss(int seconds) {
+    if (seconds < 0) seconds = 0;
+    char b[24];
+    std::snprintf(b, sizeof(b), "%d:%02d", seconds / 60, seconds % 60);
+    return b;
+}
 }  // namespace
 
-MainWindow::MainWindow() {
+MainWindow::MainWindow(AutomationPlan plan)
+    : auto_plan_(std::move(plan)) {
     set_title(kTitle);
     // Width tracks the Paned position: the controls take 680 (was 340), so the
     // window grows by the same 340 to leave the graph column the ~1060 it had
@@ -575,6 +588,196 @@ Gtk::Widget& MainWindow::build_metric_section(
     return *box;
 }
 
+// Unattended cycling, driven by the file named with --automation. Runs step N
+// for its benchmark duration, stops, idles, moves to step N+1, wrapping if the
+// plan loops.
+//
+// Everything goes through on_start_stop(), so an automated run is
+// indistinguishable downstream: same status line, same CSV rows, same teardown.
+// One step per existing 1 Hz tick and **not its own timer**, because it must
+// observe exactly the engine state the UI is showing, and a separate timer
+// could fire in the window between stop() and the workers being joined.
+void MainWindow::tick_automation() {
+    if (!auto_plan_.enabled) return;
+    if (auto_done_) { tick_automation_end(); return; }
+
+    // Never act while the previous run's workers are still being joined. The
+    // device is not free yet, and starting here would fight the old run for it
+    // — the same reason Start is greyed out during stopping().
+    //
+    // This can last forever: stop_flag is only tested *between* frames, so a
+    // card wedged inside a vendor SDK call never reaches the check and its
+    // worker never returns. Seen 2026-08-08 — a MemryX inference timeout left
+    // the engine stopping for 3m38s until the app was killed, with automation
+    // sitting here silently the whole time looking like it was still working.
+    // There is nothing safe to *do* (starting anyway would fight a card that
+    // still holds the device), so the fix is to say so.
+    if (engine_.stopping()) {
+        auto_stopping_s_ += 1.0;
+        if (!auto_stalled_ && auto_stopping_s_ >= kAutoStallSeconds) {
+            auto_stalled_ = true;
+            log_.note("automation stalled — a card has not released the device "
+                      "after " + fmt_mmss(static_cast<int>(auto_stopping_s_)));
+        }
+        return;
+    }
+    auto_stopping_s_ = 0.0;
+    auto_stalled_ = false;
+
+    const bool active = engine_.active();
+
+    // A run just ended — ours finishing, or the user pressing Stop mid-run.
+    // Either way the idle period starts now, from zero.
+    if (auto_owns_run_ && !active) {
+        auto_owns_run_ = false;
+        auto_phase_s_ = 0.0;
+        return;
+    }
+
+    if (active) {
+        // A run the user started by hand belongs to them; automation does not
+        // cut it short. Its idle period begins when they stop it.
+        if (!auto_owns_run_) {
+            auto_phase_s_ = 0.0;
+            return;
+        }
+        auto_phase_s_ += 1.0;
+        if (auto_phase_s_ >= auto_plan_.bench_for(auto_step_)) {
+            log_.note("automation: step " + std::to_string(auto_step_ + 1) +
+                      " reached its benchmark duration — stopping");
+            on_start_stop();
+            advance_automation_step();
+        }
+        return;
+    }
+
+    auto_phase_s_ += 1.0;
+    // The very first wait is its own setting: the cards have just been powered
+    // or the app has just launched, and a session usually wants a longer settle
+    // there than it wants between every later run.
+    const double idle = auto_first_ ? auto_plan_.start_seconds
+                                    : auto_plan_.idle_for(auto_step_);
+    if (auto_phase_s_ < idle) {
+        const int left = static_cast<int>(idle - auto_phase_s_ + 0.5);
+        controls_->set_status(
+            "<b>Automation</b> — next run in " + fmt_mmss(left) +
+            "\n<small>Step " + std::to_string(auto_step_ + 1) + " of " +
+            std::to_string(auto_plan_.steps.size()) + " · " +
+            (auto_first_ ? "initial settle" : "idling") +
+            " with nothing loaded.</small>");
+        return;
+    }
+
+    // Find the next step that can actually run. A subject no compiled-in card
+    // has an artifact for is skipped and *named*, rather than started and left
+    // producing nothing for a whole benchmark duration.
+    for (std::size_t tried = 0; tried < auto_plan_.steps.size(); ++tried) {
+        const AutomationStep& st = auto_plan_.steps[auto_step_];
+        if (controls_->select_subject_by_id(st.id, st.is_pipeline)) {
+            // Settings before selection() is read, so the run is built from
+            // this step's configuration rather than the previous step's.
+            controls_->apply_automation_settings(
+                auto_plan_.settings_for(auto_step_));
+            on_start_stop();
+            auto_owns_run_ = engine_.active();
+            auto_first_ = false;
+            auto_phase_s_ = 0.0;
+            if (auto_owns_run_) {
+                log_.note("automation: step " + std::to_string(auto_step_ + 1) +
+                          "/" + std::to_string(auto_plan_.steps.size()) + " " +
+                          st.id + " for " +
+                          fmt_mmss(static_cast<int>(auto_plan_.bench_for(auto_step_))) +
+                          ", then idle " +
+                          fmt_mmss(static_cast<int>(auto_plan_.idle_for(auto_step_))));
+            } else {
+                // Selected but nothing to run: every card that has this subject
+                // is unticked. Move on rather than retry the same step forever.
+                log_.note("automation: " + st.id +
+                          " selected but no accelerator enabled — skipping");
+                advance_automation_step();
+            }
+            return;
+        }
+        log_.note("automation: " + st.id +
+                  " is not runnable on this build — skipping");
+        advance_automation_step();
+        if (auto_done_) return;
+    }
+
+    // Every step in the plan was unrunnable.
+    auto_done_ = true;
+    controls_->set_status(
+        "<b>Automation</b> — nothing in the plan can run on this build.\n"
+        "<small>" + Glib::Markup::escape_text(auto_plan_.path) +
+        "</small>");
+    log_.note("automation: no step in the plan is runnable — stopping");
+}
+
+// The plan has finished. Optionally hold for `end`, then close the app.
+//
+// Closing is the point of an unattended session — it releases the devices and
+// finalises the CSV — but it must not happen while a worker is still inside a
+// vendor SDK call. Killing the app with a card still held is exactly what
+// leaves an MX3 session unreclaimed and makes every later launch block in
+// memx_fops_open before main(). So this waits for stopping() to clear, and if
+// it never does, it says so and stays open rather than closing anyway.
+void MainWindow::tick_automation_end() {
+    if (auto_plan_.end_seconds < 0.0) return;   // no `end` — stay open
+
+    // The user started something after the plan finished; the app is theirs
+    // again and must not close under them.
+    if (engine_.active()) {
+        auto_end_s_ = 0.0;
+        return;
+    }
+    if (engine_.stopping()) {
+        auto_stopping_s_ += 1.0;
+        if (!auto_stalled_ && auto_stopping_s_ >= kAutoStallSeconds) {
+            auto_stalled_ = true;
+            log_.note("automation: plan complete but a card has not released "
+                      "the device — not closing");
+        }
+        return;
+    }
+
+    auto_end_s_ += 1.0;
+    if (auto_end_s_ < auto_plan_.end_seconds) {
+        const int left =
+            static_cast<int>(auto_plan_.end_seconds - auto_end_s_ + 0.5);
+        controls_->set_status(
+            "<b>Automation</b> — plan complete. Closing in " + fmt_mmss(left) +
+            "\n<small>" + Glib::Markup::escape_text(auto_plan_.path) +
+            " · still logging while the cards cool.</small>");
+        return;
+    }
+
+    log_.note("automation: end delay elapsed — closing");
+    auto_done_ = false;          // don't re-enter while the close is in flight
+    auto_plan_.enabled = false;
+    close();
+}
+
+// Step forward, wrapping or finishing according to the plan.
+void MainWindow::advance_automation_step() {
+    if (auto_step_ + 1 < auto_plan_.steps.size()) {
+        ++auto_step_;
+        return;
+    }
+    if (auto_plan_.loop) {
+        auto_step_ = 0;
+        return;
+    }
+    auto_done_ = true;
+    auto_end_s_ = 0.0;
+    log_.note(auto_plan_.end_seconds >= 0.0
+                  ? "automation: plan complete — closing after the end delay"
+                  : "automation: plan complete");
+    controls_->set_status(
+        "<b>Automation</b> — plan complete.\n<small>" +
+        Glib::Markup::escape_text(auto_plan_.path) + " · " +
+        std::to_string(auto_plan_.steps.size()) + " step(s), no loop.</small>");
+}
+
 void MainWindow::on_start_stop() {
     if (engine_.active()) {
         engine_.stop();          // returns at once; workers are joined off-thread
@@ -736,6 +939,8 @@ bool MainWindow::on_tick() {
     // Start stays disabled until the previous run's workers are actually gone.
     controls_->set_busy(engine_.stopping());
 
+    tick_automation();
+
     if (engine_.active()) {
         std::string text = run_status_;
         for (const auto& p : problems) {
@@ -745,10 +950,19 @@ bool MainWindow::on_tick() {
     } else if (engine_.stopping()) {
         // A card wedged inside a vendor SDK call can sit here indefinitely —
         // but the window stays live, which is the whole point of the change.
-        controls_->set_status(
+        std::string text =
             "Stopping — waiting for the device to release…\n"
             "<small>The window stays responsive; a card that never returns "
-            "leaves its worker behind rather than freezing the app.</small>");
+            "leaves its worker behind rather than freezing the app.</small>";
+        if (auto_stalled_) {
+            text += "\n<small><b>Automation stalled</b> — no further run can "
+                    "start until this card releases the device (" +
+                    fmt_mmss(static_cast<int>(auto_stopping_s_)) +
+                    " so far). Restarting the app will need "
+                    "<tt>systemctl restart mxa-manager</tt> if it was "
+                    "MemryX.</small>";
+        }
+        controls_->set_status(text);
     }
 
     fps_.graph->push(fps);

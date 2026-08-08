@@ -17,5 +17,6 @@ profiler.json
 
 # CSV logs written by the app (always on; <exe>/../logs/).
 logs/
-# Saved npu-status.sh output.
-npu-status-*.log
+# log files and html reports
+*.log
+*.html

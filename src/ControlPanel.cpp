@@ -553,6 +553,65 @@ void ControlPanel::populate(Gtk::ListBox& list,
     }
 }
 
+void ControlPanel::apply_automation_settings(const AutomationSettings& s) {
+    for (int i = 0; i < kAccelCount; ++i) {
+        const Accel a = accel_at(i);
+        const AccelSettings& cfg = s.accel[i];
+
+        // Enable/disable goes through accel_wanted_, the same intent store the
+        // checkboxes use, so a card the plan enables comes back on by itself
+        // when a later step actually has a build for it.
+        if (cfg.enabled != AccelSettings::kUnset)
+            accel_wanted_[i] = (cfg.enabled != 0);
+
+        if (cfg.api != AccelSettings::kUnset && accel_has_both_api_modes(a) &&
+            api_sync_[i] && api_async_[i]) {
+            (cfg.api == 0 ? api_sync_[i] : api_async_[i])->set_active(true);
+        }
+        if (cfg.depth != AccelSettings::kUnset && depth_spin_[i]) {
+            // set_value clamps to the adjustment, so a plan asking Axelera for
+            // depth 8 lands on its real ceiling of 2 rather than being refused.
+            depth_spin_[i]->set_value(cfg.depth);
+        }
+        if (cfg.cores != AccelSettings::kUnset && a == Accel::Axelera)
+            axelera_cores_.set_value(cfg.cores);
+        if (cfg.freq_mhz != AccelSettings::kUnset && a == Accel::MemryX)
+            memryx_freq_.set_active_text(std::to_string(cfg.freq_mhz));
+        if (cfg.nsps != AccelSettings::kUnset && a == Accel::Qualcomm)
+            qualcomm_nsps_.set_value(cfg.nsps);
+        if (!cfg.perf.empty() && a == Accel::Qualcomm)
+            qualcomm_perf_.set_active_text(cfg.perf);
+        if (!cfg.backend.empty() && a == Accel::Qualcomm) {
+            qualcomm_backend_.set_active(cfg.backend == "gpu" ? 1
+                                       : cfg.backend == "cpu" ? 2
+                                                              : 0);
+        }
+    }
+    // Re-derive the checkboxes from the new intent, which also re-applies the
+    // "no build for this card" greying.
+    refresh_accel_sensitivity();
+    refresh_depth_sensitivity();
+}
+
+// Select the row whose subject has this catalog id.
+//
+// Insensitive rows are refused rather than selected: those are subjects no
+// compiled-in card has an artifact for, and starting one would run nothing for
+// a whole benchmark duration. The caller reports the skip.
+bool ControlPanel::select_subject_by_id(const std::string& id, bool is_pipeline) {
+    Gtk::ListBox& list = is_pipeline ? pipeline_list_ : model_list_;
+    for (int i = 0;; ++i) {
+        auto* row = dynamic_cast<SubjectRow*>(list.get_row_at_index(i));
+        if (!row) break;
+        if (!row->subject || row->subject->id != id) continue;
+        if (!row->get_sensitive()) return false;
+        notebook_.set_current_page(is_pipeline ? 1 : 0);
+        list.select_row(*row);
+        return true;
+    }
+    return false;
+}
+
 const BenchSubject* ControlPanel::current_subject() const {
     const Gtk::ListBox& list =
         notebook_.get_current_page() == 1 ? pipeline_list_ : model_list_;

@@ -147,6 +147,7 @@ add_executable(mb-benchmark
   src/Probes.cpp
   src/Catalog.cpp
   src/Logger.cpp
+  src/Automation.cpp
   src/Fetcher.cpp
   src/Bench.cpp
   src/bench_runners.cpp
