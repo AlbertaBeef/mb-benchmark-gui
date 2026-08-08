@@ -754,7 +754,20 @@ void MainWindow::tick_automation_end() {
     log_.note("automation: end delay elapsed — closing");
     auto_done_ = false;          // don't re-enter while the close is in flight
     auto_plan_.enabled = false;
-    close();
+
+    // Close from an idle callback, NOT from here.
+    //
+    // close() tears the window down synchronously, so calling it inline left
+    // on_tick() running on with destroyed widgets — `gtk_label_set_markup:
+    // assertion 'GTK_IS_LABEL (self)' failed` from the status label, then a
+    // segfault. Same shape as the exit crash under Known issues: a handler
+    // touching a widget that has already died.
+    //
+    // `closing_` stops the rest of this tick; the idle handler then runs with
+    // no tick in flight. Logger is line-buffered, so every row written so far
+    // is already on disk regardless of how the process ends.
+    closing_ = true;
+    Glib::signal_idle().connect_once([this] { close(); });
 }
 
 // Step forward, wrapping or finishing according to the plan.
@@ -940,6 +953,10 @@ bool MainWindow::on_tick() {
     controls_->set_busy(engine_.stopping());
 
     tick_automation();
+    // Automation has asked to close: stop the tick here and touch nothing
+    // further. Everything below this point drives widgets, and the window is
+    // about to be torn down.
+    if (closing_) return false;
 
     if (engine_.active()) {
         std::string text = run_status_;

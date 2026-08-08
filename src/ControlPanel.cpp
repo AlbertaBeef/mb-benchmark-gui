@@ -553,7 +553,44 @@ void ControlPanel::populate(Gtk::ListBox& list,
     }
 }
 
-void ControlPanel::apply_automation_settings(const AutomationSettings& s) {
+void ControlPanel::apply_automation_settings(const AutomationSettings& in) {
+    // Snapshot the panel once, the first time automation touches it, and apply
+    // every step as baseline + plan rather than as a delta on whatever the
+    // previous step left behind.
+    //
+    // Without this, per-step settings leak forward: a step saying
+    // `accelerators = hailo deepx` unticked the other two, and the *next* step
+    // — which said nothing about accelerators, so nothing re-ticked them — ran
+    // on those two as well. Observed 2026-08-08: step 3 asked for
+    // `axelera.cores=1` and Axelera never ran at all, because step 2 had
+    // switched it off. A knob a step does not mention must mean "the value it
+    // had before automation started", not "whatever the last step set".
+    if (!auto_baseline_valid_) {
+        for (int i = 0; i < kAccelCount; ++i) {
+            const Accel a = accel_at(i);
+            AccelSettings& b = auto_baseline_.accel[i];
+            b.enabled = accel_wanted_[i] ? 1 : 0;
+            if (accel_has_both_api_modes(a) && api_sync_[i])
+                b.api = api_sync_[i]->get_active() ? 0 : 1;
+            if (depth_spin_[i])          // raw, not depth(a): that reports 1 in Sync
+                b.depth = static_cast<int>(depth_spin_[i]->get_value());
+            if (a == Accel::Axelera)
+                b.cores = static_cast<int>(axelera_cores_.get_value());
+            if (a == Accel::MemryX && memryx_freq_mhz() > 0)
+                b.freq_mhz = memryx_freq_mhz();
+            if (a == Accel::Qualcomm) {
+                b.nsps = static_cast<int>(qualcomm_nsps_.get_value());
+                b.perf = qualcomm_perf_mode();
+                const int row = qualcomm_backend_.get_active_row_number();
+                b.backend = row == 1 ? "gpu" : row == 2 ? "cpu" : "htp";
+            }
+        }
+        auto_baseline_valid_ = true;
+    }
+
+    AutomationSettings s = auto_baseline_;
+    s.overlay(in);
+
     for (int i = 0; i < kAccelCount; ++i) {
         const Accel a = accel_at(i);
         const AccelSettings& cfg = s.accel[i];

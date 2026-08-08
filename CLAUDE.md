@@ -242,6 +242,15 @@ Three layers, cleanly separated. Keep it that way.
   plan asking Axelera for depth 8 lands on its real ceiling of 2 rather than
   being rejected.
 
+  **It snapshots the panel once and applies every step as baseline + defaults +
+  step**, never as a delta on the previous step. Widget state is sticky, so
+  without the baseline a per-step setting leaks forward: observed 2026-08-08,
+  step 2's `accelerators = hailo deepx` unticked the other two cards and step 3
+  — which said nothing about accelerators — silently ran on those two as well,
+  so its `axelera.cores=1` applied to a card that never started. A knob a step
+  does not mention means "the value it had before automation began", not
+  "whatever the last step set".
+
   **The shipped plans deliberately do not set `accelerators`.** Unset means
   "whatever the panel has ticked", which is every card the build has; pinning a
   list would silently exclude Qualcomm on the IQ-9075, or the four M.2 cards on
@@ -260,6 +269,12 @@ Three layers, cleanly separated. Keep it that way.
   CSV, same teardown. Four behaviours that are deliberate:
   - **A hand-started run is never cut short.** `auto_owns_run_` separates a run
     automation started from one the user did.
+  - **The app never closes from inside `on_tick()`.** `close()` tears the window
+    down synchronously, so calling it there left the rest of the tick driving
+    destroyed widgets — `gtk_label_set_markup: assertion 'GTK_IS_LABEL (self)'
+    failed`, then SIGSEGV (2026-08-08). `tick_automation_end()` sets `closing_`,
+    `on_tick` returns false on seeing it, and the close runs from an idle
+    callback with no tick in flight.
   - **A stuck `stopping()` is reported, not worked around.** A card wedged
     inside a vendor SDK call never reaches the between-frames `stop_flag` check,
     so `stopping()` can last forever — seen 2026-08-08, a MemryX timeout held it

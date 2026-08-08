@@ -156,6 +156,12 @@ private:
     // value-initialized to *false*, which would silently disable a new card
     // everywhere without any other symptom.
     bool accel_wanted_[kAccelCount] = {true, true, true, true, true};
+
+    // The control state as it was before automation first touched it. Every
+    // step is applied as baseline + [automation] defaults + that step's
+    // overrides, so a setting one step states cannot leak into the next.
+    AutomationSettings auto_baseline_;
+    bool auto_baseline_valid_ = false;
     bool syncing_accels_ = false;  // guards the programmatic set_active()
 
     Gtk::Button run_button_{"Start benchmark"};

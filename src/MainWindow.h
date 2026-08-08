@@ -145,6 +145,10 @@ private:
     // Seconds counted since the plan finished, for the `end` delay before the
     // app closes itself.
     double auto_end_s_ = 0.0;
+    // Set when automation has asked to close. on_tick() bails out immediately
+    // on seeing it — see tick_automation_end() for why the close cannot happen
+    // inline.
+    bool closing_ = false;
     // Last error string seen per card, so a persistent failure is logged once
     // rather than every tick.
     std::string last_error_[kAccelCount];
