@@ -315,19 +315,6 @@ ControlPanel::ControlPanel(const Catalog& catalog)
             if (!accel_present(a)) { depth_spin_[i] = nullptr; continue; }
             auto* page = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 4);
             page->set_margin(8);
-            // Only shown on cards with nothing beyond API/Depth. The
-            // "unavailable" wording this used to carry is gone with the greyed
-            // tabs — an absent card has no tab to explain itself on.
-            auto* note = Gtk::make_managed<Gtk::Label>();
-            note->set_markup("<small>" +
-                             Glib::Markup::escape_text(
-                                 std::string("No ") + accel_name(a) +
-                                 "-specific controls yet.") +
-                             "</small>");
-            note->set_xalign(0.0);
-            note->set_wrap(true);
-            note->add_css_class("dim-label");
-
             // API mode, first row of every tab. Radios where the vendor ships
             // both a blocking and an async inference API; a plain label where it
             // ships only one, so the UI never offers a mode that does not exist.
@@ -389,8 +376,7 @@ ControlPanel::ControlPanel(const Catalog& catalog)
                 page->append(*row);
             }
 
-            // Per-card controls. Only some cards have anything else to
-            // configure; the rest keep the placeholder note alone.
+            // Per-card controls, beyond the API and Depth rows every tab has.
             if (a == Accel::MemryX) {
                 auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
                 auto* lbl = Gtk::make_managed<Gtk::Label>("Core frequency");
@@ -499,11 +485,6 @@ ControlPanel::ControlPanel(const Catalog& catalog)
                 page->append(*brow);
             }
 
-            // Cards with real controls do not need the placeholder telling the
-            // user there are none.
-            if (a != Accel::MemryX && a != Accel::Axelera && a != Accel::Qualcomm) {
-                page->append(*note);
-            }
             accel_notebook_.append_page(*page, accel_name(a));
         }
         append(accel_notebook_);

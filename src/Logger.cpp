@@ -123,8 +123,9 @@ bool Logger::open(const std::string& path,
 
     f_ = std::fopen(path.c_str(), "w");
     if (!f_) return false;
-    // Line-buffered, so `tail -f` stays current and a hard kill loses at most a
-    // partial final line. mb-powermon's `buffering=1` contract.
+    // Line-buffered, so `tail -f` stays current. mb-powermon's `buffering=1`
+    // contract — but see write_line(): line buffering alone only gets the bytes
+    // into the page cache, which is not enough for this file's actual job.
     std::setvbuf(f_, nullptr, _IOLBF, 0);
     path_ = path;
     telemetry_cols_ = telemetry.size();
@@ -157,7 +158,22 @@ void Logger::write_line(const std::string& s) {
         // Self-disable rather than throw into the tick, exactly as mb-powermon
         // drops its file handle on OSError.
         broken_ = true;
+        return;
     }
+    // Then force it to the platter. Line buffering only hands the bytes to the
+    // kernel; the page cache can hold them for tens of seconds, so a machine
+    // that dies loses the rows describing how it died — which is precisely the
+    // case this log exists for. Measured 2026-08-08: two host crashes during an
+    // automation run, and in both the CSV's last row predated the crash by an
+    // unknown margin, making the timeline useless.
+    //
+    // One row per second, so this is one fsync per second. Cheap next to what
+    // the benchmark itself is doing, and the alternative is a forensic log that
+    // is missing its most important seconds. A failed fsync is not fatal: the
+    // data is already written, it is only the durability guarantee that is
+    // lost, so the logger keeps going.
+    std::fflush(f_);
+    (void)::fsync(::fileno(f_));
 }
 
 void Logger::write_row(const Row& r) {

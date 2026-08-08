@@ -25,11 +25,13 @@
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -93,10 +95,94 @@ public:
         // its stages, so cap the instance count at what each stage can own.
         const size_t nstages = std::max<size_t>(1, members.size());
         const size_t avail = std::max<size_t>(1, device_.subdevice_count);
+
+        // ---- how many sub-devices this model's constants need ----
+        //
+        // Voyager sizes num_sub_devices from the model's L2 constant footprint
+        // at ~1.5 MB per AIPU core. Nothing in libaxruntime reports it, so it
+        // comes from model.json.
+        //
+        // **It is only applied when the model actually fits in the part's L2.**
+        // The vendor prebuilts do not: ResNet-50 declares 7.97 MB of L2 and
+        // YOLOv8m 8.01 MB against the Metis's 6 MB total, and both load and run
+        // on a single sub-device — so those pools are evidently paged, and the
+        // formula cannot be read literally for them. Taking it literally would
+        // demand 4+ cores each and collapse ResNet-50 from four instances to
+        // one, throwing away half its measured throughput. Where the model does
+        // fit — our locally compiled ArcFace at 3.55 MB, which matches the
+        // Voyager guidance of 3 cores exactly — the rule is honoured.
+        size_t l2_per_core = env_bytes("MB_AXELERA_L2_PER_CORE_MB", 0);
+        if (l2_per_core == 0) l2_per_core = 1500000;  // ~1.5 MB per AIPU core
+        const size_t l2_total = l2_per_core * avail;
+        const size_t ddr_budget = env_bytes("MB_AXELERA_DDR_BUDGET_MB", 0);
+
+        size_t want = 1;          // sub-devices per connection
+        size_t ddr_per_inst = 0;
+        for (const auto& m : members) {
+            const Footprint fp = read_footprint(resolve_model_json(m.path));
+            if (!fp.ok) continue;
+            ddr_per_inst += fp.ddr;
+            // Declared L2 larger than the whole part means the pools are
+            // paged, so the per-core arithmetic says nothing useful — leave
+            // this stage at one sub-device. Not surfaced in describe(): it is
+            // true of every vendor prebuilt we ship, so it would be noise on
+            // every row of every CSV rather than information.
+            if (fp.l2 == 0 || fp.l2 > l2_total) continue;
+            const size_t need = (fp.l2 + l2_per_core - 1) / l2_per_core;
+            want = std::max(want, std::clamp<size_t>(need, 1, avail));
+        }
+
+        // Total sub-devices in flight cannot exceed what the card has.
+        size_t max_inst = std::max<size_t>(1, avail / (want * nstages));
+
+        // ---- cap instances by device memory ----
+        //
+        // Every instance loads its own copy of the model's DDR constants, so N
+        // instances cost N x that. YOLOv8m carries 53.8 MB against ResNet-50's
+        // 20.4 MB, i.e. 215 MB at four instances versus 82 MB — and YOLOv8m at
+        // four instances is what died on 2026-08-08, during *load*, at idle
+        // power (2.3 W, no rail collapse) with the smallest L2 of any model we
+        // ship. Device memory is the suspect that fits those facts.
+        //
+        // axrDeviceInfo::max_memory is documented as always 0 in this runtime,
+        // so the budget cannot be queried and is not guessed at by default:
+        // set $MB_AXELERA_DDR_BUDGET_MB to enable the cap. The footprint is
+        // reported eitherway so the next failure has a number attached to it.
+        if (ddr_per_inst > 0) {
+            // Round rather than truncate: ArcFace's 0.83 MB would otherwise
+            // report as "0 MB/instance", which reads like a missing number.
+            const size_t mb = (ddr_per_inst + 512 * 1024) / (1024 * 1024);
+            if (mb > 0) ddr_note_ = std::to_string(mb) + " MB/instance";
+            if (ddr_budget > 0) {
+                const size_t fits = std::max<size_t>(1, ddr_budget / ddr_per_inst);
+                if (fits < max_inst) {
+                    sizing_note_ = "capped to " + std::to_string(fits) +
+                                   " instance(s) by the " +
+                                   std::to_string(ddr_budget / (1024 * 1024)) +
+                                   " MB device-memory budget";
+                }
+                max_inst = std::min(max_inst, fits);
+            }
+        }
+
         instances_ = static_cast<int>(
-            std::clamp<size_t>(static_cast<size_t>(cores_), 1,
-                               std::max<size_t>(1, avail / nstages)));
-        const size_t want = 1;  // sub-devices per connection
+            std::clamp<size_t>(static_cast<size_t>(cores_), 1, max_inst));
+
+        // Say so when the request could not be honoured. Without this the AIPU
+        // cores control fails silently: ArcFace needs 3 sub-devices for its L2
+        // constants, so only one instance fits and asking for 2, 3 or 4 all
+        // produce the same run — the right answer, arriving with no
+        // explanation. The DDR cap sets its own note; this covers the rest.
+        if (static_cast<size_t>(cores_) > max_inst && sizing_note_.empty()) {
+            sizing_note_ = std::to_string(cores_) + " requested, " +
+                           std::to_string(instances_) + " fits";
+            if (want > 1) {
+                sizing_note_ += " (" + std::to_string(want) +
+                                " sub-dev/instance for L2)";
+            } else if (nstages > 1) {
+                sizing_note_ += " (" + std::to_string(nstages) + " stages share the card)";
+            }
+        }
 
         for (const auto& m : members) {
             auto st = std::make_unique<Stage>();
@@ -182,7 +268,11 @@ public:
                 }
                 describe_ = shape + " int8 · " + std::to_string(instances_) +
                             (instances_ == 1 ? " core" : " cores");
+                if (st->cores > 1)
+                    describe_ += " x" + std::to_string(st->cores) + " sub-dev";
                 if (depth_ > 1) describe_ += " · depth " + std::to_string(depth_);
+                if (!ddr_note_.empty()) describe_ += " · " + ddr_note_;
+                if (!sizing_note_.empty()) describe_ += " · " + sizing_note_;
             }
             stages_.push_back(std::move(st));
         }
@@ -297,6 +387,89 @@ private:
     }
 
     // axr_load_model wants the model_*.json (or model.json) file, not the
+    // ---- model.json footprint -------------------------------------------
+    //
+    // The Voyager SDK sizes num_sub_devices from the model's L2 constant
+    // footprint (~1.5 MB per AIPU core), not from a number the caller picks.
+    // Nothing in libaxruntime exposes it, so it is read from model.json.
+    //
+    // Deliberately a minimal scanner rather than a JSON library, in the same
+    // spirit as Catalog's hand-rolled INI reader: model.json's memory_pools is
+    // a flat array of flat objects, and pulling in a dependency to read three
+    // fields would not pay for itself.
+    struct Footprint {
+        bool ok = false;
+        size_t l2 = 0;        // every l2 pool, blob-backed or scratch
+        size_t l2_const = 0;  // just the blob-backed constants
+        size_t ddr = 0;       // every ddr pool
+    };
+
+    static Footprint read_footprint(const std::string& model_json) {
+        Footprint fp;
+        std::ifstream f(model_json);
+        if (!f) return fp;
+        const std::string j((std::istreambuf_iterator<char>(f)),
+                            std::istreambuf_iterator<char>());
+        const size_t arr = j.find("\"memory_pools\"");
+        if (arr == std::string::npos) return fp;
+        size_t i = j.find('[', arr);
+        if (i == std::string::npos) return fp;
+
+        int depth = 0;
+        size_t obj_start = std::string::npos;
+        for (; i < j.size(); ++i) {
+            if (j[i] == '{') { if (depth++ == 0) obj_start = i; continue; }
+            if (j[i] == ']' && depth == 0) break;
+            if (j[i] != '}') continue;
+            if (--depth != 0 || obj_start == std::string::npos) continue;
+
+            const std::string obj = j.substr(obj_start, i - obj_start + 1);
+            obj_start = std::string::npos;
+
+            auto field = [&](const char* key) -> std::string {
+                const size_t k = obj.find(std::string("\"") + key + "\"");
+                if (k == std::string::npos) return {};
+                size_t c = obj.find(':', k);
+                if (c == std::string::npos) return {};
+                ++c;
+                while (c < obj.size() && std::isspace((unsigned char)obj[c])) ++c;
+                if (c < obj.size() && obj[c] == '"') {
+                    const size_t e = obj.find('"', c + 1);
+                    return e == std::string::npos ? std::string()
+                                                  : obj.substr(c + 1, e - c - 1);
+                }
+                size_t e = c;
+                while (e < obj.size() && (std::isdigit((unsigned char)obj[e]) ||
+                                          obj[e] == '.' || obj[e] == '-')) ++e;
+                return obj.substr(c, e - c);
+            };
+
+            const std::string mem = field("memory");
+            const std::string sz = field("size");
+            if (mem.empty() || sz.empty()) continue;
+            const double bytes = std::strtod(sz.c_str(), nullptr);
+            if (bytes <= 0) continue;
+            const bool has_blob = obj.find("\"blob_file\"") != std::string::npos;
+            if (mem == "l2") {
+                fp.l2 += static_cast<size_t>(bytes);
+                if (has_blob) fp.l2_const += static_cast<size_t>(bytes);
+            } else if (mem == "ddr") {
+                fp.ddr += static_cast<size_t>(bytes);
+            }
+            fp.ok = true;
+        }
+        return fp;
+    }
+
+    static size_t env_bytes(const char* name, size_t fallback_mb) {
+        const char* e = std::getenv(name);
+        if (e && *e) {
+            const double mb = std::strtod(e, nullptr);
+            if (mb > 0) return static_cast<size_t>(mb * 1024 * 1024);
+        }
+        return fallback_mb * 1024 * 1024;
+    }
+
     // directory the catalog names.
     static std::string resolve_model_json(const std::string& dir) {
         if (!fs::is_directory(dir)) return dir;
@@ -346,6 +519,8 @@ private:
     int depth_ = 2;                  // double_buffer on by default
     int cores_ = 4;
     int instances_ = 1;
+    std::string sizing_note_;   // why the instance count was clamped, if it was
+    std::string ddr_note_;      // device-memory footprint per instance
 
     std::vector<std::thread> threads_;
     std::atomic<bool> stop_{false};

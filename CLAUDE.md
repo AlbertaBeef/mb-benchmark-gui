@@ -410,6 +410,14 @@ Three layers, cleanly separated. Keep it that way.
     the throwing `fs::` overloads. `on_tick` runs on the GTK main loop, so a
     failed open degrades to a no-op and a failed write self-disables the logger
     rather than throwing out of the tick.
+  - **Every row is `fsync`ed.** Line buffering only reaches the page cache, and
+    dirty pages can sit there for tens of seconds — so a *machine* crash loses
+    exactly the rows that describe it. Learned 2026-08-08 from two host crashes
+    during an automation run, where the CSV's last row predated the crash by an
+    unknown margin and made the timeline worthless. It is one fsync per second,
+    which is nothing beside the benchmark. Line buffering is still set, for
+    `tail -f`. **Do not "optimise" this away** — a forensic log missing its final
+    seconds is not a forensic log.
 - **The startup note names each probe's BDF, and that is the only place the log
   records which card an address is.** `discover()` writes
   `MemryX @ 0000:c1:00.0: 4 temp + 1 power sensor(s)`, and the `@ <bdf>` half is
@@ -669,7 +677,32 @@ which does have one and will not warn.
   parked at 50 MHz — and stacking four instances on one connection makes them
   collide on the command queue. **N cores busy means N connections, one instance
   and one sub-device each.** That is why the runner sets `instances_ = cores_`
-  and gives every instance its own connection.
+  and gives every instance its own connection. "One sub-device each" holds for
+  models whose constants fit on one core — every vendor prebuilt we ship — but
+  is not universal; the next paragraph is what decides it.
+
+  **`num_sub_devices` is sized from the model's L2 constants, not chosen.**
+  Voyager's rule is ~1.5 MB of L2 per AIPU core, read from `model.json`'s
+  `memory_pools` — nothing in libaxruntime reports it. `bench_axelera.cpp` has a
+  minimal scanner for it (same spirit as Catalog's INI reader; a JSON library
+  would not pay for three fields).
+
+  **It is applied only when the model actually fits in the part's 6 MB.** The
+  vendor prebuilts do not: ResNet-50 declares 7.97 MB of L2 and YOLOv8m 8.01 MB,
+  and both load and run on a *single* sub-device — so those pools are paged and
+  the arithmetic says nothing about them. Taking it literally would demand 4+
+  cores each and collapse ResNet-50 from four instances to one, throwing away
+  half its measured throughput. Our locally compiled ArcFace (3.55 MB → 3 cores)
+  does fit and matches Voyager's own guidance exactly, and gets 3 sub-devices.
+  So: **a big declared L2 means "paged", not "needs more cores"** — don't
+  "fix" the runner by removing the fits-in-L2 gate.
+
+  **Every instance loads its own copy of the DDR constants**, so N instances
+  cost N × that: YOLOv8m carries 58 MB against ResNet-50's 20 MB, i.e. 234 MB at
+  four instances versus 79 MB. `axrDeviceInfo::max_memory` is documented as
+  always 0 in this runtime, so the budget cannot be queried and is **not guessed
+  at** — the footprint is always reported in `describe()` (and so lands in the
+  CSV's `axelera_cfg`), and `$MB_AXELERA_DDR_BUDGET_MB` enables an actual cap.
 
   **The prebuilt zip ships four compilations of every model — 1, 2, 3 and 4
   cores — and taking the 1-core one is correct.** `config/models.conf` has
@@ -1179,11 +1212,66 @@ all four cores confirmed at 800 MHz — so this is not "4 never works", it is "4
 not survivable". **Do not raise the default back to 4 on the strength of one
 good run.**
 
-Worth testing before believing any software explanation: `Link down` under
-four cores at 800 MHz is what a **power** limit looks like, and this host has an
-INA228 on the Axelera rail (`config/ina228.conf`, `1-1.2`). Watch that trace in
-`mb-powermon-gui` across a 3-core and a 4-core run — if the rail collapses at the
-link drop, this is an M.2 slot power-budget problem, not a driver bug.
+**It is also model-dependent, and the failure is at *load*, not under load.**
+Measured 2026-08-08 through an `--automation` sweep at `axelera.cores = 4`:
+
+| step | outcome | rail | clocks | maxT |
+| --- | --- | ---: | --- | ---: |
+| ResNet-50, 2 min | **fine**, ~700 fps | 5.2–5.4 W | 4 × 800 MHz | 47 °C |
+| YOLOv8m, next load | dead in ~2 s | **2.3 → 2.0 W** | unreadable | — |
+
+ResNet-50 sustained all four cores for two minutes; the very next Axelera model
+load died with the MSI timeouts above. During the *working* run the vendor
+library also emitted `AxeleraDmaBuf.cpp: DMA transfer failed: Device or resource
+busy` / `wait_for_dma called but no dma transfer is in progress` — four
+instances contending on the DMA path, and the earliest warning sign there is.
+
+**The power-budget hypothesis is dead — do not re-raise it.** This file used to
+say a `Link down` at four cores is what a power limit looks like, and to watch
+the INA228 on the Axelera rail across 3- and 4-core runs. That test has now been
+run, from the app's own CSV: the rail **neither collapsed nor spiked**. It sat at
+~2.3 W through the failure, fell to 2.0 W, and settled at 2.41 W — idle level.
+Peak draw under a *healthy* 4-core run was 5.4 W. The card dies while loading a
+model at idle power, so this is not an M.2 slot power budget and not thermal
+(47 °C). Note also that YOLOv8m was the **second** Axelera load session of that
+process, which points at the separate one-session-per-power-cycle entry below
+rather than at core count alone.
+
+**`axelera.cores = 4` has twice taken the whole host down, not just the card.**
+Reproduced 2026-08-08 on the same `--automation` plan, twice from a cold power
+cycle: the machine died — display lost, no shutdown, nothing written by the
+kernel or by systemd — while `cores = 1` completed the identical eight-step plan
+end to end. That is a strong correlation and **not** a mechanism; treat it as a
+reason to keep the default at 2 rather than as an explanation.
+
+What was ruled out, so it is not re-derived:
+- **Not CPU thermal, not power.** The BMC's SEL has no entry at either crash —
+  no `CPU_THERMTRIP`, no power event, nothing between the boot's own startup
+  burst and the next boot's clock sync. (`sudo ipmitool sel elist`; install
+  `ipmitool` first, it is not on this host by default.)
+- **Not the driver's DMA cleanup.** `axl …: Previous async DMA transfer not
+  cleaned up (state=4)` floods at teardown of a multi-instance run and looks
+  damning, but it tracks Axelera *activity*, not crashes: two boots logged ~14k
+  of them and shut down cleanly, and the *first* crash logged none. Same for
+  `Failed to wait for MSI` and `Link down` — present only on boots that
+  survived.
+- **`IO_PAGE_FAULT` on `axl` is routine.** Exactly one per boot, on every boot,
+  including cleanly shut down ones. It fires when the runtime loads firmware.
+
+**Do not trust the CSV's or the journal's last timestamp as the crash time.**
+Both crashes were first read as "died before YOLOv8m loaded", from the last row
+in the log — which was wrong. Line buffering only reaches the page cache, and
+journald fsyncs on an interval, so both tails predate a host crash by an unknown
+margin. `Logger` now fsyncs every row for exactly this reason; the journal still
+does not, so prefer the CSV.
+
+**The host has a separate, chronic thermal problem** worth knowing about before
+leaving a multi-hour sweep unattended: the SEL holds five `Processor
+CPU_THERMTRIP` events between 2026-07-14 and 2026-08-06, each an instant
+hardware power-off followed by a restart a minute later — the same "lost the
+monitor, nothing in the logs" symptom, and *not* what happened on 08-08. Idle
+temperatures are fine (CPU 40 °C, Card Side 46 °C) but only two chassis fans
+report at all, at 500 and 800 RPM.
 
 **The Metis wedges after a load session and only a power cycle clears it.**
 Symptom, from *any* client — this app, `axcmd`, or the vendor's own Voyager

@@ -700,7 +700,10 @@ otherwise come back hours later to an idle app.
 
 > **Do not set `axelera.cores = 4` in an unattended plan.** Claiming all four
 > AIPU cores wedges the card — every MSI vector times out, the PCIe link drops,
-> and only a full power-off recovers it. 3 is the highest value observed stable.
+> and only a full power-off recovers it. 3 is the highest value observed stable,
+> and the shipped default of 2 sits one below that. On this host it has twice
+> gone further and taken the **whole machine** down mid-plan, where `cores = 1`
+> completed the same plan end to end.
 
 If a card wedges mid-run the engine can sit in *stopping* indefinitely — the
 worker never returns from the vendor SDK. Automation cannot start anything then
@@ -735,6 +738,11 @@ MB_BENCH_NO_LOG=1             ./build/mb-benchmark   # off
 `time` stays first on purpose: the sibling plotter reads column 0 *positionally*
 as the timestamp, so anything ahead of it is a hard error rather than a skipped
 column. `host` sits immediately after.
+
+Every row is flushed and `fsync`ed as it is written, so the file is accurate up
+to the second even if the machine dies — which is the case it exists for. A log
+that loses its last thirty seconds to the page cache cannot tell you what
+happened.
 
 Two conventions worth knowing. **A missing reading is an empty field**, never
 `nan` and never `0` — `0.0 W` is a real INA228 overflow signal, so the
