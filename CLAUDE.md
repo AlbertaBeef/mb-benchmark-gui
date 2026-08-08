@@ -740,7 +740,9 @@ which does have one and will not warn.
   a property of the card, not of this runner.
 
   **The vendor's 2054 fps on ResNet-50 remains unexplained**, and it is a real
-  measurement: it comes from Voyager's `End2EndTracer`, which reports
+  measurement — though see **Work per frame** for the scale of the gap: even
+  2054 fps is only 7.8% of the Metis's rated 214 TOPS, so this is not a tuning
+  shortfall: it comes from Voyager's `End2EndTracer`, which reports
   `1 / mean(inter-frame interval)` with **no multiplier** (unlike `AipuTracer` /
   `HostTracer`, which do multiply by core count — don't confuse the two, they
   live in different modules with the same class names). Ruled out so far: a
@@ -907,6 +909,82 @@ the accelerator, not this CPU:
   identical on every run and every card.
 - **Compare within a mode, never across.** A sync figure and an async figure
   answer different questions; the README states this and the UI labels the run.
+
+## Work per frame, and how much of each card that uses
+
+Computed 2026-08-08 from the source ONNX in
+`../envic_ai_python/ai_reference/models` with a node-walking MAC counter
+(Conv/ConvTranspose/Gemm/MatMul; `onnx.shape_inference`, batch pinned to 1).
+**GOP = 2 x MAC.** Reproduce it rather than trusting these if a model changes.
+
+| model | input | GMAC/frame | **GOP/frame** | params |
+| --- | --- | ---: | ---: | ---: |
+| ArcFace MobileFaceNet | 112x112 | 0.438 | **0.88** | 2.04 M |
+| SCRFD-500M | 640x640 | 0.734 | **1.47** | 0.63 M |
+| OSNet x1.0 | 256x128 | 0.979 | **1.96** | 2.16 M |
+| SCRFD-2.5G | 640x640 | 3.428 | **6.86** | 0.82 M |
+| ResNet-50 | 224x224 | 4.087 | **8.17** | 23.6 M |
+| SCRFD-10G | 640x640 | 13.341 | **26.68** | 4.23 M |
+| YOLOv8s | 640x640 | 14.301 | **28.60** | 11.2 M |
+| YOLOv8m | 640x640 | 39.468 | **78.94** | 25.9 M |
+
+The counter is validated three ways, which is why these are worth quoting:
+YOLOv8s/m reproduce Ultralytics' published 28.6 / 78.9 **exactly** (confirming
+their "GFLOPs" are 2xMAC, a common factor-of-two trap), and a ResNet-50 backbone
+comes out at 4.087 GMAC against the published 4.09. ResNet-50's own ONNX is not
+in the tree; its row is measured from `ai_deepx/models/deepmar_resnet50-1.onnx`,
+which is that backbone plus a small attribute head.
+
+**The SCRFD names understate what we run by exactly 4/3.** InsightFace quotes
+those flops at VGA 640x480; our artifacts are 640x640. `13.341 x 0.75 = 10.006`
+against the "10G" nameplate — an exact match, and the same ratio holds for the
+other two. So **SCRFD-10G is a 26.7 GOP model here, heavier than YOLOv8s** — do
+not read the model name as its cost.
+
+### How much of that runs on the accelerator
+
+**In this app: essentially all of it, by construction.** Everything under
+**Measurement choices** exists to keep host work out of the timed loop, so the
+frame rate is the accelerator. In a full pipeline the vendors differ in what
+they leave to the host — Hailo and DeepX bake NMS/decode into the artifact,
+MemryX's compiler crops a `_post` head off (which is why the fetcher
+deliberately does not extract it), and Axelera does quantize/pad, unpad/dequant
+and the whole DFL/sigmoid/NMS decode in host NumPy.
+
+**But in *op* terms even the worst case is negligible.** YOLOv8m on Axelera:
+the host touches 1.23 M input elements and 706 k output elements at a few ops
+each, ~11 MOP against 78,937 MOP of model — **0.014%**, i.e. >99.98% of
+operations are on the accelerator regardless of vendor.
+
+**Op share and time share diverge by four orders of magnitude, and that is the
+point.** On the same weak-host cascade, Axelera's host post-processing measured
+**121 ms against 80 ms of model time** — 60% of wall clock for 0.014% of the
+ops, because the NPU runs at ~1e13 ops/s and host NumPy at ~1e9. **Never reason
+about where the time goes from an op count.**
+
+**No DeepX CPU-fallback for anything we ship** — verified by screening every
+`Conv` node in all eight models for dilated depthwise (DX-COM 2.2.0's known
+fallback trigger): 17/60/20 depthwise convs in ArcFace/OSNet/SCRFD-500M, every
+one at dilation 1, and none at all in YOLOv8 or SCRFD-2.5G/10G. So the one case
+where real compute would leave the NPU does not arise here.
+
+### Card utilisation
+
+Derived, not measured: the ResNet-50 figures from **Host specifics** multiplied
+by 8.174 GOP/frame, against each vendor's rated INT8 throughput.
+
+| card | fps | achieved | rated | utilisation |
+| --- | ---: | ---: | ---: | ---: |
+| MemryX MX3 | 1104 | 9.0 TOPS | 14 @ 600 MHz | **64%** |
+| Hailo-8 | 1369 | 11.2 TOPS | 26 | **43%** |
+| DeepX M1 | 1087 | 8.9 TOPS | 25 | **36%** |
+| Axelera Metis | 695 | 5.7 TOPS | 214 | **2.7%** |
+
+Three cards land in a plausible 36-64% band. **Axelera delivers under 3% of its
+nameplate**, and even the vendor's own unexplained 2054 fps would be only 7.8%.
+That reframes the open "18% of vendor" question under **API modes**: the gap to
+the *datasheet* is far larger than the gap to the vendor's own benchmark, so
+whatever is being missed is not a small tuning matter.
 
 ## Build / verify
 
@@ -1392,7 +1470,8 @@ power sensor, and older notes describing DeepX as "no power" predate the third
 and fourth shunts. Running `mb-powermon`/`mb-powermon-gui` at the same time
 fights over the Hailo power DVM (`DVM_ALREADY_IN_USE`).
 
-Rough numbers at max speed, for sanity-checking a change:
+Rough numbers at max speed, for sanity-checking a change. Multiply by the
+GOP/frame figures in **Work per frame** to turn any of these into achieved TOPS:
 
 | | Hailo sync | Hailo async | DeepX sync | DeepX async | Axelera sync | Axelera async |
 | --- | --- | --- | --- | --- | --- | --- |
