@@ -615,6 +615,56 @@ and feeds nothing. Search order:
    from any working directory
 3. `$XDG_CONFIG_HOME/mb-benchmark-gui/ina228.conf` (else `~/.config/…`)
 
+## Logging
+
+Every run writes a CSV, always, from app start — one row per 1 Hz tick, the same
+cadence as the graphs. It lands in `logs/` next to the binary
+(`mb-benchmark-YYYYMMDD-HHMMSS.csv`), which resolves relative to the executable
+like `config/` and `models/` do, so it works from any working directory.
+
+```bash
+MB_BENCH_LOG=/tmp/run.csv     ./build/mb-benchmark   # exact file, no timestamp
+MB_BENCH_LOG_DIR=/tmp         ./build/mb-benchmark   # directory, generated name
+MB_BENCH_NO_LOG=1             ./build/mb-benchmark   # off
+```
+
+| column | what |
+| ------ | ---- |
+| `time` | local ISO-8601, millisecond precision |
+| `host` | hostname — logs from the x86_64 box and the IQ-9075 stay distinguishable once files are concatenated |
+| `<bdf>_<LABEL>` … | every temperature, power and frequency reading, e.g. `0000:c1:00.0_T0` |
+| `bench_state` | `idle` · `starting` · `running` · `stopping` · `stopped` |
+| `bench_model`, `bench_target_fps` | what was selected; target is empty at max speed |
+| `<vendor>_cfg` | what that card actually ran — the runner's own description, e.g. `1x224x224x3 int8 · 2 cores · depth 2` |
+| `<vendor>_fps`, `<vendor>_fps_per_w`, `<vendor>_mj_per_frame` | its results that second |
+| `message` | anything worth knowing about that second |
+
+`time` stays first on purpose: the sibling plotter reads column 0 *positionally*
+as the timestamp, so anything ahead of it is a hard error rather than a skipped
+column. `host` sits immediately after.
+
+Two conventions worth knowing. **A missing reading is an empty field**, never
+`nan` and never `0` — `0.0 W` is a real INA228 overflow signal, so the
+distinction carries information. And there is a column for **every** card the
+binary knows about, including ones absent from this build; they stay empty, so
+two logs from the same binary line up column-for-column.
+
+The `message` column carries transitions rather than a running commentary: a
+card's load failure is logged the tick it changes, not once a second for the
+rest of the run. Download failures land there too — which is what the status
+line's "see the log" has always meant.
+
+**The telemetry columns are byte-compatible with the sibling
+[`mb-powermon`](../mb-powermon)**, so its plotter works on these files
+unchanged:
+
+```bash
+python3 ../mb-powermon/csv-to-html-plot.py -i logs/mb-benchmark-20260807-202752.csv
+```
+
+It warns once per benchmark column and ignores them, which is the intended cost
+of carrying both in one file.
+
 ## Resetting a card
 
 Any card can end up wedged — a killed process holding an MX3 session, a Metis

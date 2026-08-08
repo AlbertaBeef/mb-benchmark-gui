@@ -23,11 +23,14 @@ matters when porting:
   change; a `cp` in either direction is the correct way to port. Everything
   added here (`RangeMode`, per-series visibility, the adaptive time-label step)
   went into both, even where only one app exposes a control for it.
-- **`Probes.{h,cpp}` has diverged** — 1259 lines here against 1107 there. The
-  deliberate edits are the INA228 config-path search (see **Config**) and the
-  added `Probes::power_for_device()`, which needs `Catalog.h` and cannot compile
-  in the sibling. **Never `cp` this one**; port hunk by hunk. Doing otherwise
-  breaks that build, which has already happened once.
+- **`Probes.{h,cpp}` has diverged** — 1306 lines here against 1107 there, and the
+  gap grows. Four deliberate edits, none of them portable as a whole file: the
+  INA228 config-path search (see **Config**); `Probes::power_for_device()`, which
+  needs `Catalog.h` and **cannot compile** in the sibling; the whole frequency
+  family; and `set_note_sink()`, whose only consumer is our `Logger`. **Never
+  `cp` this one**; port hunk by hunk. Doing otherwise breaks that build, which
+  has already happened once. Things that *should* travel both ways — the
+  `plausible_temp()` gate, the helper's `os._exit(0)` — already have.
 
 The model/pipeline catalog is derived from `../envic_ai_cpp`'s
 `ai_common/pipeline_registry.cpp` — same models, same detector+recognizer
@@ -176,6 +179,13 @@ Three layers, cleanly separated. Keep it that way.
   build time". The three `Accel` switches in `Catalog.cpp` and
   `api_mode_is_native()` are exhaustive and *will* be caught by `-Wswitch`;
   this one won't. Check it by hand when adding a card.
+- **`Logger.{h,cpp}`** — CSV logging, no GTK. **The only file-writing code in
+  the app**, so it carries the filesystem discipline the rest of the codebase
+  never needed: `std::error_code` throughout, never the throwing `fs::`
+  overloads, and it degrades to a no-op rather than throwing out of the tick
+  (which runs on the GTK main loop). Always on; `MainWindow` opens it after
+  `Probes::discover()` and writes one row at the end of every tick. Schema and
+  the rules that make the file useful are under **Invariants**.
 - **`ControlPanel.{h,cpp}`** — the left panel: a `Gtk::Notebook` of two
   single-selection `Gtk::ListBox`es (Models / Pipelines), the frame-rate controls,
   the per-accelerator checkboxes, Start/Stop, status. `selection()` turns the
@@ -275,6 +285,47 @@ Three layers, cleanly separated. Keep it that way.
   readability problem the headroom rule exists to fix. `nice_ceil` is therefore
   no longer called from `GraphArea` at all; it stays in `util.h` because that
   file is shared verbatim and must not diverge.
+- **`Logger` writes one CSV row per tick, always on, and is GTK-free.** It is
+  the only file-writing code in the app; keep it testable headlessly like
+  `Probes`/`Catalog`. Rules that are load-bearing rather than stylistic:
+  - **A missing reading is an empty field.** Never `nan`, never `0` — `0.0 W`
+    is a real INA228 overflow signal, and the sibling plotter renders empty as a
+    gap. Same rule mb-powermon follows and for the same reason.
+  - **The header is written once, at open, and never revisited.** Legitimate
+    here because the metric lists are fixed for the process lifetime:
+    `Probes::discover()` runs exactly once and `flatten()` only from its end.
+    mb-powermon *does* defer its header up to 10 polls, because Adafruit INA228
+    labels mutate after rail classification — don't copy that, it does not apply.
+  - **Telemetry columns are `<bdf>_<LABEL>`, byte-compatible with mb-powermon**,
+    so `../mb-powermon/csv-to-html-plot.py` plots our files unchanged (verified).
+    `MetricInfo::label` is device-qualified (`"MemryX T0"`), so the device prefix
+    is stripped first — otherwise the column reads `<bdf>_MemryX_T0`. That tool
+    reads column 0 *positionally* as an ISO-8601 timestamp, so `time` must stay
+    first and stay ISO. **Verified the hard way**: `host` was briefly column 0
+    and `csv-to-html-plot.py` died with `ValueError: Invalid isoformat string`,
+    not a warning. `host` is column 1 — put anything new *after* `time`.
+  - **Only the three free-text columns are quoted** (`bench_model`, `<v>_cfg`,
+    `message`). Telemetry stays unquoted so an idle file is shaped exactly like
+    mb-powermon's.
+  - **Columns exist for all `kAccelCount` cards**, including those absent from
+    the build, and stay empty — two logs from one binary stay diffable.
+  - Filesystem discipline follows `Fetcher`: `std::error_code` everywhere, never
+    the throwing `fs::` overloads. `on_tick` runs on the GTK main loop, so a
+    failed open degrades to a no-op and a failed write self-disables the logger
+    rather than throwing out of the tick.
+- **Messages are logged on transition, not on repeat.** `Series::error` persists
+  for the life of a failed run and `note_` is rewritten every poll, so both are
+  compared against the previous value before being written — otherwise a single
+  failure becomes 60 lines a minute. Same for `bench_state` and for
+  `Fetcher::Status::errors`, which is indexed by how many have been logged.
+  `Fetcher::snapshot()` consumes its `finished_since_last` edge, so `on_tick`
+  must reuse the one `poll_downloads()` already took.
+- **`Series::detail` is what `<vendor>_cfg` logs.** It is the runner's own
+  `describe()` and was, until the logger existed, computed every tick and thrown
+  away — nothing in the UI reads it. `BenchEngine` does not expose `BenchItem`
+  after `start()` (`Worker` is private and incomplete), so `MainWindow` stashes
+  the items in `run_items_` to log the configuration of a run in progress.
+  **Never log `run_status_`** — it is Pango markup, not plain text.
 - **Sensor readings are plausibility-gated before they reach a graph.**
   `plausible_temp()` in `Probes.cpp` maps anything outside -40…150 °C to NaN, at
   all three hwmon parse sites (MemryX, the Qualcomm NSP zones, the board ambient
@@ -763,6 +814,15 @@ headlessly** — prefer this over driving the GUI, which belongs to the user:
 - **Downloads** — `Catalog.cpp Fetcher.cpp`; drive `Fetcher::start(catalog)` and
   poll `snapshot()` to verify a new `[vendor:*]` source end to end.
 - **Telemetry** — `Probes.cpp` alone.
+- **Logging** — `Logger.cpp Probes.cpp Catalog.cpp`; discover, poll a few times,
+  `write_row()`, `close()`. Set `MB_BENCH_LOG_DIR` to a scratch directory so the
+  driver does not litter `logs/`. Worth asserting on the output rather than
+  eyeballing it: `time` parses with Python's `datetime.fromisoformat`, a NaN
+  reading is an **empty** field and not `0.000000`, and a message containing a
+  comma and a quote survives Python's `csv` reader. Then run
+  `python3 ../mb-powermon/csv-to-html-plot.py -i <file>` — it must still plot,
+  warning only about the benchmark columns. That check is what caught `host`
+  being written as column 0.
 
 Set `MB_BENCH_MODELS_CONFIG`, `MB_BENCH_MODELS_ROOT` **and `MB_INA228_CONFIG`**
 when the driver binary lives outside `build/` — every config path resolves

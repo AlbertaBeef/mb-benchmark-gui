@@ -8,6 +8,7 @@
 #pragma once
 
 #include <memory>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -72,6 +73,17 @@ public:
     // Detect devices and build the metric lists. `notes` (optional) collects
     // human-readable diagnostics about what was / wasn't found.
     void discover(std::vector<std::string>* notes = nullptr);
+
+    // Optional sink for notes raised *after* discovery — a probe's `note_` can
+    // change while running (the Axelera collector being enabled, a card falling
+    // back to bootloader). Called from poll() only when the text actually
+    // changes, so it fires once per transition rather than every second.
+    //
+    // A plain std::function keeps Probes GTK-free and free of any dependency on
+    // the logger; MainWindow binds it to both g_message and Logger::note.
+    void set_note_sink(std::function<void(const std::string&)> sink) {
+        note_sink_ = std::move(sink);
+    }
     void poll();
 
     const std::vector<MetricInfo>& temp_metrics() const { return temp_metrics_; }
@@ -103,4 +115,6 @@ private:
     std::vector<MetricInfo> temp_metrics_, power_metrics_, freq_metrics_;
     std::vector<double> temp_values_, power_values_, freq_values_;
     std::vector<size_t> power_dev_order_;  // devices_ indices, power emission order
+    std::function<void(const std::string&)> note_sink_;
+    std::vector<std::string> last_notes_;   // per device, to detect transitions
 };

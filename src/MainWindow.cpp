@@ -122,7 +122,49 @@ MainWindow::MainWindow() {
     std::vector<std::string> notes;
     probes_.discover(&notes);
     catalog_.discover(&notes);
-    for (const auto& n : notes) g_message("%s", n.c_str());
+
+    // Open the CSV now: the header needs the metric lists, which are fixed for
+    // the process lifetime once discover() has run. Column names mirror
+    // mb-powermon's `<bdf>_<LABEL>` so its csv-to-html-plot.py plots our files.
+    // Keyed on `label`, not `device_name`: a mapped INA228 is folded onto its
+    // accelerator and would otherwise collide with that card's own power metric.
+    {
+        std::vector<std::string> cols;
+        auto add = [&cols](const std::vector<MetricInfo>& ms) {
+            for (const auto& m : ms) {
+                // MetricInfo::label is device-qualified ("MemryX T0"); strip the
+                // prefix so the column is `<bdf>_<LABEL>` exactly as mb-powermon
+                // writes it, rather than `<bdf>_MemryX_T0`. Same strip the
+                // legend does when it builds its per-metric cells.
+                std::string label = m.label;
+                if (label.rfind(m.device_name + " ", 0) == 0)
+                    label = label.substr(m.device_name.size() + 1);
+                for (auto& c : label)
+                    if (c == ' ') c = '_';
+                cols.push_back((m.bdf.empty() ? m.device_name : m.bdf) + "_" + label);
+            }
+        };
+        add(probes_.temp_metrics());
+        add(probes_.power_metrics());
+        add(probes_.freq_metrics());
+        const std::string path = Logger::default_path();
+        if (!path.empty() && log_.open(path, cols))
+            notes.push_back("logging to " + path);
+        else if (!path.empty())
+            notes.push_back("could not open log file " + path);
+    }
+
+    for (const auto& n : notes) {
+        g_message("%s", n.c_str());
+        log_.note(n);
+    }
+    // Probes emits notes of its own after discovery (e.g. enabling the Axelera
+    // temperature collector). It must stay GTK-free, so it gets a plain sink
+    // rather than a Logger dependency.
+    probes_.set_note_sink([this](const std::string& m) {
+        g_message("%s", m.c_str());
+        log_.note(m);
+    });
 
     device_palette_ = util::make_palette(std::max(1, probes_.device_count()));
 
@@ -269,16 +311,24 @@ MainWindow::~MainWindow() {
     // Then join every worker before the widgets they report into go away.
     fetcher_.stop();
     engine_.stop();
+    log_.close();
 }
 
 // Reflect download progress in the status line, and re-scan the models tree
 // whenever an artifact lands so its row becomes selectable straight away.
 void MainWindow::poll_downloads() {
+    // snapshot() consumes the finished_since_last edge, so it must be called
+    // once per tick and the result shared — not called again for logging.
     const auto st = fetcher_.snapshot();
     if (st.finished_since_last) {
         catalog_.refresh_presence();
         controls_->refresh_availability();
     }
+    // The status line has always said "see the log" for a failed download. Until
+    // now there was no log; these are the per-artifact reasons it meant.
+    for (std::size_t i = logged_fetch_errors_; i < st.errors.size(); ++i)
+        log_.note("download failed — " + st.errors[i]);
+    logged_fetch_errors_ = st.errors.size();
     // A running benchmark, or one still shutting down, owns the status line.
     if (engine_.active() || engine_.stopping()) return;
 
@@ -530,6 +580,7 @@ void MainWindow::on_start_stop() {
         engine_.stop();          // returns at once; workers are joined off-thread
         controls_->set_running(false);
         run_status_.clear();
+        run_items_.clear();
         return;                  // on_tick reports "stopping" / "stopped"
     }
 
@@ -546,6 +597,7 @@ void MainWindow::on_start_stop() {
     // same axis instead of each one wiping the last.
 
     engine_.start(items, controls_->target_fps());
+    run_items_ = items;   // the engine does not expose these afterwards
     controls_->set_running(true);
 
     // Each card carries its own API mode now, so name them individually. A run
@@ -756,6 +808,73 @@ bool MainWindow::on_tick() {
             }
             a.label->set_text(std::isnan(best) ? "max —" : "max " + fmt_power(best));
         }
+    }
+
+    // --- CSV row, last thing in the tick -------------------------------------
+    // Deliberately outside the three `size() == series_count()` guards above:
+    // those silently skip a graph push on a size mismatch, and the log must not
+    // inherit that skip.
+    if (log_.enabled()) {
+        // bench_state: `starting` while a run is active but a card is still
+        // loading its model, `stopping` while a wedged worker is being reaped.
+        std::string state = "idle";
+        if (engine_.active()) {
+            state = "running";
+            for (const auto& s2 : engine_.series())
+                if (s2.state == BenchEngine::State::Loading) { state = "starting"; break; }
+        } else if (engine_.stopping()) {
+            state = "stopping";
+        } else if (!engine_.series().empty()) {
+            state = "stopped";
+        }
+        if (state != last_bench_state_) {
+            if (!last_bench_state_.empty())
+                log_.note("benchmark " + last_bench_state_ + " -> " + state);
+            last_bench_state_ = state;
+        }
+
+        // Per-card config: Series::detail is the runner's own describe(), the
+        // authoritative record of what actually ran. Nothing else in the app
+        // reads it — the log is its first consumer.
+        std::vector<std::string> cfg(kAccelCount);
+        for (const auto& it : run_items_) {
+            const int i = accel_index(it.accel);
+            if (i >= 0 && i < kAccelCount)
+                cfg[i] = std::string(api_mode_name(it.api_mode)) + " · depth " +
+                         std::to_string(it.depth);
+        }
+        for (const auto& s2 : engine_.series()) {
+            const int i = accel_index(s2.accel);
+            if (i >= 0 && i < kAccelCount && !s2.detail.empty()) cfg[i] = s2.detail;
+        }
+
+        // A failure repeats in Series::error every tick; log the transition only.
+        for (const auto& s2 : engine_.series()) {
+            const int i = accel_index(s2.accel);
+            if (i < 0 || i >= kAccelCount) continue;
+            if (s2.error != last_error_[i]) {
+                last_error_[i] = s2.error;
+                if (!s2.error.empty())
+                    log_.note(std::string(accel_name(s2.accel)) + ": " + s2.error);
+            }
+        }
+
+        std::vector<double> telem;
+        telem.reserve(tv.size() + pv.size() + fv.size());
+        telem.insert(telem.end(), tv.begin(), tv.end());
+        telem.insert(telem.end(), pv.begin(), pv.end());
+        telem.insert(telem.end(), fv.begin(), fv.end());
+
+        Logger::Row row;
+        row.telemetry = &telem;
+        row.bench_state = state;
+        row.bench_model = run_items_.empty() ? std::string() : run_items_.front().label;
+        row.target_fps = engine_.target_fps();
+        row.cfg = &cfg;
+        row.fps = &fps;
+        row.fps_per_w = &eff;
+        row.mj_per_frame = &jpf;
+        log_.write_row(row);
     }
 
     return true;

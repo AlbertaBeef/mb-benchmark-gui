@@ -1267,6 +1267,20 @@ void Probes::flatten() {
 
 void Probes::poll() {
     for (auto& d : devices_) d->poll();
+
+    // Surface note transitions once each. A probe rewrites note_ every poll, so
+    // comparing against the previous text is what keeps this from firing 60
+    // times a minute for a card that is simply idle.
+    if (note_sink_) {
+        if (last_notes_.size() != devices_.size()) last_notes_.assign(devices_.size(), "");
+        for (size_t i = 0; i < devices_.size(); ++i) {
+            const std::string& n = devices_[i]->note();
+            if (n != last_notes_[i]) {
+                last_notes_[i] = n;
+                if (!n.empty()) note_sink_(std::string(devices_[i]->name()) + ": " + n);
+            }
+        }
+    }
     size_t ti = 0;
     for (auto& d : devices_)
         for (double v : d->temp_values()) temp_values_[ti++] = v;

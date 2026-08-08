@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "Bench.h"
+#include "Logger.h"
 #include "Catalog.h"
 #include "ControlPanel.h"
 #include "Fetcher.h"
@@ -106,6 +107,20 @@ private:
     // Base text of the running-benchmark status line; per-tick failures are
     // appended to it, since the frame-rate legend no longer carries them.
     std::string run_status_;
+    // CSV log, always on. Opened after probes_.discover() (the header needs the
+    // metric lists) and closed in the destructor.
+    Logger log_;
+    // The items the current run actually started with. BenchEngine does not
+    // expose BenchItem after start() — Worker is private and incomplete, and
+    // Series carries no config — so the configuration has to be stashed here to
+    // be loggable. Cleared on stop.
+    std::vector<BenchItem> run_items_;
+    // Last error string seen per card, so a persistent failure is logged once
+    // rather than every tick.
+    std::string last_error_[kAccelCount];
+    std::string last_bench_state_;
+    // How many Fetcher errors have been logged, so each is written once.
+    std::size_t logged_fetch_errors_ = 0;
     std::int64_t last_time_us_ = 0;
     Gtk::AboutDialog about_dialog_;
     bool about_ready_ = false;
