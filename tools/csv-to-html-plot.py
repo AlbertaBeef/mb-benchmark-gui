@@ -387,6 +387,17 @@ def minmax_downsample(rows, col_idx, bucket_size):
     return out
 
 
+# Everything is computed in seconds — the cold/sustained windows, the phase
+# detection, the run boundaries all reason in seconds — and converted to minutes
+# only where a number is shown. A benchmark session runs for hours, so a seconds
+# axis reads 0..14400 and means nothing at a glance.
+SEC_PER_MIN = 60.0
+
+
+def to_min(seconds):
+    return seconds / SEC_PER_MIN
+
+
 def build_series(rows, col_idx, t0, bucket_size):
     samples = minmax_downsample(rows, col_idx, bucket_size)
     series = []
@@ -395,7 +406,7 @@ def build_series(rows, col_idx, t0, bucket_size):
             t_sec = (parse_timestamp(t_str) - t0).total_seconds()
         except ValueError:
             continue
-        series.append({"x": round(t_sec, 3), "y": v})
+        series.append({"x": round(to_min(t_sec), 4), "y": v})
     return series
 
 
@@ -764,16 +775,16 @@ def build_datasets(rows, telemetry, bench, ident, overlays, t0, bucket_size):
     for ov in overlays:
         power.append({
             "label": f"{ov['device']} log avg = {ov['avg']:.3f} W",
-            "data": [{"x": ov["t_start"], "y": ov["avg"]},
-                     {"x": ov["t_end"], "y": ov["avg"]}],
+            "data": [{"x": to_min(ov["t_start"]), "y": ov["avg"]},
+                     {"x": to_min(ov["t_end"]), "y": ov["avg"]}],
             "borderColor": LOG_OVERLAY_COLOR, "backgroundColor": LOG_OVERLAY_COLOR,
             "borderWidth": 3, "pointRadius": 3, "pointStyle": "rectRot",
             "tension": 0, "showLine": True})
         if abs(ov["max"] - ov["avg"]) > 1e-4:
             power.append({
                 "label": f"{ov['device']} log max = {ov['max']:.3f} W",
-                "data": [{"x": ov["t_start"], "y": ov["max"]},
-                         {"x": ov["t_end"], "y": ov["max"]}],
+                "data": [{"x": to_min(ov["t_start"]), "y": ov["max"]},
+                         {"x": to_min(ov["t_end"]), "y": ov["max"]}],
                 "borderColor": LOG_OVERLAY_COLOR, "borderDash": [4, 3],
                 "borderWidth": 2, "pointRadius": 0,
                 "tension": 0, "showLine": True})
@@ -827,8 +838,8 @@ def runs_html(runs, sustained_after):
         cards = [v for v in ACCEL_ORDER if v in r["cfg"]] or \
                 [v for v in ACCEL_ORDER if v in r["avg"]]
         cards = cards or [None]
-        span = f'{r["t_start"]:.0f}–{r["t_end"]:.0f} s'
-        dur = f'{(r["t_end"] - r["t_start"]) / 60.0:.1f} min'
+        span = f'{to_min(r["t_start"]):.1f}–{to_min(r["t_end"]):.1f} min'
+        dur = f'{to_min(r["t_end"] - r["t_start"]):.1f} min'
         rowspan = len(cards)
         for j, v in enumerate(cards):
             lead = ""
@@ -877,7 +888,7 @@ def messages_html(messages):
            '<p class="dim">Logged on transition, not repeated per tick.</p>',
            '<table><tr><th>t</th><th>clock</th><th>message</th></tr>']
     for m in messages:
-        out.append(f'<tr><td class="num">{m["t"]:.0f} s</td>'
+        out.append(f'<tr><td class="num">{to_min(m["t"]):.1f} min</td>'
                    f'<td class="mono dim">{esc(m["clock"])}</td>'
                    f'<td>{esc(m["text"])}</td></tr>')
     out.append("</table>")
@@ -931,7 +942,7 @@ function makeChart(canvasId, datasets, yLabel, xMax, unit, zeroBased) {
         legend: { display: false },
         tooltip: {
           callbacks: {
-            title: (items) => 't = ' + items[0].parsed.x.toFixed(1) + ' s',
+            title: (items) => 't = ' + items[0].parsed.x.toFixed(1) + ' min',
             label: (item) => item.dataset.label + ': ' +
               (item.parsed.y == null ? 'n/a' :
                item.parsed.y.toFixed(3) + ' ' + unit)
@@ -940,7 +951,7 @@ function makeChart(canvasId, datasets, yLabel, xMax, unit, zeroBased) {
       },
       scales: {
         x: { type: 'linear',
-             title: { display: true, text: 'elapsed time (s)' },
+             title: { display: true, text: 'elapsed time (min)' },
              min: 0, max: xMax },
         y: { title: { display: true, text: yLabel },
              beginAtZero: zeroBased }
@@ -1046,7 +1057,7 @@ def main():
                    else auto_bucket_size(len(rows)))
 
     t0 = parse_timestamp(rows[0][0])
-    x_max = round((parse_timestamp(rows[-1][0]) - t0).total_seconds() + 1, 1)
+    x_max = round(to_min((parse_timestamp(rows[-1][0]) - t0).total_seconds() + 1), 2)
 
     log_summaries = parse_log(args.log) if args.log else {}
     overlays = assign_log_overlays(log_summaries, rows, telemetry, t0,

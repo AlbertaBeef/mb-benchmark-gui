@@ -783,6 +783,10 @@ Sustained appears only for runs of at least 20 minutes, since a short run has no
 settled state to report. `--sustained-after` changes that threshold;
 `--cold-window` and `--sustained-window` change the two windows.
 
+The time axis is in **minutes** — a session runs for hours, and a seconds axis
+reading 0..14400 tells you nothing at a glance. The run table and message log
+use minutes too, so nothing on the page is in mixed units.
+
 Cards keep **the same colours they have on screen** — Hailo coral, MemryX sage,
 DeepX slate blue, Axelera amber, Qualcomm plum — with sensors within a card
 separated by lightness rather than by hue, so a card still reads as one card.

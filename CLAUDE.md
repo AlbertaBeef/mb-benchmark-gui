@@ -1048,6 +1048,13 @@ are load-bearing:
   Python.** "Colour means one card, everywhere" extends to the plots. Sensors
   within a card vary by *lightness*, never by hue — the upstream fallback hashes
   on (device, kind) and would scatter one card across the palette.
+- **Seconds are the internal unit; minutes are a display conversion.** Every
+  window, gate and boundary in the script reasons in seconds — the cold and
+  sustained windows, the run boundaries, the phase detection — and `to_min()` is
+  applied only where a number is rendered (axis, tooltip, run table, message
+  log, and the hailortcli overlay markers, which are plotted as datasets and
+  would otherwise collapse onto x≈0). Converting at the source would mean
+  re-deriving every threshold, which is where a units bug would actually hurt.
 - **A BDF does not identify a card**, since `Logger` strips the device name and
   BDFs move across reboots (DeepX and MemryX swapped between 2026-08-04 and
   2026-08-08 — the host-specifics table below records the older assignment).
