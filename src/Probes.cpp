@@ -1103,7 +1103,18 @@ void Probes::discover(std::vector<std::string>* notes) {
             if (notes) {
                 // A present device with a note (e.g. version mismatch) is silent
                 // for a nameable reason — report that instead of a sensor count.
-                std::string msg = std::string(p->name()) + ": ";
+                //
+                // The BDF is here because it is the ONLY place the log records
+                // which card an address is. Logger writes telemetry columns as
+                // `<bdf>_<LABEL>` with the device name stripped (deliberately —
+                // otherwise the column reads `<bdf>_MemryX_T0` and stops being
+                // mb-powermon-compatible), and BDFs move across reboots: DeepX
+                // and MemryX swapped between 2026-08-04 and 2026-08-08. Without
+                // this, a log cannot be told which card is which after the fact,
+                // and a plot can silently attribute one card's data to another.
+                std::string msg = std::string(p->name());
+                if (!p->bdf().empty()) msg += " @ " + p->bdf();
+                msg += ": ";
                 if (!p->note().empty()) {
                     msg += p->note();
                 } else {

@@ -313,6 +313,14 @@ Three layers, cleanly separated. Keep it that way.
     the throwing `fs::` overloads. `on_tick` runs on the GTK main loop, so a
     failed open degrades to a no-op and a failed write self-disables the logger
     rather than throwing out of the tick.
+- **The startup note names each probe's BDF, and that is the only place the log
+  records which card an address is.** `discover()` writes
+  `MemryX @ 0000:c1:00.0: 4 temp + 1 power sensor(s)`, and the `@ <bdf>` half is
+  load-bearing: telemetry columns are `<bdf>_<LABEL>` with the device name
+  stripped, and **BDFs move across reboots** — DeepX and MemryX swapped between
+  2026-08-04 and 2026-08-08. Without it a finished log cannot be told which card
+  is which, and a plot will silently attribute one card's data to another (this
+  happened). Anything that reads a log back identifies cards from here first.
 - **Messages are logged on transition, not on repeat.** `Series::error` persists
   for the life of a failed run and `note_` is rewritten every poll, so both are
   compared against the previous value before being written — otherwise a single
@@ -820,9 +828,11 @@ headlessly** — prefer this over driving the GUI, which belongs to the user:
   eyeballing it: `time` parses with Python's `datetime.fromisoformat`, a NaN
   reading is an **empty** field and not `0.000000`, and a message containing a
   comma and a quote survives Python's `csv` reader. Then run
-  `python3 ../mb-powermon/csv-to-html-plot.py -i <file>` — it must still plot,
-  warning only about the benchmark columns. That check is what caught `host`
-  being written as column 0.
+  `python3 tools/csv-to-html-plot.py -i <file>` — it must plot with **no**
+  warnings. `../mb-powermon/csv-to-html-plot.py` must still open it too, which
+  is what caught `host` being written as column 0; it warns about far more than
+  the benchmark columns, though, because it predates `_INA228`/`_CLK`/`_C<n>`
+  and drops all four shunt rails and every clock.
 
 Set `MB_BENCH_MODELS_CONFIG`, `MB_BENCH_MODELS_ROOT` **and `MB_INA228_CONFIG`**
 when the driver binary lives outside `build/` — every config path resolves
@@ -898,6 +908,23 @@ to one merely cold-booted (⇒ normal, any model will load its firmware).
 Use `/proc/modules`, not `lsmod`, for module checks — `/usr/sbin` is not on a
 normal user's `PATH`, so `lsmod` silently reports every driver missing in the
 unprivileged status view. That bug was in the first version of this script.
+
+**`csv-to-html-plot.py` is a fork of `../mb-powermon`'s, not a copy** — unlike
+`GraphArea`/`util.h`, it is *not* kept identical and must not be `cp`'d in either
+direction. It adds the metrics that postdate the sibling (`_INA228`, `_CLK`,
+`_C<n>`), the six benchmark series, and the run/message tables. Two things in it
+are load-bearing:
+- **The accelerator colours are `util.h`'s `accent::` values, duplicated in
+  Python.** "Colour means one card, everywhere" extends to the plots. Sensors
+  within a card vary by *lightness*, never by hue — the upstream fallback hashes
+  on (device, kind) and would scatter one card across the palette.
+- **A BDF does not identify a card**, since `Logger` strips the device name and
+  BDFs move across reboots (DeepX and MemryX swapped between 2026-08-04 and
+  2026-08-08 — the host-specifics table below records the older assignment).
+  Identification reads the log's own startup note, which lists probes and sensor
+  counts in `discover()` order; the fallback is label vocabulary, where the
+  discriminator is that **MemryX reports power and DeepX does not**. That pair
+  is easy to get backwards and doing so silently swaps two cards' colours.
 
 `axelera-temps.sh` + `axelera-temps.service` are now only for the **headless**
 case. In the GUI both gates clear themselves:
@@ -1127,9 +1154,30 @@ one.** Check `uname -m` before trusting a "this machine" claim below.
 
 ### The x86_64 four-card host
 
-All four cards are present and **all four** inference SDKs build: Hailo-8
-`0000:01:00.0`, MemryX MX3 `0000:47:00.0`, DeepX M1 `0000:c1:00.0`, Axelera Metis
-`0000:c2:00.0`.
+All four cards are present and **all four** inference SDKs build: Hailo-8, MemryX
+MX3, DeepX M1 and Axelera Metis.
+
+**Do not look up a BDF here — they move.** One boot had Hailo `0000:01:00.0`,
+MemryX `0000:47:00.0`, DeepX `0000:c1:00.0`, Axelera `0000:c2:00.0`; on
+2026-08-08 it was Hailo `01`, **DeepX `47`, MemryX `c1`**, Axelera `81` — the
+middle pair exactly reversed. Those addresses appear in this file only as
+verbatim quotes from the boot that produced them (the D3cold dmesg under
+**Known issues** is one), never as constants. Resolve a card at the time you
+need it:
+
+```bash
+for d in /sys/bus/pci/devices/*/; do
+  drv=$(basename "$(readlink "$d/driver" 2>/dev/null)" 2>/dev/null)
+  case "$drv" in hailo|dx_dma_pcie|memx_pcie_ai_chip|axl)
+    echo "$(basename "$d")  $drv";; esac
+done
+```
+
+`dx_dma_pcie` is DeepX and `memx_pcie_ai_chip` is MemryX — the pair most easily
+confused. Two independent cross-checks, both visible in any log: **MemryX
+reports a power reading and DeepX does not**, and their clocks differ
+unmistakably — DeepX sits at **1000 MHz fixed**, MemryX is DVFS and tops out at
+its configured **600**.
 
 **PCIe BDFs are not stable across reboots here** — the Axelera card was observed
 at `c6:00.0` and later `c2:00.0`, which also renames its device node

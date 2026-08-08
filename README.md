@@ -654,16 +654,66 @@ card's load failure is logged the tick it changes, not once a second for the
 rest of the run. Download failures land there too — which is what the status
 line's "see the log" has always meant.
 
-**The telemetry columns are byte-compatible with the sibling
-[`mb-powermon`](../mb-powermon)**, so its plotter works on these files
-unchanged:
+### Plotting a log
+
+`tools/csv-to-html-plot.py` turns a log into one self-contained HTML page — six
+charts in the same order the GUI shows them (Power, Temperature, Frequency,
+Frame Rate, Efficiency, Energy), a table of the runs it found, and the messages:
 
 ```bash
-python3 ../mb-powermon/csv-to-html-plot.py -i logs/mb-benchmark-20260807-202752.csv
+python3 tools/csv-to-html-plot.py -i logs/mb-benchmark-20260808-094543.csv
 ```
 
-It warns once per benchmark column and ignores them, which is the intended cost
-of carrying both in one file.
+Each run reports three frame rates per card, all taken over that card's *active
+span* — its first non-zero sample to its last — so the model load and the zeroed
+rows after Stop are excluded, while a stall mid-run is not:
+
+| | |
+| --- | --- |
+| **cold** | the first 30 s, before the part has heated |
+| **average** | the whole span |
+| **sustained** | the final 60 s — the steady-state figure, once any throttling has settled |
+
+Read left to right they age, and **cold against sustained is the throttling**.
+On a 22-minute ResNet-50 run here, Hailo went 1224 → 952 fps and MemryX
+1081 → 836, while Axelera held 681 → 694 — flat.
+
+Sustained appears only for runs of at least 20 minutes, since a short run has no
+settled state to report. `--sustained-after` changes that threshold;
+`--cold-window` and `--sustained-window` change the two windows.
+
+Cards keep **the same colours they have on screen** — Hailo coral, MemryX sage,
+DeepX slate blue, Axelera amber, Qualcomm plum — with sensors within a card
+separated by lightness rather than by hue, so a card still reads as one card.
+
+Telemetry columns are `<bdf>_<LABEL>`, and a BDF does not say which card it is
+(the device name is stripped, and BDFs move across reboots — DeepX and MemryX
+swapped places between 2026-08-04 and 2026-08-08). The tool recovers it from the
+startup note, where each probe records its own address —
+`MemryX @ 0000:c1:00.0: 4 temp + 1 power sensor(s)`. Logs written before that
+was added carry the name and sensor counts only, and are matched positionally
+against discovery order; failing both, it infers from each probe's label
+vocabulary (**MemryX reports power, DeepX does not**). **`--map <bdf>=<vendor>` states it outright** if both are ever
+wrong. It prints what it decided:
+
+```
+devices: 4/4 identified — 0000:01:00.0=hailo, 0000:47:00.0=deepx, …
+```
+
+A card that never ran is dropped from the benchmark charts rather than drawn as
+a flat zero, and named on stderr so the omission is never silent.
+
+**The telemetry columns are also byte-compatible with the sibling
+[`mb-powermon`](../mb-powermon)**, so its plotter still opens these files:
+
+```bash
+python3 ../mb-powermon/csv-to-html-plot.py -i logs/mb-benchmark-20260808-094543.csv
+```
+
+That one predates this schema, though, and skips more than the benchmark
+columns — it has no `_INA228`, `_CLK` or `_C<n>`, so it drops all four shunt
+rails and every clock, plotting 2 power series where there are 6. Use it for a
+cross-check, not for reading a benchmark.
 
 ## Resetting a card
 
