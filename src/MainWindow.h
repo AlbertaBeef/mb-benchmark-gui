@@ -175,4 +175,14 @@ private:
     std::vector<Gtk::Label*> freq_values_;
     std::vector<AggEntry> freq_avg_labels_;
     std::vector<LegendRow> freq_rows_;
+
+    // Accumulated energy from the INA228 hardware accumulators. Named `accum_`
+    // rather than `energy_` because that member is already the *benchmark*
+    // Energy section (mJ/frame, one series per card) — a different quantity from
+    // a different source. The section is only built when there are shunts, so
+    // this stays null on a host with no libftdi.
+    GraphArea* accum_graph_ = nullptr;
+    std::vector<Gtk::Label*> accum_values_;
+    std::vector<AggEntry> accum_sum_labels_;
+    std::vector<LegendRow> accum_rows_;
 };

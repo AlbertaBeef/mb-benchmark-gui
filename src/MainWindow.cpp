@@ -49,6 +49,12 @@ std::string fmt_temp_axis(double v) {
     std::snprintf(b, sizeof(b), "%.0f°C", v);
     return b;
 }
+// Joules. Accumulates without bound over a session, so no fixed width.
+std::string fmt_joules(double v) {
+    char b[32];
+    std::snprintf(b, sizeof b, "%.1f", v);
+    return b;
+}
 std::string fmt_freq(double v) {
     if (std::isnan(v)) return "—";
     char b[24];
@@ -160,6 +166,8 @@ MainWindow::MainWindow(AutomationPlan plan)
         add(probes_.temp_metrics());
         add(probes_.power_metrics());
         add(probes_.freq_metrics());
+        add(probes_.energy_metrics());
+        add(probes_.charge_metrics());
         const std::string path = Logger::default_path();
         if (!path.empty() && log_.open(path, cols))
             notes.push_back("logging to " + path);
@@ -265,6 +273,32 @@ MainWindow::MainWindow(AutomationPlan plan)
                              "(INA228). Without watts, the efficiency graphs "
                              "below stay at zero.",
                              &power_max_labels_, &power_rows_)));
+
+    // Accumulated energy sits with Power because it is its integral. Built only
+    // when there are shunts: on a host with no libftdi the family is empty, and
+    // this would otherwise be the app's first zero-series graph.
+    //
+    // Collapsed by default. Over a 10-minute window a monotonic accumulator is
+    // a near-straight line whose slope is the average power — which the graph
+    // directly above already shows. Its value is the CSV column, where
+    // differencing two rows gives exact interval energy at ADC-rate accuracy
+    // instead of 1 Hz sampling.
+    if (!probes_.energy_metrics().empty()) {
+        graphs->append(make_section(
+            "Accumulated Energy (J)",
+            build_metric_section(probes_.energy_metrics(),
+                                 colors_for(probes_.energy_metrics()),
+                                 /*fixed_temp_axis=*/false, fmt_joules,
+                                 accum_graph_, accum_values_,
+                                 "No INA228 shunts, so nothing accumulates.",
+                                 // Low floor on purpose: the accumulator starts
+                                 // at zero, and a 100 J axis would pin the trace
+                                 // to the bottom edge and read as an empty
+                                 // graph for the first minute. Max mode grows it.
+                                 &accum_sum_labels_, &accum_rows_,
+                                 /*min_axis_max=*/10.0),
+            /*expanded=*/false));
+    }
 
     graphs->append(make_section(
         "Temperature (°C)",
@@ -882,6 +916,7 @@ void MainWindow::apply_graph_filter() {
         }
     };
     by_device(power_graph_, probes_.power_metrics(), power_rows_);
+    by_device(accum_graph_, probes_.energy_metrics(), accum_rows_);
     by_device(temp_graph_, probes_.temp_metrics(), temp_rows_);
     by_device(freq_graph_, probes_.freq_metrics(), freq_rows_);
 
@@ -904,7 +939,7 @@ void MainWindow::apply_graph_filter() {
 // the six plots answer different questions at the same moment.
 void MainWindow::apply_range_mode() {
     const auto m = controls_->range_mode();
-    for (GraphArea* g : {power_graph_, temp_graph_, freq_graph_,
+    for (GraphArea* g : {power_graph_, accum_graph_, temp_graph_, freq_graph_,
                          fps_.graph, eff_.graph, energy_.graph}) {
         if (g) g->set_range_mode(m);
     }
@@ -1041,6 +1076,26 @@ bool MainWindow::on_tick() {
         }
     }
 
+    // Accumulated energy. The row aggregate is a SUM, not the max power uses or
+    // the mean temperature uses: these are additive quantities, so a card whose
+    // rail is split across two shunts should report the total it drew.
+    const auto& jvv = probes_.energy_values();
+    if (accum_graph_ && !jvv.empty() &&
+        static_cast<int>(jvv.size()) == accum_graph_->series_count()) {
+        accum_graph_->push(jvv);
+        for (size_t i = 0; i < accum_values_.size() && i < jvv.size(); ++i)
+            accum_values_[i]->set_text(fmt_joules(jvv[i]));
+        for (const auto& a : accum_sum_labels_) {
+            double sum = 0.0;
+            int cnt = 0;
+            for (int k = a.start;
+                 k < a.start + a.count && k < static_cast<int>(jvv.size()); ++k) {
+                if (!std::isnan(jvv[k])) { sum += jvv[k]; ++cnt; }
+            }
+            a.label->set_text(cnt ? "total " + fmt_joules(sum) : "total —");
+        }
+    }
+
     // --- CSV row, last thing in the tick -------------------------------------
     // Deliberately outside the three `size() == series_count()` guards above:
     // those silently skip a graph push on a size mismatch, and the log must not
@@ -1095,6 +1150,12 @@ bool MainWindow::on_tick() {
         telem.insert(telem.end(), tv.begin(), tv.end());
         telem.insert(telem.end(), pv.begin(), pv.end());
         telem.insert(telem.end(), fv.begin(), fv.end());
+        // Must stay in step with the `add()` order where the columns were
+        // declared — Logger fixes its width at open and silently drops extras.
+        const auto& jv = probes_.energy_values();
+        const auto& qv = probes_.charge_values();
+        telem.insert(telem.end(), jv.begin(), jv.end());
+        telem.insert(telem.end(), qv.begin(), qv.end());
 
         Logger::Row row;
         row.telemetry = &telem;

@@ -9,8 +9,12 @@ silently drops the four INA228 rails, every clock, and all six benchmark series
 
 What this fork adds:
 
-  * the metrics mb-powermon never had — `_INA228` (per-card shunt power),
-    `_CLK` / `_C<n>` (core clocks);
+  * the metrics mb-powermon never had — `_INA228_POWER` (per-card shunt power;
+    also accepted as bare `_INA228`, its spelling before 2026-09-03),
+    `_INA228_TEMP` (the shunt monitor's own die temperature), `_INA228_ENERGY`
+    (its 40-bit hardware energy accumulator), `_CLK` / `_C<n>` (core clocks).
+    `_INA228_CHARGE` is read from the log but deliberately not plotted — see
+    `_classify_metric`;
   * the benchmark half of the schema — `<vendor>_fps`, `_fps_per_w`,
     `_mj_per_frame` — as three more charts;
   * the run's own context (`bench_state`, `bench_model`, `<vendor>_cfg`,
@@ -20,8 +24,10 @@ What this fork adds:
   * **the app's accelerator colours**, so a card is the same colour here as it
     is on screen in mb-benchmark and mb-powermon-gui.
 
-Six charts, in the GUI's own order: Power, Temperature, Frequency, Frame Rate,
-Efficiency, Energy.
+Seven charts, in the GUI's own order: Power, Accumulated Energy, Temperature,
+Frequency, Frame Rate, Efficiency, Energy. The two energy charts are different
+quantities from different sources — "Accumulated Energy" is joules read from the
+INA228 accumulators, "Energy" is mJ/frame derived from the benchmark.
 
 Usage:
     python3 tools/csv-to-html-plot.py -i logs/mb-benchmark-….csv [-o out.html]
@@ -131,8 +137,16 @@ _SHADE_STEPS = [1.0, 1.30, 0.72, 1.55, 0.88, 1.15, 0.60]
 
 # Telemetry columns. The first five kinds come from mb-powermon; INA228, CLK and
 # C<n> are ours and are exactly what the upstream plotter drops.
+# Order matters. The device capture is non-greedy, so the first split that
+# matches wins: without INA228_TEMP listed *before* the bare TEMP, the column
+# "0000:47:00.0_INA228_TEMP" splits as device "0000:47:00.0_INA228" + suffix
+# "TEMP" and invents a phantom device that no card can be matched to.
+# The bare ENERGY/CHARGE forms are what an *unfolded* shunt produces (one that
+# is not mapped to a PCIe card), where the device is the bridge itself.
 _METRIC_RE = re.compile(
-    r"^(.+?)_(POW|TEMP|TS\d+|T\d+|SYS|AI\d+|PCIE\d+|TOTAL|INA228|CLK|C\d+)$"
+    r"^(.+?)_(INA228_POWER|INA228_TEMP|INA228_ENERGY|INA228_CHARGE"
+    r"|POW|TEMP|TS\d+|T\d+|SYS|AI\d+|PCIE\d+|TOTAL|INA228"
+    r"|ENERGY|CHARGE|CLK|C\d+)$"
 )
 
 # Benchmark columns: <vendor>_<metric>, vendor being accel_vendor().
@@ -147,17 +161,26 @@ _CONTEXT_COLS = {"host", "bench_state", "bench_model", "bench_target_fps",
 
 
 def _classify_metric(met):
-    """Return 'power', 'temp', 'freq', or None to skip."""
-    if met in ("pow", "total", "ina228"):
+    """Return 'power', 'temp', 'freq', 'energy', or None to skip."""
+    # Bare "ina228" is the pre-2026-09-03 spelling of the folded shunt power
+    # column, before the family suffixes were made uniform. Kept so logs
+    # already on disk still plot.
+    if met in ("pow", "total", "ina228", "ina228_power"):
         return "power"
     if re.match(r"^pcie\d+$", met):
         return "power"
-    if met in ("temp", "sys"):
+    if met in ("temp", "sys", "ina228_temp"):
         return "temp"
     if re.match(r"^(ts|t|ai)\d+$", met):
         return "temp"
     if met == "clk" or re.match(r"^c\d+$", met):
         return "freq"
+    if met in ("energy", "ina228_energy"):
+        return "energy"
+    # Charge is read and logged but deliberately not plotted: it is coulombs,
+    # and a chart carries one unit, so it cannot share the joules axis. It is
+    # an analysis column — divide by elapsed for average current. Returning
+    # None here is the deliberate omission, not an oversight.
     return None
 
 
@@ -275,8 +298,24 @@ def identify_devices(telemetry, explicit, note_map, note_devices):
 
     # Devices that own temperature columns, in header order — the same order
     # discover() ran in, which is the order the note lists them.
+    # Devices with temperature columns, in header order — the sequence the note
+    # is zipped against. Two exclusions, both needed since the INA228 probes
+    # gained a die-temperature reading:
+    #
+    #  * An FT232H bridge (bdf "usb 1-1.x") is never an accelerator, but an
+    #    *unmapped* shunt owns its own temp column and would otherwise join this
+    #    list with no counterpart in the note, breaking the length check.
+    #  * A *mapped* shunt folds its die temp onto its card, so that card now has
+    #    one more temp column than the note's "<n> temp" says. `_card_temps()`
+    #    below is what keeps the count comparable.
     temp_order = [d for d in order
-                  if any(_classify_metric(k) == "temp" for k in kinds[d])]
+                  if not d.startswith("usb ")
+                  and any(_classify_metric(k) == "temp" for k in kinds[d])]
+
+    def _card_temps(dev):
+        """Temp columns belonging to the card itself, excluding folded shunts."""
+        return sum(1 for k in kinds[dev]
+                   if _classify_metric(k) == "temp" and not k.startswith("ina228"))
 
     from_note = {}
     if note_map and all(d in note_map or d in explicit for d in temp_order):
@@ -284,8 +323,7 @@ def identify_devices(telemetry, explicit, note_map, note_devices):
     if note_devices and len(note_devices) == len(temp_order):
         ok = True
         for dev, (vendor, n_temp, n_power) in zip(temp_order, note_devices):
-            have_t = sum(1 for k in kinds[dev] if _classify_metric(k) == "temp")
-            if have_t != n_temp:
+            if _card_temps(dev) != n_temp:
                 ok = False
                 break
         if ok:
@@ -717,6 +755,7 @@ def assign_colors(telemetry, ident):
 
 def build_datasets(rows, telemetry, bench, ident, overlays, t0, bucket_size):
     power, temp, freq = [], [], []
+    accum = []                      # INA228 hardware accumulators (J)
     fps, eff, energy = [], [], []
     idle = set()
 
@@ -742,13 +781,16 @@ def build_datasets(rows, telemetry, bench, ident, overlays, t0, bucket_size):
         if kind == "power":
             # Distinguish the external shunt from an on-die reading: the INA228
             # is the whole-card figure the efficiency numbers are built on.
-            dash = [] if met == "ina228" else [6, 4] if is_pci_device(dev) else [2, 3]
+            dash = ([] if met in ("ina228", "ina228_power")
+                    else [6, 4] if is_pci_device(dev) else [2, 3])
             power.append(style(label, series, color, dash, 0.1))
         elif kind == "temp":
             dash = [6, 4] if met in ("ts1", "sys") else []
             temp.append(style(label, series, color, dash, 0.2))
         elif kind == "freq":
             freq.append(style(label, series, color, [], 0.1))
+        elif kind == "energy":
+            accum.append(style(label, series, color, [], 0.1))
 
     # Benchmark series. These need no inference — the column names the vendor.
     bench_by = {(v, met): (i, raw) for v, met, i, raw in bench}
@@ -789,7 +831,7 @@ def build_datasets(rows, telemetry, bench, ident, overlays, t0, bucket_size):
                 "borderWidth": 2, "pointRadius": 0,
                 "tension": 0, "showLine": True})
 
-    return power, temp, freq, fps, eff, energy, idle
+    return power, temp, freq, accum, fps, eff, energy, idle
 
 
 # ---------------------------------------------------------------------------
@@ -1065,7 +1107,7 @@ def main():
                                    subphase_dur=args.subphase_duration,
                                    threshold=args.phase_threshold)
 
-    power, temp, freq, fps, eff, energy, idle = build_datasets(
+    power, temp, freq, accum, fps, eff, energy, idle = build_datasets(
         rows, telemetry, bench, ident, overlays, t0, bucket_size)
 
     runs = extract_runs(rows, context, bench, t0,
@@ -1079,6 +1121,8 @@ def main():
     charts = [
         {"title": "Power", "canvas": "powChart", "datasets": power,
          "y_label": "power (W)", "unit": "W", "zero_based": True},
+        {"title": "Accumulated Energy", "canvas": "accumChart", "datasets": accum,
+         "y_label": "energy (J)", "unit": "J", "zero_based": True},
         {"title": "Temperature", "canvas": "tempChart", "datasets": temp,
          "y_label": "temperature (°C)", "unit": "°C", "zero_based": False},
         {"title": "Frequency", "canvas": "freqChart", "datasets": freq,
@@ -1109,7 +1153,8 @@ def main():
           ", ".join(f"{d}={v or '?'}" for d, v in sorted(ident.items())))
     n_power = len([d for d in power if "log" not in d["label"]])
     print(f"  series: {n_power} power, {len(temp)} temperature, {len(freq)} frequency, "
-          f"{len(fps)} fps, {len(eff)} efficiency, {len(energy)} energy")
+          f"{len(accum)} accum, {len(fps)} fps, {len(eff)} efficiency, "
+          f"{len(energy)} energy")
     print(f"  runs: {len(runs)}, messages: {len(messages)}, "
           f"log overlays: {len(overlays)}")
     if idle:

@@ -503,11 +503,17 @@ Three layers, cleanly separated. Keep it that way.
   one below it so a fresh checkout cannot cost someone a power cycle. Raising it
   is a deliberate act. This control replaced an earlier "Streams" knob — see the
   API-modes section for why that was wrong.
-- **Graph order is Power, Temperature, Frequency, Frame Rate, Efficiency,
-  Energy.** The three telemetry graphs lead because they are live with no run in
-  progress; Frequency sits under Temperature because a clock sagging as a die
-  heats is the whole reason to plot it. Frequency and Energy are collapsed by
-  default.
+- **Graph order is Power, Accumulated Energy, Temperature, Frequency, Frame
+  Rate, Efficiency, Energy.** The telemetry graphs lead because they are live
+  with no run in progress; Accumulated Energy sits under Power because it is its
+  integral, and Frequency under Temperature because a clock sagging as a die
+  heats is the whole reason to plot it. Accumulated Energy, Frequency and Energy
+  are collapsed by default.
+
+  **Two graphs have "Energy" in the title and they are different quantities.**
+  *Accumulated Energy* is joules read from the INA228 hardware accumulators, one
+  series per rail, always live. *Energy* is mJ/frame derived from the benchmark,
+  one series per card. Don't merge them.
 - **Window chrome.** Bottom corners are rounded to 12px to match GNOME's own
   windows; plain GTK4's Adwaita rounds only the top two on a CSD window. The
   radius goes on the `decoration` node (that is what shapes a CSD window), and
@@ -525,11 +531,77 @@ Three layers, cleanly separated. Keep it that way.
 
 ## Telemetry families (Probes)
 
-`Probes` publishes **three** flat metric families — temperature, power and
-frequency — each with an aligned value vector refreshed by `poll()`. Power alone
-uses `power_device_order()` and the INA228 folding; temperature and frequency
-follow plain discovery order, because a clock always belongs to the card
-reporting it and there is nothing to fold.
+`Probes` publishes **five** flat metric families — temperature, power,
+frequency, energy and charge — each with an aligned value vector refreshed by
+`poll()`. Frequency alone follows plain discovery order, because a clock always
+belongs to the card reporting it and there is nothing to fold; the other four use
+`alias_device_order()` and the INA228 fold.
+
+**A folded INA228 metric is named `<Card> INA228 <FAMILY>`** — `POWER`, `TEMP`,
+`ENERGY`, `CHARGE` — giving CSV columns `<bdf>_INA228_<FAMILY>`. The four families
+share one CSV namespace, so a bare `<Card> INA228` for all of them would collide.
+Power carried exactly that bare name until 2026-09-03; the plotter still accepts
+it so older logs keep working, but nothing writes it any more.
+
+**Energy and charge are separate families on purpose, and neither may join
+`power_`.** `power_for_device()` returns the *max* over the power family and that
+value becomes the engine's watts — joules parked there would overtake watts within
+seconds and silently corrupt every fps/W and mJ/frame figure in the app. And a
+`GraphArea` carries one unit and one formatter, so joules and coulombs cannot
+share a plot. Energy is graphed; **charge is CSV-only**, which is why it has a
+family but no section in `MainWindow`.
+
+**`alias_device_order(bool alias_first)` is not cosmetic.** A folded metric takes
+its target's device index, and the legend groups by *contiguous runs* of that
+index — so a folded reading emitted in discovery order (the FTDI probes are
+discovered last) would open a **second legend row** for a card that already has
+one. Power passes `true`, preserving the original "INA228 sits immediately above
+Hailo" ordering; temperature, energy and charge pass `false`, so a card's row
+reads `TS0 · TS1 · INA228` rather than leading with the shunt.
+
+**The INA228s report four things, not one.** `POWER` (0x08) was the only register
+read until 2026-09-03; the shunt monitors also carry `DIETEMP` (0x06),
+`ENERGY` (0x09) and `CHARGE` (0x0A), and the ADC was **already converting all of
+them** — `ADC_CONFIG = 0xFB6B` is mode `0xF`, continuous bus + shunt + temperature.
+Reading them needed no configuration change.
+
+| register | width | scale | notes |
+| --- | --- | --- | --- |
+| `DIETEMP` 0x06 | 16-bit signed | `7.8125 m°C/LSB` | a *full* 16-bit register — `read24_raw20()` is the wrong helper, and `read16()` is unsigned so it needs the cast |
+| `ENERGY` 0x09 | 40-bit unsigned | `16 × 3.2 × current_lsb` J | 488 µJ/LSB as configured; rolls over after ~3.4 years at 5 W |
+| `CHARGE` 0x0A | 40-bit signed | `current_lsb` C | sign-extend from bit 39 |
+
+**The die temperature is the monitor chip on the breakout, not the accelerator** —
+ambient plus shunt self-heating. Measured 2026-09-03 it runs several degrees below
+the card it is folded onto (MemryX 48.7 °C against that card's 52 °C on `T0`), which
+is the sanity check: if it ever *tracks* a card's die sensor, the fold has attributed
+the wrong reading. It is named `<Card> INA228 TEMP` so it cannot be misread as a die
+temperature, and it is `plausible_temp()`-gated like every other temperature.
+
+**All four shunts read NEGATIVE charge, and that is the harness, not a bug.**
+`P / |dQ/dt|` comes out at **3.16–3.20 V** on every rail — the M.2 3.3 V rail,
+consistent to 1% — so the magnitude is right and only the direction is flipped,
+because IN+/IN- are wired the other way round. `POWER` and `ENERGY` are unsigned
+registers and are unaffected. Reported as measured rather than `abs()`'d: the sign
+is a real fact about the wiring, and discarding it would hide a later rewire.
+Divide by elapsed seconds for average current, and mind the sign.
+
+**`configure()` pulses `RSTACC`** (CONFIG bit 14, written then cleared — it is an
+ordinary R/W bit and stays latched otherwise) so a session's energy series starts
+at zero. Like the Axelera collector level this is a *device-state* write another
+client would see; kept because nothing else on either host touches these
+accumulators, and a series starting from an arbitrary carried-over value would be
+unreadable.
+
+**The accumulators are the accurate path, and the graph is the weak view of them.**
+They integrate at the ADC rate (~5 Hz at AVG=64 / 1052 µs), not at the GUI's 1 Hz
+sampling. Verified 2026-09-03: `dE/dt` matches the `POW` reading to within 2–3% on
+all four rails, which is the single best check that the scale factor is right — a
+wrong `current_lsb` multiplier shows up immediately. But over the 10-minute graph
+span a monotonic accumulator draws a near-straight line whose *slope* is average
+power, which the Power graph already shows directly. **The value is the CSV
+column**, where differencing two rows gives exact interval energy. Don't "fix" the
+graph for looking boring.
 
 **All four** cards report a core clock, each from a different place:
 
@@ -1201,9 +1273,22 @@ unprivileged status view. That bug was in the first version of this script.
 
 **`csv-to-html-plot.py` is a fork of `../mb-powermon`'s, not a copy** — unlike
 `GraphArea`/`util.h`, it is *not* kept identical and must not be `cp`'d in either
-direction. It adds the metrics that postdate the sibling (`_INA228`, `_CLK`,
-`_C<n>`), the six benchmark series, and the run/message tables. Two things in it
-are load-bearing:
+direction. It adds the metrics that postdate the sibling (`_INA228_POWER`,
+`_INA228_TEMP`, `_INA228_ENERGY`, `_CLK`, `_C<n>`), the six benchmark series, and
+the run/message tables. **It also still accepts a bare `_INA228`**, which is what
+the folded shunt power column was called before 2026-09-03 — logs already on disk
+carry that spelling and must keep plotting. `_INA228_CHARGE` is parsed and deliberately *not* charted
+— coulombs cannot share the joules axis. Things in it that are load-bearing:
+- **`_METRIC_RE`'s alternation is ordered.** The device capture is non-greedy, so
+  the first split that matches wins: with the bare `TEMP` listed before
+  `INA228_TEMP`, the column `0000:47:00.0_INA228_TEMP` splits as device
+  `0000:47:00.0_INA228` and invents a phantom device no card can match.
+- **`identify_devices()` has to be folding-aware.** It cross-checks each card's
+  temperature-column count against the note's `<n> temp`, but a folded shunt
+  gives the card one *more* temp column than its probe reported. `_card_temps()`
+  counts only non-`ina228` suffixes, and `usb `-prefixed bridges are excluded
+  from `temp_order` entirely. Without both, every card falls back to label
+  inference and the colours can go wrong across the whole plot.
 - **The accelerator colours are `util.h`'s `accent::` values, duplicated in
   Python.** "Colour means one card, everywhere" extends to the plots. Sensors
   within a card vary by *lightness*, never by hue — the upstream fallback hashes

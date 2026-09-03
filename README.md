@@ -24,6 +24,7 @@ Six stacked graphs, each a scrolling 10-minute window:
 | Graph | What it shows |
 | ----- | ------------- |
 | **Power (W)** | Live draw per card — on-die sensors and external INA228 shunts. |
+| **Accumulated Energy (J)** | Joules since launch per rail, from the INA228 hardware accumulators — integrated at the ADC rate, not sampled. |
 | **Temperature (°C)** | Per-sensor die temperatures. |
 | **Frequency (MHz)** | Core clock per NPU. Sits right below temperature because a clock sagging while a die heats *is* thermal throttling. Collapsed by default. |
 | **Frame Rate (fps)** | Achieved rate per card. An idle card sits at 0. |
@@ -729,6 +730,10 @@ MB_BENCH_NO_LOG=1             ./build/mb-benchmark   # off
 | `time` | local ISO-8601, millisecond precision |
 | `host` | hostname — logs from the x86_64 box and the IQ-9075 stay distinguishable once files are concatenated |
 | `<bdf>_<LABEL>` … | every temperature, power and frequency reading, e.g. `0000:c1:00.0_T0` |
+| `<bdf>_INA228_POWER` | the external shunt's power reading, folded onto the card it measures (bare `<bdf>_INA228` in logs written before 2026-09-03) |
+| `<bdf>_INA228_TEMP` | the shunt monitor's own die temperature — ambient plus self-heating, **not** the card's die |
+| `<bdf>_INA228_ENERGY` | joules accumulated since launch, integrated in hardware at the ADC rate |
+| `<bdf>_INA228_CHARGE` | coulombs since launch; ÷ elapsed gives exact average current (negative on this rig — see below) |
 | `bench_state` | `idle` · `starting` · `running` · `stopping` · `stopped` |
 | `bench_model`, `bench_target_fps` | what was selected; target is empty at max speed |
 | `<vendor>_cfg` | what that card actually ran — the runner's own description, e.g. `1x224x224x3 int8 · 2 cores · depth 2` |
@@ -744,6 +749,14 @@ to the second even if the machine dies — which is the case it exists for. A lo
 that loses its last thirty seconds to the page cache cannot tell you what
 happened.
 
+The INA228 accumulator columns are the reason to prefer the log over the graph
+for energy: differencing two rows gives the exact energy for that interval, at
+ADC-rate accuracy rather than 1 Hz sampling. On this rig the charge columns read
+**negative** — the shunts are wired with IN+/IN- reversed. The magnitude is right
+(`P ÷ |dQ/dt|` gives 3.16–3.20 V, the M.2 rail, on all four), and power and energy
+are unsigned so they are unaffected; the sign is reported as measured rather than
+hidden, because it is a real fact about the harness.
+
 Two conventions worth knowing. **A missing reading is an empty field**, never
 `nan` and never `0` — `0.0 W` is a real INA228 overflow signal, so the
 distinction carries information. And there is a column for **every** card the
@@ -757,9 +770,10 @@ line's "see the log" has always meant.
 
 ### Plotting a log
 
-`tools/csv-to-html-plot.py` turns a log into one self-contained HTML page — six
-charts in the same order the GUI shows them (Power, Temperature, Frequency,
-Frame Rate, Efficiency, Energy), a table of the runs it found, and the messages:
+`tools/csv-to-html-plot.py` turns a log into one self-contained HTML page — seven
+charts in the same order the GUI shows them (Power, Accumulated Energy,
+Temperature, Frequency, Frame Rate, Efficiency, Energy), a table of the runs it
+found, and the messages:
 
 ```bash
 python3 tools/csv-to-html-plot.py -i logs/mb-benchmark-20260808-094543.csv
@@ -816,7 +830,7 @@ python3 ../mb-powermon/csv-to-html-plot.py -i logs/mb-benchmark-20260808-094543.
 ```
 
 That one predates this schema, though, and skips more than the benchmark
-columns — it has no `_INA228`, `_CLK` or `_C<n>`, so it drops all four shunt
+columns — it has no `_INA228*`, `_CLK` or `_C<n>`, so it drops all four shunt
 rails and every clock, plotting 2 power series where there are 6. Use it for a
 cross-check, not for reading a benchmark.
 
