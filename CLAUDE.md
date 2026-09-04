@@ -23,14 +23,21 @@ matters when porting:
   change; a `cp` in either direction is the correct way to port. Everything
   added here (`RangeMode`, per-series visibility, the adaptive time-label step)
   went into both, even where only one app exposes a control for it.
-- **`Probes.{h,cpp}` has diverged** — 1306 lines here against 1107 there, and the
-  gap grows. Four deliberate edits, none of them portable as a whole file: the
-  INA228 config-path search (see **Config**); `Probes::power_for_device()`, which
-  needs `Catalog.h` and **cannot compile** in the sibling; the whole frequency
-  family; and `set_note_sink()`, whose only consumer is our `Logger`. **Never
-  `cp` this one**; port hunk by hunk. Doing otherwise breaks that build, which
-  has already happened once. Things that *should* travel both ways — the
-  `plausible_temp()` gate, the helper's `os._exit(0)` — already have.
+- **`Probes.{h,cpp}` has diverged** — 1433 lines here against 1212 there. Four
+  deliberate edits, none of them portable as a whole file: the INA228
+  config-path search (see **Config**); `Probes::power_for_device()`, which needs
+  `Catalog.h` and **cannot compile** in the sibling; the whole frequency family;
+  and `set_note_sink()`, whose only consumer is our `Logger`. **Never `cp` this
+  one**; port hunk by hunk. Doing otherwise breaks that build, which has already
+  happened once.
+
+  Things that *should* travel both ways already have: the `plausible_temp()`
+  gate, the helper's `os._exit(0)`, and (2026-09-03) the whole INA228
+  accumulator family — `DIETEMP`/`ENERGY`/`CHARGE`, `alias_device_order()`, and
+  the temperature fold. That port was clean precisely because `struct Ina228`,
+  `INA228Probe`, `power_device_order()` and `pcie_merge_target()` were still
+  **byte-identical** between the two files; check that with `diff` on the block
+  before assuming any future INA228 change can be transplanted the same way.
 
 The model/pipeline catalog is derived from `../envic_ai_cpp`'s
 `ai_common/pipeline_registry.cpp` — same models, same detector+recognizer
@@ -654,7 +661,9 @@ MemryX API traps, both hit while wiring this up:
   configured 600.
 
 **`Probes.{h,cpp}` is shared with `mb-powermon-gui`** — the frequency family is a
-new addition here and has *not* been ported there yet.
+new addition here and has *not* been ported there yet. The INA228 energy/charge
+families and the die-temperature fold **have** been (2026-09-03), so those two
+files now differ only by the four edits listed under **What this is**.
 
 ## API modes (Sync / Async)
 
