@@ -60,7 +60,7 @@ public:
         }
     }
 
-    void run_frame() override {
+    unsigned run_frame() override {
         for (auto& st : stages_) {
             for (int r = 0; r < st->reps; ++r) {
                 if (mode_ == ApiMode::Sync) {
@@ -78,6 +78,7 @@ public:
                 }
             }
         }
+        return 1;
     }
 
     std::string describe() const override { return describe_; }

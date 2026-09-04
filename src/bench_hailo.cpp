@@ -169,12 +169,13 @@ public:
         }
     }
 
-    void run_frame() override {
+    unsigned run_frame() override {
         for (auto& st : stages_) {
             for (int r = 0; r < st->reps; ++r) {
                 check(st->pipeline->infer(st->in_views, st->out_views, 1), "infer");
             }
         }
+        return 1;
     }
 
     std::string describe() const override { return describe_; }
@@ -299,13 +300,14 @@ public:
         }
     }
 
-    void run_frame() override {
+    unsigned run_frame() override {
         for (auto& st : stages_) {
             for (int r = 0; r < st->reps; ++r) {
                 fill_pipeline(*st);
                 wait_one(*st);
             }
         }
+        return 1;
     }
 
     std::string describe() const override { return describe_; }

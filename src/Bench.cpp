@@ -65,8 +65,14 @@ struct BenchEngine::Worker {
         std::uint64_t n = 0, since_origin = 0;
 
         while (!stop_flag.load(std::memory_order_relaxed)) {
+            // What one call retires. Always 1 except on a fixed-batch Axelera
+            // artifact, where the model is compiled for a batch of N and one
+            // invocation genuinely produces N results. Pacing advances by the
+            // same amount, so a target frame rate stays a *frame* rate rather
+            // than becoming an invocation rate on those models.
+            unsigned retired = 0;
             try {
-                runner->run_frame();
+                retired = runner->run_frame();
             } catch (const std::exception& e) {
                 set_failed(e.what());
                 return;
@@ -74,8 +80,9 @@ struct BenchEngine::Worker {
                 set_failed("unknown error during inference");
                 return;
             }
-            ++n;
-            ++since_origin;
+            if (retired == 0) retired = 1;  // a runner that forgot to report
+            n += retired;
+            since_origin += retired;
             frames.store(n, std::memory_order_relaxed);
 
             if (period > 0.0) {

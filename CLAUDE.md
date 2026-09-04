@@ -502,14 +502,25 @@ Three layers, cleanly separated. Keep it that way.
   the shared `mb-powermon-gui` shows on this board) or making `accel_name()`
   read the device tree. `power_for_device("Qualcomm")` returning NaN is likewise
   *correct*, not a bug — this board has no power sensor at all.
-- **Axelera AIPU cores defaults to 2 — deliberately not 4.** One core leaves the
-  others at 50 MHz, which is not a representative Metis figure, so the default
-  wants to be high; but claiming *all four* wedges this card (all four MSI
-  vectors time out, the PCIe link drops, power-off to recover — see Known
-  issues). 3 is the highest value observed stable, and the shipped default sits
-  one below it so a fresh checkout cannot cost someone a power cycle. Raising it
-  is a deliberate act. This control replaced an earlier "Streams" knob — see the
-  API-modes section for why that was wrong.
+- **Axelera AIPU cores defaults to 4, and now selects the fixed-batch build.**
+  The control picks the model's `<dir>-Ncore` artifact: a batch-N model on one
+  connection with one instance and `aipu_cores=N`. Measured 2026-09-03 on
+  ResNet-50: 359 / 632 / 1154 / **1602** fps at 1 / 2 / 3 / 4, so the top of the
+  range is where the card performs.
+
+  **The old default was 2 because 4 wedged the card. That was the
+  multi-connection implementation** — four `axr_device_connect()` calls, each
+  reloading firmware, and four instances contending on one command queue. The
+  batched path makes exactly one connection and one instance, so that mechanism
+  is gone. `$MB_AXELERA_MULTI_INSTANCE=1` reinstates the old arrangement, and
+  reinstates the risk with it.
+
+  **A model with no matching `-Ncore` build falls back to batch 1 on one core**
+  and says so in `describe()` (`no 4-core build; using batch 1`), which lands in
+  the CSV's `axelera_cfg`. That is a real throughput cost for the four models
+  that have no multicore artifact — yolov8s measures 130 fps at batch 1 against
+  368 with `MB_AXELERA_MULTI_INSTANCE=1` on four cores. Never label a batch-1 run
+  as N cores; report the fallback instead.
 - **Graph order is Power, Accumulated Energy, Temperature, Frequency, Frame
   Rate, Efficiency, Energy.** The telemetry graphs lead because they are live
   with no run in progress; Accumulated Energy sits under Power because it is its
@@ -744,20 +755,30 @@ which does have one and will not warn.
   threads before destroying an instance, and release `Stage::conn` only after
   every instance on it is gone.
 
-  **A model instance occupies exactly ONE AI core, whatever `num_sub_devices`
-  the connection asked for.** Measured 2026-08-04 on ResNet-50 (async), clocks
-  sampled *mid-run* rather than after:
+  **The "one instance occupies exactly ONE AI core" rule was an artefact of a
+  missing property, and is retired.** Measured 2026-08-04 on ResNet-50 (async),
+  clocks sampled *mid-run*:
 
   | connections × instances | `num_sub_devices` | aicore0..3 during run | fps |
   | --- | --- | --- | --- |
   | 1 × 1 | 4 | `800 · 50 · 50 · 50` | 375.6 |
   | 1 × 4 | 4 | — (`Failed to wait for MSI`) | 201.7 |
-  | **4 × 1** | **1 each** | **`800 · 800 · 800 · 800`** | **694.9** |
+  | 4 × 1 | 1 each | `800 · 800 · 800 · 800` | 694.9 |
 
-  So asking one connection for four cores buys nothing — the other three stay
-  parked at 50 MHz — and stacking four instances on one connection makes them
-  collide on the command queue. **N cores busy means N connections, one instance
-  and one sub-device each.** That is why the runner sets `instances_ = cores_`
+  The first row is why we concluded a connection could not spread one instance
+  across cores. **It was not passing `aipu_cores`.** `axr_device_connect()` says
+  how many sub-devices the *connection* reserves; `aipu_cores`, an
+  `axr_load_model_instance()` property, says how many the *instance* may use.
+  Set only the first and three cores really do sit at 50 MHz. The SDK's own
+  `examples/axruntime/axruntime_example.cpp` sets both:
+
+  ```
+  input_dmabuf=0;num_sub_devices=N;aipu_cores=N
+  ```
+
+  With both set — and the matching fixed-batch artifact — one connection and one
+  instance drive all four cores. See the corrected table below. What follows is
+  the superseded arrangement (`instances_ = cores_`)
   and gives every instance its own connection. "One sub-device each" holds for
   models whose constants fit on one core — every vendor prebuilt we ship — but
   is not universal; the next paragraph is what decides it.
@@ -786,9 +807,10 @@ which does have one and will not warn.
   CSV's `axelera_cfg`), and `$MB_AXELERA_DDR_BUDGET_MB` enables an actual cap.
 
   **The prebuilt zip ships four compilations of every model — 1, 2, 3 and 4
-  cores — and taking the 1-core one is correct.** `config/models.conf` has
-  `strip = build/%m/%m/1`, which looked like an oversight and is not. The
-  compiler moves constants from DDR into L2 as the core count rises:
+  cores — and the N-core build is a genuine fixed-batch-N artifact.**
+  `resnet50-imagenet-onnx-4core/model.json` declares input `[4,230,240,4]` and
+  output `[4,1,1,1024]`: **one invocation retires four frames.** The compiler
+  also moves constants from DDR into L2 as the count rises:
 
   | build | kernel_function*.c | L2 const | DDR const |
   | --- | --- | --- | --- |
@@ -797,28 +819,34 @@ which does have one and will not warn.
   | 3-core | 3 | 23 MB | 4.3 MB |
   | 4-core | 4 | 28 MB | none |
 
-  That looks like it should be faster, and for *latency* it is — one frame is
-  spread across N cores. For **throughput it is worse**, measured 2026-08-04 on
-  ResNet-50 with both configurations occupying exactly two cores (confirmed by
-  sampling `axcmd --clock-all-actual` mid-run, `aicore0+1` at 800 MHz in both):
+  **This file used to say the multicore builds were worse for throughput. That
+  was a counting error, now corrected.** The old comparison recorded the 2-core
+  build at "317.6 fps" against two batch-1 instances at 574.0 — but 317.6 was
+  *invocations* per second, and each retires 2 frames. It was 635 fps, and it
+  won. `run_frame()` now returns the frames retired so the engine counts frames
+  rather than calls.
 
-  | | fps |
-  | --- | ---: |
-  | 2-core build, `num_sub_devices=2`, 1 instance | 317.6 |
-  | **1-core build, `num_sub_devices=1`, 2 instances** | **574.0** |
+  **Measured 2026-09-03, ResNet-50, one connection + one instance per build,
+  depth 2** (`cores` selects the `<dir>-Ncore` artifact):
 
-  1.81x in favour of N independent instances. The 2-core build on two cores is
-  even slower than the 1-core build on *one* (358.7). Don't "fix" the strip glob.
-
-  **Scaling of the shipped arrangement** (1-core build, one connection and one
-  sub-device per instance), same session:
-
-  | instances / cores busy | 1 | 2 | 3 | 4 |
+  | cores / batch | 1 | 2 | 3 | 4 |
   | --- | ---: | ---: | ---: | ---: |
-  | fps | 358.7 | 574.0 | 658.6 | 694.9 |
+  | invocations/s | 359 | 316 | 385 | 400 |
+  | **fps** | **359.3** | **631.6** | **1153.9** | **1601.5** |
+  | old multi-instance fps | 358.7 | 574.0 | 658.6 | 694.9 |
 
-  Strongly sublinear — 1.94x for 4x the cores, saturating around three. That is
-  a property of the card, not of this runner.
+  **2.3x at four cores.** Note the invocation rate barely moves: a batch-4 call
+  costs about what a batch-1 call costs (2.50 ms against 2.78 ms), because the
+  four cores work the batch in parallel — which is what the artifact is *for*.
+  That also makes the speedup slightly superlinear against one core (4.46x), as
+  per-invocation overhead is amortised across four frames.
+
+  **Only ResNet-50 has multicore builds on this host, and they were extracted by
+  hand.** `strip = build/%m/%m/1` still fetches the 1-core build only, so a fresh
+  checkout has no `-Ncore` siblings and every model falls back to batch 1 — with
+  a visible `no N-core build; using batch 1` note, never a silent substitution.
+  Fetching all four subtrees would need a new `Fetcher` mechanism; `strip` maps
+  one subtree to one directory.
 
   **The vendor's 2054 fps on ResNet-50 remains unexplained**, and it is a real
   measurement — though see **Work per frame** for the scale of the gap: even
@@ -826,8 +854,11 @@ which does have one and will not warn.
   shortfall: it comes from Voyager's `End2EndTracer`, which reports
   `1 / mean(inter-frame interval)` with **no multiplier** (unlike `AipuTracer` /
   `HostTracer`, which do multiply by core count — don't confuse the two, they
-  live in different modules with the same class names). Ruled out so far: a
-  second API, batching (both builds are batch 1), and the multi-core builds. The
+  live in different modules with the same class names). **Batching and the
+  multi-core builds were previously listed here as ruled out. They were not —
+  they were most of the gap**: the fixed-batch-4 artifact took us from 695 to
+  1602 fps, i.e. from 34% of the vendor's figure to 78%. Still ruled out: a
+  second API. The
   untested difference is `--enable-opencl` with real video streams, where the
   pipeline may feed the NPU through **dmabuf** — `input_dmabuf` / `output_dmabuf`
   are real instance properties we do not use.
@@ -1080,10 +1111,12 @@ by 8.174 GOP/frame, against each vendor's rated INT8 throughput.
 | MemryX MX3 | 1104 | 9.0 TOPS | 14 @ 600 MHz | **64%** |
 | Hailo-8 | 1369 | 11.2 TOPS | 26 | **43%** |
 | DeepX M1 | 1087 | 8.9 TOPS | 25 | **36%** |
-| Axelera Metis | 695 | 5.7 TOPS | 214 | **2.7%** |
+| Axelera Metis | 1602 | 13.1 TOPS | 214 | **6.1%** |
 
-Three cards land in a plausible 36-64% band. **Axelera delivers under 3% of its
-nameplate**, and even the vendor's own unexplained 2054 fps would be only 7.8%.
+Three cards land in a plausible 36-64% band. **Axelera delivers about 6% of its
+nameplate** — up from 2.7% before the fixed-batch fix (2026-09-03), and now 78%
+of the vendor's own 2054 fps rather than 34%. Even the vendor figure is only 7.8%
+of the datasheet.
 That reframes the open "18% of vendor" question under **API modes**: the gap to
 the *datasheet* is far larger than the gap to the vendor's own benchmark, so
 whatever is being missed is not a small tuning matter.
@@ -1452,7 +1485,17 @@ thing. Unfixed at the app level; the honest fix would be reaping the MX3 session
 on exit so a hard kill can't poison the next launch, which needs a look at what
 `MxAccl` teardown actually offers.
 
-**Axelera: claiming all 4 AIPU cores wedges the card; 1-3 are stable.**
+**Axelera: claiming all 4 AIPU cores wedges the card — under the OLD
+multi-connection implementation.** Everything in this entry was measured against
+the arrangement that opened one `axr_device_connect()` per core and ran four
+instances. The fixed-batch path that replaced it (2026-09-03) makes **one**
+connection and **one** instance, so the contention and the repeated firmware
+reloads that produced these symptoms do not arise; four cores at batch 4 has run
+clean here. Two caveats before treating it as solved: the batched path has only
+minutes of soak time, not hours, and `$MB_AXELERA_MULTI_INSTANCE=1` reinstates
+the old arrangement exactly, including this failure mode.
+
+The original entry, kept because the symptoms are worth recognising:
 Reproduced 2026-08-04 by stepping the AIPU-cores control 1 → 2 → 3 → 4 in one
 session: 1, 2 and 3 all ran; 4 failed immediately with
 
@@ -1653,7 +1696,7 @@ GOP/frame figures in **Work per frame** to turn any of these into achieved TOPS:
 | --- | --- | --- | --- | --- | --- | --- |
 | YOLOv8s | ~123 | ~490 | ~32 | ~148 | ~131 | ~154 |
 | YOLOv8m | ~61 | ~67 | | | | |
-| ResNet-50 | ~297 | ~1369 | ~393 | ~1087 | ~352 | ~376 |
+| ResNet-50 | ~297 | ~1369 | ~393 | ~1087 | ~1602 | ~1602 |
 
 **Async is not a uniform multiplier.** YOLOv8m gains ~10% on Hailo where YOLOv8s
 gains 4× — the medium model is NPU-compute-bound, so there is little transfer
@@ -1662,7 +1705,9 @@ sign the async path is broken.
 
 Axelera ResNet-50, re-measured 2026-08-04 through a direct libaxruntime probe
 (one connection and one sub-device per instance): **358.7 / 574.0 / 658.6 /
-694.9 fps** at 1 / 2 / 3 / 4 cores. The older 437 / 671 / 805 figures predate the
+694.9 fps**. Superseded 2026-09-03 by the fixed-batch path — **359 / 632 / 1154 /
+1602** — see **API modes**. The old figures counted a batched invocation as one
+frame where the artifact was batched at all at 1 / 2 / 3 / 4 cores. The older 437 / 671 / 805 figures predate the
 cores rework and were taken differently; prefer these. Anything quoting a
 one-core Axelera number is measuring a quarter of the card.
 

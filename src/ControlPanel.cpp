@@ -397,22 +397,28 @@ ControlPanel::ControlPanel(const Catalog& catalog)
                 auto* lbl = Gtk::make_managed<Gtk::Label>("AIPU cores");
                 lbl->set_xalign(0.0);
                 row->append(*lbl);
-                // Default 2, conservatively. Claiming all four cores wedges
-                // this card: all four MSI vectors time out, the PCIe link drops
-                // and the Metis falls back to bootloader — recoverable only by
-                // a full power-off. 3 has been seen to work but sits one step
-                // from the cliff, so the shipped default stays at 2 and raising
-                // it is a deliberate act. See "Known issues" in the README.
-                axelera_cores_.set_adjustment(Gtk::Adjustment::create(2, 1, 4, 1, 1));
+                // Default 4: this now selects the model's <dir>-4core build,
+                // a fixed-batch-4 artifact run on ONE connection with ONE
+                // instance. Measured 2026-09-03 on ResNet-50: 359 / 632 / 1154 /
+                // 1602 fps at 1 / 2 / 3 / 4 cores, so the top of the range is
+                // where the card actually performs.
+                //
+                // The old default was 2, because 4 wedged the card. That was
+                // the *multi-connection* implementation — four separate
+                // axr_device_connect() calls, each reloading firmware, and four
+                // instances contending on the command queue. The batched path
+                // makes one connection and one instance, so that mechanism is
+                // gone. The experimental multi-instance mode reinstates it.
+                axelera_cores_.set_adjustment(Gtk::Adjustment::create(4, 1, 4, 1, 1));
                 axelera_cores_.set_numeric(true);
                 axelera_cores_.set_tooltip_text(
-                    "AIPU cores this model claims (num_sub_devices). The Metis "
-                    "has four; one core leaves the others idle at 50 MHz, "
-                    "visible in the Frequency graph.\n\n"
-                    "WARNING: 4 has been observed to wedge the card — all four "
-                    "MSI vectors time out and the PCIe link drops, needing a "
-                    "power-off to recover. 3 works but is one step from that; "
-                    "the default is 2.");
+                    "Which compiled build of the model to run. Voyager deploys "
+                    "one artifact per core count, and the N-core build is a "
+                    "fixed-batch-N model: it reserves N of the Metis's four "
+                    "AIPU cores and one invocation retires N frames.\n\n"
+                    "A model with no matching <dir>-Ncore build falls back to "
+                    "batch 1 on one core, and the status line says so — it is "
+                    "never silently benchmarked as though it had N.");
                 row->append(axelera_cores_);
                 page->append(*row);
             } else if (a == Accel::Qualcomm) {

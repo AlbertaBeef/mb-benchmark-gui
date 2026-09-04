@@ -28,6 +28,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -72,14 +73,9 @@ public:
         // libaxruntime has no async API, so there is no mode radio here and
         // depth would otherwise be unreachable.
         depth_ = std::max(1, std::min(2, item.depth));
-        // One model instance occupies exactly ONE AI core, whatever
-        // num_sub_devices the connection asked for. Measured 2026-08-04 with the
-        // clocks sampled mid-run: cores=4 with a single instance leaves
-        // aicore1..3 at 50 MHz and gives 375.6 fps, no better than one core.
-        // So "N cores busy" means N instances, and each needs its own
-        // connection — four instances shoved onto one connection collide
-        // (`Failed to wait for MSI`, 201.7 fps). Hence: instances == cores.
-        instances_ = cores_;
+        // Experimental: the old behaviour, N independent batch-1 connections.
+        // See the note on multi_instance_ for why it is no longer the default.
+        multi_instance_ = env_flag("MB_AXELERA_MULTI_INSTANCE");
     }
 
     void load(const std::vector<BenchMember>& members) override {
@@ -91,69 +87,137 @@ public:
         if (n == 0 || !devices) throw std::runtime_error("Axelera: no devices found");
         device_ = devices[0];  // the array is owned by the context
 
-        // One core per instance. A multi-stage pipeline shares the card between
-        // its stages, so cap the instance count at what each stage can own.
         const size_t nstages = std::max<size_t>(1, members.size());
         const size_t avail = std::max<size_t>(1, device_.subdevice_count);
 
-        // ---- how many sub-devices this model's constants need ----
+        // ---- pick the artifact compiled for the requested core count -------
         //
-        // Voyager sizes num_sub_devices from the model's L2 constant footprint
-        // at ~1.5 MB per AIPU core. Nothing in libaxruntime reports it, so it
-        // comes from model.json.
+        // Voyager deploys a model per core count, and the N-core build is a
+        // genuine fixed-batch-N artifact: resnet50-imagenet-onnx-4core declares
+        // input [4,230,240,4] and output [4,1,1,1024]. One invocation of it
+        // retires FOUR frames. The base directory is the 1-core, batch-1 build.
         //
-        // **It is only applied when the model actually fits in the part's L2.**
-        // The vendor prebuilts do not: ResNet-50 declares 7.97 MB of L2 and
-        // YOLOv8m 8.01 MB against the Metis's 6 MB total, and both load and run
-        // on a single sub-device — so those pools are evidently paged, and the
-        // formula cannot be read literally for them. Taking it literally would
-        // demand 4+ cores each and collapse ResNet-50 from four instances to
-        // one, throwing away half its measured throughput. Where the model does
-        // fit — our locally compiled ArcFace at 3.55 MB, which matches the
-        // Voyager guidance of 3 cores exactly — the rule is honoured.
+        // Sibling naming is "<dir>-<N>core", used generically — nothing here
+        // knows the model is ResNet-50. A missing sibling is reported, never
+        // silently substituted: benchmarking batch 1 while the UI says "4 cores"
+        // is precisely the mistake that produced the old numbers.
+        std::vector<std::string> paths;
+        paths.reserve(members.size());
+        for (const auto& m : members) {
+            std::string chosen = m.path;
+            if (cores_ > 1) {
+                const std::string sib = m.path + "-" + std::to_string(cores_) + "core";
+                std::error_code ec;
+                if (fs::exists(fs::path(sib) / "model.json", ec) ||
+                    !first_model_json(sib).empty()) {
+                    chosen = sib;
+                } else if (artifact_note_.empty()) {
+                    artifact_note_ = "no " + std::to_string(cores_) +
+                                     "-core build; using batch 1";
+                }
+            }
+            paths.push_back(std::move(chosen));
+        }
+
+        // ---- load, and take the batch size from the model itself -----------
+        for (size_t mi = 0; mi < members.size(); ++mi) {
+            const BenchMember& m = members[mi];
+            auto st = std::make_unique<Stage>();
+            st->reps = m.reps > 0 ? m.reps : 1;
+            st->model_path = paths[mi];
+
+            st->model = axr_load_model(ctx_, resolve_model_json(paths[mi]).c_str());
+            if (!st->model) {
+                throw std::runtime_error("Axelera: load_model('" + paths[mi] +
+                                         "') failed: " +
+                                         axr_last_error_string(AXR_OBJECT(ctx_)));
+            }
+            const size_t ni = axr_num_model_inputs(st->model);
+            const size_t no = axr_num_model_outputs(st->model);
+            if (ni == 0) throw std::runtime_error("Axelera: model has no inputs");
+            for (size_t i = 0; i < ni; ++i)
+                st->in_infos.push_back(axr_get_model_input(st->model, i));
+            for (size_t i = 0; i < no; ++i)
+                st->out_infos.push_back(axr_get_model_output(st->model, i));
+
+            // Dimension zero is the batch. Every input must agree, or "one
+            // invocation retires N frames" has no single N and the frame count
+            // would be a guess.
+            const size_t b = st->in_infos[0].ndims ? st->in_infos[0].dims[0] : 1;
+            for (size_t i = 1; i < ni; ++i) {
+                const size_t bi = st->in_infos[i].ndims ? st->in_infos[i].dims[0] : 1;
+                if (bi != b) {
+                    throw std::runtime_error(
+                        "Axelera: model '" + paths[mi] + "' has inconsistent input "
+                        "batch dimensions (" + std::to_string(b) + " vs " +
+                        std::to_string(bi) + "); cannot count frames");
+                }
+            }
+            st->batch = std::max<size_t>(1, b);
+            stages_.push_back(std::move(st));
+        }
+
+        // Every stage of a pipeline processes the same frames, so their batches
+        // must agree for the retired-frame count to mean anything.
+        batch_ = static_cast<int>(stages_.front()->batch);
+        for (const auto& st : stages_) {
+            if (static_cast<int>(st->batch) != batch_) {
+                throw std::runtime_error(
+                    "Axelera: pipeline stages have different batch sizes (" +
+                    std::to_string(batch_) + " vs " + std::to_string(st->batch) +
+                    "); refusing to guess the frame count");
+            }
+        }
+
+        // ---- how many sub-devices, and how many instances ------------------
+        //
+        // For a fixed-batch artifact the compiler already decided: reserve
+        // `batch` sub-devices and give the instance `aipu_cores=batch`. One
+        // connection, one instance, one execution thread — the arrangement the
+        // SDK's own axruntime_example.cpp uses.
+        //
+        // For a batch-1 artifact there is a choice, and the L2 rule below is
+        // what makes it (ArcFace's 3.55 MB of constants needs 3 cores).
+        size_t want = 1;
+        if (batch_ > 1) {
+            want = static_cast<size_t>(batch_);
+            if (want * nstages > avail) {
+                throw std::runtime_error(
+                    "Axelera: batch " + std::to_string(batch_) + " x " +
+                    std::to_string(nstages) + " stage(s) needs " +
+                    std::to_string(want * nstages) + " sub-devices, card has " +
+                    std::to_string(avail));
+            }
+            instances_ = 1;
+        }
+
         size_t l2_per_core = env_bytes("MB_AXELERA_L2_PER_CORE_MB", 0);
         if (l2_per_core == 0) l2_per_core = 1500000;  // ~1.5 MB per AIPU core
         const size_t l2_total = l2_per_core * avail;
         const size_t ddr_budget = env_bytes("MB_AXELERA_DDR_BUDGET_MB", 0);
 
-        size_t want = 1;          // sub-devices per connection
         size_t ddr_per_inst = 0;
-        for (const auto& m : members) {
-            const Footprint fp = read_footprint(resolve_model_json(m.path));
+        for (const auto& path : paths) {
+            const Footprint fp = read_footprint(resolve_model_json(path));
             if (!fp.ok) continue;
             ddr_per_inst += fp.ddr;
+            if (batch_ > 1) continue;  // the artifact's batch already decided
             // Declared L2 larger than the whole part means the pools are
             // paged, so the per-core arithmetic says nothing useful — leave
-            // this stage at one sub-device. Not surfaced in describe(): it is
-            // true of every vendor prebuilt we ship, so it would be noise on
-            // every row of every CSV rather than information.
+            // this stage at one sub-device.
             if (fp.l2 == 0 || fp.l2 > l2_total) continue;
             const size_t need = (fp.l2 + l2_per_core - 1) / l2_per_core;
             want = std::max(want, std::clamp<size_t>(need, 1, avail));
         }
 
-        // Total sub-devices in flight cannot exceed what the card has.
-        size_t max_inst = std::max<size_t>(1, avail / (want * nstages));
-
-        // ---- cap instances by device memory ----
-        //
-        // Every instance loads its own copy of the model's DDR constants, so N
-        // instances cost N x that. YOLOv8m carries 53.8 MB against ResNet-50's
-        // 20.4 MB, i.e. 215 MB at four instances versus 82 MB — and YOLOv8m at
-        // four instances is what died on 2026-08-08, during *load*, at idle
-        // power (2.3 W, no rail collapse) with the smallest L2 of any model we
-        // ship. Device memory is the suspect that fits those facts.
-        //
-        // axrDeviceInfo::max_memory is documented as always 0 in this runtime,
-        // so the budget cannot be queried and is not guessed at by default:
-        // set $MB_AXELERA_DDR_BUDGET_MB to enable the cap. The footprint is
-        // reported eitherway so the next failure has a number attached to it.
-        if (ddr_per_inst > 0) {
-            // Round rather than truncate: ArcFace's 0.83 MB would otherwise
-            // report as "0 MB/instance", which reads like a missing number.
-            const size_t mb = (ddr_per_inst + 512 * 1024) / (1024 * 1024);
-            if (mb > 0) ddr_note_ = std::to_string(mb) + " MB/instance";
-            if (ddr_budget > 0) {
+        if (batch_ == 1) {
+            // Batch-1 default is ONE instance on `want` sub-devices. Running N
+            // independent batch-1 connections is the old behaviour and is now
+            // opt-in: it conflates "cores" with "instances", and on a card whose
+            // model has a real N-core build the batched artifact is the honest
+            // way to use N cores.
+            size_t max_inst = std::max<size_t>(1, avail / (want * nstages));
+            if (ddr_per_inst > 0 && ddr_budget > 0) {
                 const size_t fits = std::max<size_t>(1, ddr_budget / ddr_per_inst);
                 if (fits < max_inst) {
                     sizing_note_ = "capped to " + std::to_string(fits) +
@@ -163,64 +227,33 @@ public:
                 }
                 max_inst = std::min(max_inst, fits);
             }
+            instances_ = multi_instance_
+                             ? static_cast<int>(std::clamp<size_t>(
+                                   static_cast<size_t>(cores_), 1, max_inst))
+                             : 1;
         }
 
-        instances_ = static_cast<int>(
-            std::clamp<size_t>(static_cast<size_t>(cores_), 1, max_inst));
-
-        // Say so when the request could not be honoured. Without this the AIPU
-        // cores control fails silently: ArcFace needs 3 sub-devices for its L2
-        // constants, so only one instance fits and asking for 2, 3 or 4 all
-        // produce the same run — the right answer, arriving with no
-        // explanation. The DDR cap sets its own note; this covers the rest.
-        if (static_cast<size_t>(cores_) > max_inst && sizing_note_.empty()) {
-            sizing_note_ = std::to_string(cores_) + " requested, " +
-                           std::to_string(instances_) + " fits";
-            if (want > 1) {
-                sizing_note_ += " (" + std::to_string(want) +
-                                " sub-dev/instance for L2)";
-            } else if (nstages > 1) {
-                sizing_note_ += " (" + std::to_string(nstages) + " stages share the card)";
-            }
+        if (ddr_per_inst > 0) {
+            const size_t mb = (ddr_per_inst + 512 * 1024) / (1024 * 1024);
+            if (mb > 0) ddr_note_ = std::to_string(mb) + " MB/instance";
         }
 
-        for (const auto& m : members) {
-            auto st = std::make_unique<Stage>();
-            st->reps = m.reps > 0 ? m.reps : 1;
-
-            st->model = axr_load_model(ctx_, resolve_model_json(m.path).c_str());
-            if (!st->model) {
-                throw std::runtime_error("Axelera: load_model('" + m.path + "') failed: " +
-                                         axr_last_error_string(AXR_OBJECT(ctx_)));
-            }
-            const size_t ni = axr_num_model_inputs(st->model);
-            const size_t no = axr_num_model_outputs(st->model);
-            for (size_t i = 0; i < ni; ++i)
-                st->in_infos.push_back(axr_get_model_input(st->model, i));
-            for (size_t i = 0; i < no; ++i)
-                st->out_infos.push_back(axr_get_model_output(st->model, i));
-
-            // One connection for the whole stage, opened before any instance
-            // exists. Ask for this stage's full share of the card so the
-            // instances on it can spread across cores.
-            // The FIRST connect is the one that uploads the firmware ELF to a
-            // cold card. Do it alone and let it complete before opening any
-            // further connection, so nothing resets the device mid-upload.
+        // ---- connect once, instantiate ------------------------------------
+        for (auto& st : stages_) {
+            // The FIRST connect uploads the 3.8 MB firmware ELF to a cold card.
+            // Let it complete alone before anything else touches the device.
             connect_stage(*st, want);
             if (!st->conn) {
                 throw std::runtime_error("Axelera: could not connect to the device: " +
                                          std::string(axr_last_error_string(AXR_OBJECT(ctx_))));
             }
-
             for (int s = 0; s < instances_; ++s) {
                 auto inst = std::make_unique<Inst>();
-                // Instance 0 rides the stage connection; each later one gets
-                // its own, which is what actually lights up another AI core.
                 if (s == 0) {
-                    inst->instance = st->conn ? make_instance(st->conn, *st) : nullptr;
+                    inst->instance = make_instance(st->conn, *st, want);
                 } else {
                     inst->conn = axr_device_connect(ctx_, &device_, want, nullptr);
-                    if (inst->conn) inst->instance = make_instance(inst->conn, *st);
+                    if (inst->conn) inst->instance = make_instance(inst->conn, *st, want);
                     if (!inst->instance && inst->conn) {
                         axr_destroy(AXR_OBJECT(inst->conn));
                         inst->conn = nullptr;
@@ -236,10 +269,13 @@ public:
                                "$MB_AXELERA_TOOLCHAIN to the directory holding it.";
                     }
                     throw std::runtime_error("Axelera: could not instantiate " +
-                                             m.path + ": " + why);
+                                             st->model_path + ": " + why);
                 }
 
-                // Per-instance buffers: concurrent runs must not share them.
+                // Per-instance buffers, sized from the tensor info — which
+                // already includes the batch dimension, so a batch-4 model gets
+                // a 4x buffer without any arithmetic here.
+                const size_t ni = st->in_infos.size(), no = st->out_infos.size();
                 inst->in_bufs.resize(ni);
                 inst->in_args.resize(ni);
                 for (size_t i = 0; i < ni; ++i) {
@@ -257,40 +293,47 @@ public:
                 }
                 st->insts.push_back(std::move(inst));
             }
-
-            if (describe_.empty() && ni > 0) {
-                const axrTensorInfo& in = st->in_infos[0];
-                std::string shape;
-                for (size_t d = 0; d < in.ndims; ++d) {
-                    const size_t u = in.dims[d] - in.padding[d][0] - in.padding[d][1];
-                    if (!shape.empty()) shape += "x";
-                    shape += std::to_string(u);
-                }
-                describe_ = shape + " int8 · " + std::to_string(instances_) +
-                            (instances_ == 1 ? " core" : " cores");
-                if (st->cores > 1)
-                    describe_ += " x" + std::to_string(st->cores) + " sub-dev";
-                if (depth_ > 1) describe_ += " · depth " + std::to_string(depth_);
-                if (!ddr_note_.empty()) describe_ += " · " + ddr_note_;
-                if (!sizing_note_.empty()) describe_ += " · " + sizing_note_;
-            }
-            stages_.push_back(std::move(st));
         }
 
-        // >1 stream: free-running threads, one per stream, each retiring frames
-        // into a shared counter. One stream stays inline — no threads, no
-        // synchronisation, identical to the original single-instance path.
-        if (instances_ > 1) {
-            for (int s = 0; s < instances_; ++s) {
-                threads_.emplace_back([this, s] { stream_loop(s); });
+        // ---- status line ---------------------------------------------------
+        {
+            const axrTensorInfo& in = stages_.front()->in_infos[0];
+            std::string shape;
+            for (size_t d = 0; d < in.ndims; ++d) {
+                const size_t u = in.dims[d] - in.padding[d][0] - in.padding[d][1];
+                if (!shape.empty()) shape += "x";
+                shape += std::to_string(u);
             }
+            // Cores reserved is per-connection sub-devices x connections: the
+            // batched path is (batch x 1), the experimental multi-instance path
+            // is (1 x N). Reporting `want` alone would say "1 AIPU core" for a
+            // run that is actually occupying four.
+            const size_t cores_busy = want * static_cast<size_t>(instances_);
+            describe_ = shape + " int8 · batch " + std::to_string(batch_) + " · " +
+                        std::to_string(cores_busy) +
+                        (cores_busy == 1 ? " AIPU core" : " AIPU cores") + " · " +
+                        std::to_string(instances_) +
+                        (instances_ == 1 ? " instance" : " instances");
+            describe_ += depth_ > 1 ? " · double buffer" : " · no double buffer";
+            if (!ddr_note_.empty()) describe_ += " · " + ddr_note_;
+            if (!artifact_note_.empty()) describe_ += " · " + artifact_note_;
+            if (!sizing_note_.empty()) describe_ += " · " + sizing_note_;
+        }
+
+        // >1 instance: free-running threads, one per instance. The batched path
+        // is always a single instance and stays inline — no threads, no
+        // synchronisation.
+        if (instances_ > 1) {
+            for (int s = 0; s < instances_; ++s)
+                threads_.emplace_back([this, s] { stream_loop(s); });
         }
     }
 
-    void run_frame() override {
+    // Returns the number of frames retired: `batch_` per successful invocation.
+    unsigned run_frame() override {
         if (instances_ == 1) {
             run_one(0);
-            return;
+            return static_cast<unsigned>(batch_);
         }
         std::unique_lock<std::mutex> lk(mu_);
         if (!cv_.wait_for(lk, std::chrono::seconds(10),
@@ -299,6 +342,7 @@ public:
         }
         if (!error_.empty()) throw std::runtime_error(error_);
         --completed_;
+        return static_cast<unsigned>(batch_);
     }
 
     std::string describe() const override { return describe_; }
@@ -326,6 +370,8 @@ private:
         std::vector<axrTensorInfo> in_infos, out_infos;
         std::vector<std::unique_ptr<Inst>> insts;  // one per stream
         size_t cores = 1;
+        size_t batch = 1;         // input dims[0] — frames per invocation
+        std::string model_path;   // the artifact actually chosen, for messages
         int reps = 1;
     };
 
@@ -471,6 +517,26 @@ private:
     }
 
     // directory the catalog names.
+    static bool env_flag(const char* name) {
+        const char* e = std::getenv(name);
+        return e && *e && std::strcmp(e, "0") != 0;
+    }
+
+    // First model_*.json in `dir`, or empty. Used to test whether an -Ncore
+    // sibling exists without assuming it is called plain model.json.
+    static std::string first_model_json(const std::string& dir) {
+        std::error_code ec;
+        if (!fs::is_directory(dir, ec)) return {};
+        for (const auto& e : fs::directory_iterator(dir, ec)) {
+            const std::string nm = e.path().filename().string();
+            if (nm.rfind("model", 0) == 0 && nm.size() > 5 &&
+                nm.substr(nm.size() - 5) == ".json") {
+                return e.path().string();
+            }
+        }
+        return {};
+    }
+
     static std::string resolve_model_json(const std::string& dir) {
         if (!fs::is_directory(dir)) return dir;
         std::error_code ec;
@@ -501,11 +567,24 @@ private:
     // offers is its own double_buffer property, which overlaps the next frame's
     // transfer with the current run. That is what "Async" means for this card,
     // and the status line says so rather than implying parity.
-    axrModelInstance* make_instance(axrConnection* conn, Stage& st) {
-        axrProperties* props = nullptr;
-        if (depth_ > 1) {
-            props = axr_create_properties(ctx_, "double_buffer=1");
-        }
+    // Instance properties, matching the SDK's own axruntime_example.cpp:
+    //
+    //   input_dmabuf=0;num_sub_devices=N;aipu_cores=N
+    //
+    // `aipu_cores` is the one that was missing before. Without it the runtime
+    // was told how many sub-devices the *connection* reserved but never how many
+    // cores the *instance* should spread across, which is why a single instance
+    // asking for four sub-devices left aicore1..3 parked at 50 MHz. Both keys
+    // are set for batch 1 too — N is simply 1 there.
+    axrModelInstance* make_instance(axrConnection* conn, Stage& st, size_t sub_devices) {
+        std::string p = "input_dmabuf=0;num_sub_devices=" +
+                        std::to_string(sub_devices) + ";aipu_cores=" +
+                        std::to_string(sub_devices);
+        // double_buffer overlaps the next frame's transfer with the current
+        // run. It is a boolean — any truthy value just turns it on — so depth
+        // tops out at 2 on this card.
+        if (depth_ > 1) p += ";double_buffer=1";
+        axrProperties* props = axr_create_properties(ctx_, p.c_str());
         axrModelInstance* mi = axr_load_model_instance(conn, st.model, props);
         if (props) axr_destroy(AXR_OBJECT(props));
         return mi;
@@ -519,6 +598,9 @@ private:
     int depth_ = 2;                  // double_buffer on by default
     int cores_ = 4;
     int instances_ = 1;
+    int batch_ = 1;            // frames retired per successful invocation
+    bool multi_instance_ = false;  // $MB_AXELERA_MULTI_INSTANCE, experimental
+    std::string artifact_note_;    // why the requested -Ncore build was not used
     std::string sizing_note_;   // why the instance count was clamped, if it was
     std::string ddr_note_;      // device-memory footprint per instance
 

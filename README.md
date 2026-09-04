@@ -83,8 +83,9 @@ sit flat however hot the part got.
 
 The Axelera trace also exposes something the frame-rate graph cannot: at one
 core **only `C0` ramps to 800 MHz while `C1`–`C3` stay at 50 MHz**, i.e. three
-of the four AI cores are idle. Raising **AIPU cores** in the Axelera tab wakes them
-one at a time — see [Per-accelerator controls](#per-accelerator-controls).
+of the four AI cores are idle — that is the batch-1 build. Raising **AIPU cores**
+in the Axelera tab selects the fixed-batch build for that count, which lights all
+of them — see [Per-accelerator controls](#per-accelerator-controls).
 
 **The graphs are never cleared.** Starting or stopping a run does not wipe the
 traces, so consecutive runs stay on one axis and can be read against each other
@@ -294,54 +295,57 @@ controls each card has, then whatever else that device exposes:
   setter — `set_mpu_frequency` exists only in the Python `mxa` module, absent
   from both `memx.h` and `MxAccl` — so this is a one-shot interpreter call at
   load time, never in the timed loop.
-- **Axelera — AIPU cores** (1–4, default 2). How much of the Metis the model
-  claims, passed as `num_sub_devices` to `axr_device_connect()`.
+- **Axelera — AIPU cores** (1–4, default 4). Which compiled build of the model
+  to run. Voyager deploys one artifact per core count, and the N-core build is a
+  genuine **fixed-batch-N** model: `resnet50-imagenet-onnx-4core` declares input
+  `[4,230,240,4]`, so one invocation retires **four frames**. The runner reserves
+  N sub-devices on a single connection and passes `num_sub_devices=N;aipu_cores=N`
+  to the one model instance, matching the SDK's own `axruntime_example.cpp`.
 
-> ⚠️ **Do not set this to 4 on this card.** Claiming all four cores makes every
-> MSI vector time out and drops the PCIe link, after which the Metis sits in
-> bootloader and no firmware upload succeeds until a **full power-off** — a
-> driver reload does not clear it. 1–3 run fine; 3 is the highest value seen
-> stable. The default is 2 so that a fresh checkout can't cost you a power
-> cycle. See [Known issues](#known-issues).
+**Cores matter more than anything else on the Metis.** Measured 2026-09-03 on
+ResNet-50, depth 2:
 
-**Cores matter more than anything else on the Metis.** libaxruntime has no async
-API, and a model only occupies the cores it asked for — which the Frequency
-graph shows directly: on one core `aicore0` runs at 800 MHz while `aicore1`–`3`
-sit at 50 MHz. Measured on ResNet-50:
+| cores / batch | 1 | 2 | 3 | 4 |
+| --- | ---: | ---: | ---: | ---: |
+| invocations/s | 359 | 316 | 385 | 400 |
+| **fps** | **359** | **632** | **1154** | **1602** |
 
-| AIPU cores | fps | AI core clocks |
-| ---------: | --: | -------------- |
-| 1 | 437 | `800 · 50 · 50 · 50` |
-| 2 | 671 | `800 · 50 · 800 · 50` |
-| 4 | **805** | `800 · 800 · 800 · 800` |
+Note the invocation rate barely changes: a batch-4 call costs about what a
+batch-1 call costs, because the four cores work the batch in parallel. That is
+what the multicore artifact is *for*.
 
-2.1× from 1 → 4, with the cores waking one at a time. A multi-stage pipeline
-divides the card between its stages, so the request is capped at
-`subdevice_count / stages`.
+> **This corrects an earlier claim in this README.** It previously said the
+> multicore builds "lower latency but cost throughput", citing the 2-core build
+> at 317.6 fps against 574.0 for two batch-1 instances. **317.6 was invocations
+> per second, and each one retired 2 frames** — so it was really 635 fps, and it
+> won. The frame counter now takes the retired-frame count from the backend
+> rather than assuming one frame per call.
 
-A core is lit by a **model instance**, and an instance occupies exactly one core
-regardless of what its connection asked for — so *N* cores means *N* connections
-with one instance each. Measured on ResNet-50, clocks sampled mid-run:
+**A model with no `-Ncore` build falls back to batch 1 on one core**, and the
+status line says so (`no 4-core build; using batch 1`). It is never silently
+benchmarked as though it had N. On this host only ResNet-50 has multicore
+builds, and they were extracted by hand: the fetcher's `strip = build/%m/%m/1`
+takes the 1-core subtree only, so a fresh checkout falls back for every model.
 
-| connections × instances | aicore0..3 during run | fps |
-| --- | --- | --- |
-| 1 × 1, asking for 4 cores | `800 · 50 · 50 · 50` | 375.6 |
-| 1 × 4 on one connection | collides — `Failed to wait for MSI` | 201.7 |
-| **4 × 1** | **`800 · 800 · 800 · 800`** | **694.9** |
+That fallback costs throughput on the four batch-1-only models, because one
+instance uses one core. The previous behaviour — N independent batch-1
+connections — is still available as an explicitly experimental mode via
+`MB_AXELERA_MULTI_INSTANCE=1`, and on YOLOv8s it measures 368 fps against 130
+for the batch-1 default. It is not the default because it makes "cores" mean two
+different things depending on the artifact, and because the failure mode below
+belongs to it.
 
-Scaling is strongly sublinear — 358.7 / 574.0 / 658.6 / 694.9 fps at 1 / 2 / 3 /
-4 cores, i.e. 1.94× for four times the silicon, saturating around three. That is
-the card, not the harness.
+> ⚠️ **The old multi-connection path is what wedged this card.** Four separate
+> `axr_device_connect()` calls, each reloading firmware, with four instances
+> contending on one command queue: every MSI vector times out, the PCIe link
+> drops, and the Metis sits in bootloader until a **full power-off**. The
+> single-connection batched path does not do any of that and has run clean at
+> four cores — but with minutes of soak time, not hours, and
+> `MB_AXELERA_MULTI_INSTANCE=1` reinstates the old arrangement exactly. See
+> [Known issues](#known-issues).
 
-**On the vendor's multi-core builds.** Axelera's prebuilt zip ships four
-compilations of each model (1, 2, 3 and 4 cores); the compiler moves constants
-from DDR into L2 as the count rises, from 7.6 MB L2 / 20 MB DDR at one core to
-28 MB L2 and no DDR at four. We deliberately use the **1-core** build. Those
-builds spread a *single* frame across cores, which lowers latency but costs
-throughput: at two cores occupied, the 2-core build managed **317.6 fps** against
-**574.0** for two instances of the 1-core build — and it is slower than the
-1-core build on a single core. For a throughput benchmark, N independent
-instances is the right shape.
+A multi-stage pipeline divides the card between its stages, so the request is
+capped at `subdevice_count / stages`.
 
 The control was previously labelled "Streams" and the core count was *derived*
 from it. The mechanism was right but the name hid it, and the first connect on a
@@ -491,14 +495,13 @@ the async path, the frame accounting and the "one call retires one frame"
 contract are all sound. The two shortfalls are both understood, and both are
 concurrency, not the device:
 
-- **Axelera — 18 %.** The vendor figure comes from the Voyager *pipeline*
-  running **four parallel video streams** with OpenCL preprocessing across 4
-  AIPU cores. This app issues a single blocking `axr_run_model_instance` on one
-  model instance. Since libaxruntime exposes no async inference API at all, the
-  only way to express that concurrency is N model instances driven from N host
-  threads — which this app does not (yet) do. Note the comparison is unfair *in
-  our favour* on scope — their 2054 fps is end-to-end including video decode,
-  ours is inference-only — so the whole gap is parallelism.
+- **Axelera — 78 %** (was 18 %). Most of that gap was ours, not the card's: we
+  ran the batch-1 build on one core and counted invocations. Selecting the
+  fixed-batch-4 artifact takes ResNet-50 from 695 to **1602 fps** against the
+  vendor's 2054. What remains is scope — their figure is end-to-end from the
+  Voyager *pipeline* with four parallel video streams and OpenCL preprocessing,
+  ours is inference-only on synthetic buffers — so the two are still not the
+  same measurement, and the comparison is unfair *in our favour* on scope.
 - **MemryX — 62 %.** One stream with 4 frames in flight, where `mx_bench`
   drives more. Corroborated by the power: 7.6 W against the vendor run's 11.0 W,
   i.e. the device is not being saturated. More `connect_stream` ids and/or
@@ -699,12 +702,15 @@ timer** — Start/Stop keeps working throughout, and the schedule picks up when
 you stop. A plan that will not load is a startup error, not a warning: you would
 otherwise come back hours later to an idle app.
 
-> **Do not set `axelera.cores = 4` in an unattended plan.** Claiming all four
-> AIPU cores wedges the card — every MSI vector times out, the PCIe link drops,
-> and only a full power-off recovers it. 3 is the highest value observed stable,
-> and the shipped default of 2 sits one below that. On this host it has twice
-> gone further and taken the **whole machine** down mid-plan, where `cores = 1`
-> completed the same plan end to end.
+> **`axelera.cores = 4` has a history worth knowing before an unattended run.**
+> Under the *old* multi-connection implementation it wedged the card — every MSI
+> vector timing out, the PCIe link dropping, a full power-off to recover — and on
+> this host it twice took the **whole machine** down mid-plan, where `cores = 1`
+> completed the same plan end to end. The fixed-batch path that replaced it makes
+> one connection and one instance, so that mechanism is gone and 4 is now the
+> default; but it has minutes of soak time, not hours, and
+> `MB_AXELERA_MULTI_INSTANCE=1` reinstates the old arrangement exactly. For a
+> first overnight plan, `cores = 1` remains the conservative choice.
 
 If a card wedges mid-run the engine can sit in *stopping* indefinitely — the
 worker never returns from the vendor SDK. Automation cannot start anything then

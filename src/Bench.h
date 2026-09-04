@@ -56,11 +56,17 @@ public:
     // failure (message goes to the UI verbatim).
     virtual void load(const std::vector<BenchMember>& members) = 0;
 
-    // Retire exactly one benchmark frame: every stage, `reps` times each, in
-    // order. An async runner keeps its pipeline full and blocks until one
-    // frame *completes*, so one call still means one frame either way and the
-    // engine's counter stays honest in both modes.
-    virtual void run_frame() = 0;
+    // Retire at least one benchmark frame: every stage, `reps` times each, in
+    // order. An async runner keeps its pipeline full and blocks until a frame
+    // *completes*, so the engine's counter stays honest in both modes.
+    //
+    // **Returns the number of frames actually retired**, which is 1 for every
+    // backend except a fixed-batch Axelera artifact: those are compiled for a
+    // batch of N and one invocation genuinely produces N results, so counting
+    // the call rather than the frames under-reports throughput by exactly N.
+    // Return only what the device really completed — never a padded or assumed
+    // count, or the frame rate stops being a measurement.
+    virtual unsigned run_frame() = 0;
 
     // Short description of what got loaded (input geometry), for the status
     // line — e.g. "640x640x3 uint8".

@@ -110,7 +110,7 @@ public:
         // so the first frame fills in the description.
     }
 
-    void run_frame() override {
+    unsigned run_frame() override {
         for (auto& st : stages_) {
             for (int r = 0; r < st->reps; ++r) st->wait_one();
         }
@@ -121,6 +121,7 @@ public:
                 shape_done_ = true;
             }
         }
+        return 1;
     }
 
     std::string describe() const override { return describe_; }
@@ -278,7 +279,7 @@ public:
         }
     }
 
-    void run_frame() override {
+    unsigned run_frame() override {
         for (auto& st : stages_) {
             for (int r = 0; r < st->reps; ++r) {
                 // A finite timeout, deliberately: 0 means block forever, and
@@ -292,6 +293,7 @@ public:
                 }
             }
         }
+        return 1;
     }
 
     std::string describe() const override { return describe_; }

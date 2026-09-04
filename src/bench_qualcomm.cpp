@@ -143,10 +143,10 @@ public:
         }
     }
 
-    void run_frame() override {
+    unsigned run_frame() override {
         if (workers_.size() == 1) {
             run_one(0);
-            return;
+            return 1;
         }
         std::unique_lock<std::mutex> lk(mu_);
         if (!cv_.wait_for(lk, std::chrono::seconds(10),
@@ -155,6 +155,7 @@ public:
         }
         if (!error_.empty()) throw std::runtime_error(error_);
         --completed_;
+        return 1;
     }
 
     std::string describe() const override { return describe_; }
