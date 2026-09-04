@@ -719,10 +719,25 @@ which does have one and will not warn.
   - The SDK documents `run()` as a synchronous *facade* over an async internal
     pipeline, and the class serialises on a private mutex — so it is honest
     one-frame-at-a-time throughput, but not a clean single-frame latency probe.
+  - **`local_mode` is a real constructor argument and is NOT worth taking.**
+    `MxAccl`/`MxAcclMT`/`MxAcclBase` all take `bool local_mode = false` (5th
+    positional arg), and `mx_bench --help` advertises its default as "Local mode
+    for peak FPS", which makes the manager daemon look like the obvious suspect
+    for any MemryX shortfall. It is not: measured 2026-09-04 on ResNet-50 over
+    30 000 frames, `mx_bench` reports **1796.10 fps local against 1796.11
+    shared** — identical throughput, and only latency differs (3.34 vs 3.69 ms).
+    Three reasons not to revisit it: the gain is zero; the SDK documents local
+    mode as not supporting "multi-process or multi-DFP usage"; and it needs
+    exclusive access, so with `mxa-manager` holding the device the constructor
+    throws `Error in client->try_local_lock for device id: 0`. Our own MemryX
+    telemetry helper is a second client on that card, so local mode would fight
+    it. **The MemryX shortfall was never the daemon — it was our permit depth.**
 - **Measured after the split** (ResNet-50, this host): Hailo 298.1 / 1217.2,
-  DeepX 384.0 / 1085.5, MemryX **259.9** / 1104.4 (sync / async). The MemryX sync
+  DeepX 384.0 / 1085.5, MemryX **259.9** / **1796.7** (sync / async). The MemryX sync
   figure is new — the old emulated one is not comparable and should not be quoted
-  against it.
+  against it. The async figure was 1104.4 until 2026-09-04, when the default
+  depth went 4 -> 8; see the depth table below. Anything quoting MemryX at ~1100
+  is measuring a card 40% idle.
 - **Axelera really has no async API.** All 41 `axr_*` symbols enumerated; exactly
   one is inference and it blocks. The 233 `ze*` symbols are the statically linked
   oneAPI Level Zero loader — headers, pkg-config and CMake are all shipped, but it
@@ -937,7 +952,7 @@ which does have one and will not warn.
   | --- | --- | --- | --- |
   | Hailo | requested async queue depth, `min(requested, get_async_queue_size())` | 1-8 | yes — Sync forces 1 |
   | DeepX | outstanding `RunAsync` jobs | 1-8 | yes — Sync forces 1 |
-  | MemryX | `connect_stream` permit depth | 1-8 | yes — Sync uses `MxAcclMT::run()` |
+  | MemryX | `connect_stream` permit depth | 1-8, **default 8** | yes — Sync uses `MxAcclMT::run()` |
   | Axelera | `double_buffer` — a **boolean**, so 2 is as deep as it goes | 1-2 | **no** |
   | Qualcomm | engines in flight per NSP, one host thread each | 1-8 | **no** |
 
@@ -970,9 +985,23 @@ which does have one and will not warn.
   A card with both modes reports depth 1 in Sync regardless of where its spin
   button sits, because that is what Sync *is*, and its spin button greys out.
 
-  Measured on ResNet-50: DeepX 1 → 402.2 fps, 4 → 1085.1, 8 → 1061.6 — depth pays
-  until the device saturates and nothing after, which is why 4 is the default.
-  Axelera 1 → 573.7, 2 → 589.6.
+  **The default is per card, because the saturation point is.** Measured on
+  ResNet-50: DeepX 1 → 402.2 fps, 4 → 1085.1, 8 → 1061.6 — depth pays until the
+  device saturates and *regresses* after, so DeepX defaults to 4. Axelera
+  1 → 573.7, 2 → 589.6 (2 is the API ceiling).
+
+  **MemryX saturates only at 8, and defaulting it to 4 cost 40% of the card**
+  (fixed 2026-09-04). Measured on the real runner: **1077.5 / 1597.1 / 1796.7 fps
+  at depth 4 / 6 / 8**, where 8 matches `mx_bench` (1796.10) to four significant
+  figures. Depth 16 and a completely unthrottled stream both measure 1795, so 8
+  is the genuine saturation point and not merely the top of the UI range — the
+  existing `max_depth = 8` was already right, only `def_depth` was wrong. The
+  mechanism is plain once measured: `permits` caps frames in flight, while the
+  SDK's own scheduler defaults to `input_queue_size = 16`, so a depth of 4 left
+  the runtime's queue three-quarters empty. Defaults live in two places and both
+  must agree — `kAsyncDepth` in `bench_memryx.cpp` (the runner's own, used when
+  `configure()` is not called) and `def_depth` in `ControlPanel.cpp` (what the
+  GUI and automation actually use, via `BenchItem::depth`).
 
   `describe()` reports it uniformly as `· depth N`. It used to say
   `· N in flight`, and Axelera said `· double-buffered`; both are gone.
@@ -1108,12 +1137,25 @@ by 8.174 GOP/frame, against each vendor's rated INT8 throughput.
 
 | card | fps | achieved | rated | utilisation |
 | --- | ---: | ---: | ---: | ---: |
-| MemryX MX3 | 1104 | 9.0 TOPS | 14 @ 600 MHz | **64%** |
+| MemryX MX3 | 1797 | 14.7 TOPS | 14 @ 600 MHz | **105%** (see below) |
 | Hailo-8 | 1369 | 11.2 TOPS | 26 | **43%** |
 | DeepX M1 | 1087 | 8.9 TOPS | 25 | **36%** |
 | Axelera Metis | 1602 | 13.1 TOPS | 214 | **6.1%** |
 
-Three cards land in a plausible 36-64% band. **Axelera delivers about 6% of its
+**The MemryX row exceeds its own nameplate, so at least one of its two inputs is
+wrong — do not quote it as a utilisation figure.** 1796.7 fps is solid: it is the
+measured rate of our own runner and it matches `mx_bench` (1796.10) to four
+significant figures. The suspect input is the 8.174 GOP/frame, which is measured
+from `deepmar_resnet50-1.onnx` and is already flagged as ~6% high for a plain
+ResNet-50 (see the v1-vs-v1.5 note under **Work per frame**). Even at the v1
+figure of 7.72 GOP it comes to 13.87 TOPS, or 99%. The likelier explanation is
+the artifact: it is named `ResNet_50_MXA_Optimized_224_224_3_onnx`, and a
+vendor-optimised graph need not cost what a stock ResNet-50 costs. Nothing here
+can inspect a compiled `.dfp`'s topology, so this is flagged rather than
+corrected. **Establish the artifact's real GOP before publishing a MemryX
+efficiency number.**
+
+Two cards land in a plausible 36-43% band. **Axelera delivers about 6% of its
 nameplate** — up from 2.7% before the fixed-batch fix (2026-09-03), and now 78%
 of the vendor's own 2054 fps rather than 34%. Even the vendor figure is only 7.8%
 of the datasheet.
@@ -1258,7 +1300,9 @@ scratch directory, not the repo root:** `dxbenchmark` writes
 `DXBENCHMARK_<timestamp>.{csv,html,json}` plus a ~15 MB `profiler.json` into the
 current directory, which otherwise litters the working tree (`.gitignore` has a
 backstop, but the files still land there).
-`hailortcli benchmark <hef>`, `mx_bench -v -d <dfp> -f <frames>`,
+`hailortcli benchmark <hef>`, `mx_bench -v -d <dfp> -f <frames>` (add `-s` for
+shared mode — it measures the same throughput, see the `local_mode` note under
+**API modes**, so the bare form is fine),
 `dxbenchmark --dir <dir> --warmup 10 --time 30` (prints a profiler table rather
 than an FPS line; divide the M1's core count by "NPU Core" average). See the
 comparison table in the README.

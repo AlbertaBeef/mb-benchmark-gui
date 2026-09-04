@@ -366,7 +366,12 @@ ControlPanel::ControlPanel(const Catalog& catalog)
                 row->append(*lbl);
                 auto* sp = Gtk::make_managed<Gtk::SpinButton>();
                 const int max_depth = (a == Accel::Axelera) ? 2 : 8;
-                const int def_depth = (a == Accel::Axelera) ? 2 : 4;
+                // Defaults are per card because the saturation point is.
+                // MemryX needs 8 (1077 / 1597 / 1797 fps at 4 / 6 / 8 on
+                // ResNet-50 — 4 left 40% of the card unused against
+                // mx_bench); DeepX peaks at 4 and regresses at 8.
+                const int def_depth = (a == Accel::Axelera) ? 2
+                                    : (a == Accel::MemryX)  ? 8 : 4;
                 sp->set_adjustment(
                     Gtk::Adjustment::create(def_depth, 1, max_depth, 1, 1));
                 sp->set_numeric(true);

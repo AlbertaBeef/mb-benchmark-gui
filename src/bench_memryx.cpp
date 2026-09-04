@@ -127,7 +127,13 @@ public:
     std::string describe() const override { return describe_; }
 
 private:
-    static constexpr size_t kAsyncDepth = 4;
+    // 8, not the 4 every other card uses. The permit depth caps frames in
+    // flight, and this card needs 8 to saturate: measured on ResNet-50,
+    // 1077.5 / 1597.1 / 1796.7 fps at depth 4 / 6 / 8, where 8 matches
+    // `mx_bench -d <dfp>` (1796.10) exactly. 16 and an unthrottled stream
+    // both measure the same 1795, so 8 is the saturation point and not
+    // merely the top of the UI range.
+    static constexpr size_t kAsyncDepth = 8;
 
     struct Stage {
         explicit Stage(size_t depth) : permits(depth) {}

@@ -228,13 +228,17 @@ they always run their blocking call, with **Depth** as their concurrency knob.
 Every backend has some form of it, but the mechanism differs and so does the
 useful range:
 
-| Card | What depth sets | Range |
-| ---- | --------------- | ----- |
-| **Hailo-8** | requested async queue depth, capped by HailoRT's own reported queue size | 1–8 |
-| **DeepX M1** | outstanding `RunAsync` jobs | 1–8 |
-| **MemryX MX3** | `connect_stream` permit depth | 1–8 |
-| **Axelera Metis** | `double_buffer` — 2 is the ceiling the API has, see below | 1–2 |
-| **Qualcomm NSP** | engines in flight per NSP, one host thread each | 1–8 |
+| Card | What depth sets | Range | Default |
+| ---- | --------------- | ----- | ------- |
+| **Hailo-8** | requested async queue depth, capped by HailoRT's own reported queue size | 1–8 | 4 |
+| **DeepX M1** | outstanding `RunAsync` jobs | 1–8 | 4 |
+| **MemryX MX3** | `connect_stream` permit depth | 1–8 | **8** |
+| **Axelera Metis** | `double_buffer` — 2 is the ceiling the API has, see below | 1–2 | 2 |
+| **Qualcomm NSP** | engines in flight per NSP, one host thread each | 1–8 | 4 |
+
+The default differs per card because the saturation point does. MemryX needs 8
+(1077 / 1597 / 1797 fps at depth 4 / 6 / 8 on ResNet-50); DeepX peaks at 4 and
+falls back slightly at 8.
 
 Axelera's 1–2 is the API's own limit, not a chosen one: the runtime logs
 *"overriding to depth=2 for double buffering"*, an explicit `depth=4` property is
