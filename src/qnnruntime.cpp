@@ -798,6 +798,33 @@ void qnn_repack_rgba_to_rgb(const uint8_t* rgba, uint8_t* rgb, uint64_t pixels) 
 	}
 }
 
+void qnn_repack_rgba_to_rgb_u16(const uint8_t* rgba, uint16_t* rgb, uint64_t pixels) {
+	uint64_t i = 0;
+#if defined(__aarch64__)
+	// v * 257 is (v << 8) | v, which is vshll_n_u8(v, 8) OR'd with the widened
+	// v — two cheap ops per lane, no multiply, and it maps 0->0 and 255->65535
+	// exactly. Doing it as a float multiply would cost a convert round trip.
+	for (; i + 16 <= pixels; i += 16) {
+		uint8x16x4_t src = vld4q_u8(rgba + i * 4);
+		uint16x8x3_t lo, hi;
+		for (int c = 0; c < 3; c++) {
+			uint8x8_t cl = vget_low_u8(src.val[c]);
+			uint8x8_t ch = vget_high_u8(src.val[c]);
+			lo.val[c] = vorrq_u16(vshll_n_u8(cl, 8), vmovl_u8(cl));
+			hi.val[c] = vorrq_u16(vshll_n_u8(ch, 8), vmovl_u8(ch));
+		}
+		vst3q_u16(rgb + i * 3, lo);
+		vst3q_u16(rgb + i * 3 + 24, hi);
+	}
+#endif
+	for (; i < pixels; i++) {
+		for (int c = 0; c < 3; c++) {
+			uint8_t v = rgba[i * 4 + c];
+			rgb[i * 3 + c] = static_cast<uint16_t>((v << 8) | v);
+		}
+	}
+}
+
 int qnn_dequantize(const void* src, float* dst, uint64_t count,
                    int src_dtype, float scale, int32_t offset) {
 	switch (src_dtype) {

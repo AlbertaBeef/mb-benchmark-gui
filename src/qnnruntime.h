@@ -148,6 +148,13 @@ int qnn_engine_execute(QnnEngine* e,
 // needs this repack.
 void qnn_repack_rgba_to_rgb(const uint8_t* rgba, uint8_t* rgb, uint64_t pixels);
 
+// Same repack, but widening to uint16 for a graph quantized with INT16
+// activations. The w8a8 build takes the tensorizer's bytes as-is because its
+// input scale is exactly 1/255; the w8a16 build's is 1/65535, so a sample worth
+// v/255 must be written as v * 257 (== (v << 8) | v, exact at both endpoints)
+// rather than zero-extended, which would darken the image by 257x.
+void qnn_repack_rgba_to_rgb_u16(const uint8_t* rgba, uint16_t* rgb, uint64_t pixels);
+
 // Dequantize a graph output into float32: dst[i] = (src[i] + offset) * scale.
 // `src_dtype` is a QnnShimDataType. Returns 0 on success, 1 if the type is not
 // a supported quantized integer type.

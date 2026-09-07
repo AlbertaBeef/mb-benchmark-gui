@@ -23,7 +23,7 @@ matters when porting:
   change; a `cp` in either direction is the correct way to port. Everything
   added here (`RangeMode`, per-series visibility, the adaptive time-label step)
   went into both, even where only one app exposes a control for it.
-- **`Probes.{h,cpp}` has diverged** — 1433 lines here against 1212 there. Four
+- **`Probes.{h,cpp}` has diverged** — 1554 lines here against 1333 there. Four
   deliberate edits, none of them portable as a whole file: the INA228
   config-path search (see **Config**); `Probes::power_for_device()`, which needs
   `Catalog.h` and **cannot compile** in the sibling; the whole frequency family;
@@ -76,7 +76,7 @@ working directory. Put any future config file here and resolve it the same way.
 ## Models tree and downloading
 
 Artifacts live in `models/<vendor>/<accelerator>/` (`hailo/hailo-8`,
-`axelera/metis`, `deepx/dx-m1`, `memryx/mx3`), overridable with
+`axelera/metis`, `deepx/dx-m1`, `memryx/mx3`, `qualcomm/iq9075`), overridable with
 `$MB_BENCH_MODELS_ROOT`. `Fetcher` pulls anything missing on startup, on its own
 thread; `MainWindow::poll_downloads()` re-runs `Catalog::refresh_presence()` and
 `ControlPanel::refresh_availability()` as each lands, so rows go live mid-download.
@@ -295,7 +295,7 @@ Three layers, cleanly separated. Keep it that way.
     appear nowhere else in the CSV and a timed stop would otherwise be
     indistinguishable from a card dying.
 - **`MainWindow.{h,cpp}`** — `Gtk::Paned`: controls left, a scrolling column of
-  five `Gtk::Expander` graph sections right. Owns the 1 Hz tick.
+  nine `Gtk::Expander` graph sections right. Owns the 1 Hz tick.
 
 ## Invariants worth keeping
 
@@ -326,7 +326,7 @@ Three layers, cleanly separated. Keep it that way.
   `"<board> Board"` ambient probe (any name containing a space). Everything
   unmatched falls back to the cycling palette. No ad-hoc RGB.
 - **Two orderings must agree, and they are separate.** `enum class Accel`
-  (`Hailo, MemryX, DeepX, Axelera`) fixes the series order on the three
+  (`Hailo, MemryX, DeepX, Axelera, Qualcomm`) fixes the series order on the three
   benchmark graphs, the checkbox row and the card tabs. The **Power /
   Temperature / Frequency** legends instead follow `Probes::discover()`'s call
   order. Change one without the other and the two halves of the UI disagree.
@@ -552,8 +552,10 @@ Three layers, cleanly separated. Keep it that way.
   *and* binds it to the property signal. Both halves matter: seeding alone was
   the original bug (a section that started collapsed could never grow), and
   binding alone would start a collapsed section claiming space it isn't using.
-- **The three benchmark legends are one row of up to four cards** (wrapping at
-  four via `i % 4, i / 4`) and carry no explanatory text. Failures and loading
+- **The three benchmark legends are one row of the cards this build has**
+  (`col % kAccelCount, col / kAccelCount`, where `col` counts *visible* cards so
+  a hidden one leaves no gap — see `accel_present()` above) and carry no
+  explanatory text. Failures and loading
   state therefore go to the status line in `on_tick` — do not let a card sit
   silently at 0, which is how a broken model looks exactly like a slow one.
 
@@ -692,7 +694,9 @@ power, which the Power graph already shows directly. **The value is the CSV
 column**, where differencing two rows gives exact interval energy. Don't "fix" the
 graph for looking boring.
 
-**All four** cards report a core clock, each from a different place:
+**All four M.2 cards** report a core clock, each from a different place. The
+Qualcomm NSP does **not** — its probe is passive thermal only, so the Frequency
+graph is empty on a Qualcomm-only host:
 
 | Card | Clock | How |
 | --- | --- | --- |
@@ -814,7 +818,8 @@ which does have one and will not warn.
   oneAPI Level Zero loader — headers, pkg-config and CMake are all shipped, but it
   is model-agnostic, so driving inference through it means reimplementing
   `axr_load_model` against internal types. "Async" there sets the runtime's own
-  `double_buffer=1` property, worth ~7-18%.
+  `double_buffer=1` property, worth ~7-18%. **Don't "improve" this by fanning out
+  host threads** — that would fabricate a number the API does not offer.
 - **Qualcomm's "none exists" could not be re-verified here.** It was checked on
   the aarch64 IQ-9075; the QNN headers are absent on x86_64, where the backend is
   not even compiled. The shim contains no `executeAsync` reference anywhere,
@@ -955,16 +960,11 @@ which does have one and will not warn.
 - **MemryX's clock knob is Python-only.** `set_mpu_frequency(dev, group, MHz)`
   exists in the `mxa` module and nowhere in `memx.h` or `MxAccl`, so
   `configure()` shells out to the venv interpreter once at load. ~4 s of Python
-  startup, alongside model loading, never in the timed loop.
-- **Axelera really has no async API.** 41 `axr_*` entry points, exactly one is
-  inference, and it blocks. The `zeCommandQueue*` symbols in `libaxruntime.so`
-  are Level Zero internals (the runtime is built on oneAPI L0), not public API.
-  "Async" there sets the runtime's own `double_buffer=1` property — worth only
-  ~7–18%. Don't "improve" this by fanning out host threads; that would be
-  fabricating a number the API does not offer.
-- **MemryX really has no blocking call.** Its whole public surface is ctor,
-  `connect_stream`, `start`, `wait`, `stop`, `set_num_workers`,
-  `get_num_streams`. Sync is emulated by permitting one frame in flight.
+  startup, alongside model loading, never in the timed loop. The interpreter is
+  `$MB_MEMRYX_PYTHON`, else the conventional
+  `$HOME/mb-edgeai/memryx-env/bin/python`; finding neither makes the knob a
+  silent no-op, deliberately — the Frequency graph then shows the clock did not
+  move, which beats failing a run over a setting.
 - **Qualcomm concurrency is NSPs first, engines-per-NSP second — and both are
   real.** QCS9075 has **two** Hexagon NSPs, each with its own 8 MB VTCM, and they
   are QNN **device ids**, not core ids. Measured 2026-08-04 on OSNet x1.0, burst,
@@ -1427,6 +1427,15 @@ to one merely cold-booted (⇒ normal, any model will load its firmware).
 Use `/proc/modules`, not `lsmod`, for module checks — `/usr/sbin` is not on a
 normal user's `PATH`, so `lsmod` silently reports every driver missing in the
 unprivileged status view. That bug was in the first version of this script.
+
+**`model-ops.py` — the op counter behind "Work per frame".** `tools/model-ops.py
+<onnx>...` prints GMAC / GOP / params per model; `--check` re-derives every row
+of that section's table from the reference ONNX set and reports the worst
+deviation (0.56% today, all rounding in the quoted values). Needs a Python with
+`onnx` — on the IQ-9075 that is `~/qaihub-venv/bin/python`, not the system one.
+Use `--shape 640x640` for a graph with dynamic spatial dims (SCRFD ships them).
+It counts Conv/ConvTranspose/Gemm/MatMul only, and **GOP = 2 x MAC** — that
+factor is the single most common way these figures get quoted wrong.
 
 **`csv-to-html-plot.py` is a fork of `../mb-powermon`'s, not a copy** — unlike
 `GraphArea`/`util.h`, it is *not* kept identical and must not be `cp`'d in either

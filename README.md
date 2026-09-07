@@ -19,7 +19,7 @@ accelerators to run it on, choose a target frame rate (or max speed), and press
 Start. One worker thread per card loops inference on its own device; the graphs
 update once a second.
 
-Six stacked graphs, each a scrolling 10-minute window:
+Nine stacked graphs, each a scrolling 10-minute window:
 
 | Graph | What it shows |
 | ----- | ------------- |
@@ -33,10 +33,10 @@ Six stacked graphs, each a scrolling 10-minute window:
 | **Efficiency (fps/W)** | *Instantaneous*: this second's frame rate divided by this second's watts. |
 | **Energy (mJ/frame)** | This second's watts divided by this second's frame rate — the raw energy cost of a frame. **Lower is better** — the only graph here where that is true. Collapsed by default. |
 
-Power, temperature and frequency come first because they are live whether or not
-a benchmark is running; the three below them only mean anything during a run.
+The six telemetry graphs come first because they are live whether or not a
+benchmark is running; the three below them only mean anything during a run.
 
-**Graphs → Range** decides how every axis responds to its data. All six graphs
+**Graphs → Range** decides how every axis responds to its data. All nine graphs
 share the setting:
 
 | Range | Behaviour |
@@ -47,7 +47,7 @@ share the setting:
 
 **Graphs → Accelerators** picks which cards the graphs show — one checkbox per
 card, all ticked by default, any subset selectable. Unticking a card hides both
-its **traces and its legend entry**, on all six graphs, so the section shows only
+its **traces and its legend entry**, on all nine graphs, so the section shows only
 the cards you are looking at.
 
 It is a view filter, not a run filter: every card keeps running and keeps
@@ -93,7 +93,7 @@ of them — see [Per-accelerator controls](#per-accelerator-controls).
 traces, so consecutive runs stay on one axis and can be read against each other
 — change the model or the API mode and the step is visible in place. Idle
 stretches sit at zero on all three benchmark graphs. The window is the rolling
-10 minutes all six graphs share — long enough to watch a card heat up and
+10 minutes all nine graphs share — long enough to watch a card heat up and
 throttle, and to compare several runs side by side without them scrolling off.
 
 `fps/W` and `mJ/frame` are now both raw per-sample figures, which makes them

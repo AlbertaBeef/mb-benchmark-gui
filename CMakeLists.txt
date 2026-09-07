@@ -16,8 +16,9 @@ find_package(Threads REQUIRED)
 
 # ---------------------------------------------------------------------------
 # Accelerator SDKs. Every one is optional and auto-detected: a backend whose SDK
-# is absent is compiled out, its models never appear in the lists, and its
-# checkbox is greyed out with the reason. The build works on any host.
+# is absent is compiled out and the UI hides that card entirely — no checkbox,
+# no settings tab, no legend entry, no trace (see accel_present() in Catalog.h).
+# The build works on any host.
 # ---------------------------------------------------------------------------
 
 # HailoRT ships no pkg-config or CMake package — headers under /usr/local/include,
