@@ -521,8 +521,11 @@ Three layers, cleanly separated. Keep it that way.
   that have no multicore artifact — yolov8s measures 130 fps at batch 1 against
   368 with `MB_AXELERA_MULTI_INSTANCE=1` on four cores. Never label a batch-1 run
   as N cores; report the fallback instead.
-- **Graph order is Bus Voltage, Current, Power, Accumulated Energy,
-  Temperature, Frequency, Frame Rate, Efficiency, Energy.** The telemetry graphs
+- **Graph order is System Voltage, System Current, System Power, Accelerator
+  Voltage, Accelerator Current, Accelerator Power, Accumulated Energy,
+  Temperature, Frequency, Frame Rate, Efficiency, Energy.** Each triplet reads
+  voltage -> current -> power, because the meter measures V and I and *derives*
+  W; board total first, then the per-card breakdown inside it. The telemetry graphs
   lead because they are live with no run in progress.
 
   **Voltage and Current come before Power deliberately, and that ordering is the
@@ -537,6 +540,11 @@ Three layers, cleanly separated. Keep it that way.
 
   `tools/csv-to-html-plot.py` mirrors this order; change one and change both, or
   a plot stops matching the app it came from.
+
+  **Three pairs of graphs share a unit and are different quantities.** System vs
+  Accelerator Voltage, Current and Power: the first is the whole board from an
+  inline supply meter, the second is the per-card rails. Don't merge any pair,
+  and never let a board figure reach a card's efficiency numbers.
 
   **Two graphs have "Energy" in the title and they are different quantities.**
   *Accumulated Energy* is joules read from the INA228 hardware accumulators, one
@@ -561,8 +569,9 @@ Three layers, cleanly separated. Keep it that way.
 
 ## Telemetry families (Probes)
 
-`Probes` publishes **seven** flat metric families — temperature, power,
-frequency, energy, charge, voltage and current — each with an aligned value
+`Probes` publishes **ten** flat metric families — temperature, power,
+frequency, energy, charge, voltage, current, and the system voltage / current /
+power of an inline supply meter — each with an aligned value
 vector refreshed by `poll()`. Frequency alone follows plain discovery order,
 because a clock always belongs to the card reporting it and there is nothing to
 fold; the other six use `alias_device_order()` and the INA228 fold.
@@ -745,6 +754,47 @@ MemryX API traps, both hit while wiring this up:
   configured target and sits flat at 600/850 no matter how hot the part gets,
   which defeats the point. Idle, this host reads effective 300 against a
   configured 600.
+
+**The system triplet is separate from the accelerator triplet, all three of
+them.** `sysvoltage_` / `syscurrent_` / `syspower_` never join `voltage_` /
+`current_` / `power_`. Same units, different subject: 19.9 V of USB-C board
+input on the same axis as a 3.3 V card rail, or 22 W of board draw against a
+Hailo's 0.85 W, flattens the card trace the graph exists to show. The graphs are
+titled **Accelerator** Voltage/Current/Power and **System** Voltage/Current/
+Power so neither can be mistaken for the other.
+
+**System power is its own family and its own graph.** The POWER-Z's watts go to
+`syspower_`, never `power_`, for two independent reasons. They are a different
+*quantity* — board total against one card's draw — and they are an order of
+magnitude larger, so sharing the Power axis would flatten every card trace into
+the bottom pixel row. Keeping them out of `power_` is also what keeps them out
+of `power_for_device()`, which returns the max over that family and feeds the
+engine its watts: board power landing there would inflate every fps/W and
+mJ/frame figure by ~10x. The graph sits between **Current** and **Power**, so
+the column reads rail voltage -> rail current -> resulting system watts -> what
+each card draws inside that.
+
+**The POWER-Z KM003C is read through the kernel, not libusb.** The in-tree
+`powerz` hwmon driver binds the meter's vendor interface automatically, so
+`PowerZProbe` is plain sysfs — no claim, nothing that could fight the meter's own
+app, passive like every other probe here. It publishes VBUS, IBUS, derived power
+and the meter's die temperature; `in1..in5` (CC1, CC2, D+, D-, internal VDD) are
+deliberately not exposed, because a 1.6 V CC line sharing the voltage graph with
+a 19.9 V bus squashes the trace that matters.
+
+**Its current is negated, and that is a convention rather than a fault.** The
+KM003C reports IBUS *negative while the sink draws*; negating makes a drawing
+board read positive like every other current in the app. Do not confuse this
+with the INA228 rails, where reversed leads were a real wiring bug fixed
+per-rail in `ina228.conf`. Power is taken as `|V x I|`, matching the INA228
+POWER register, which is unsigned by hardware — so it stays correct if the meter
+is ever installed the other way round.
+
+**What it measures is the whole board.** Verified 2026-09-07 by loading eight
+CPU cores: 11.3 W idle -> 22.5 W and back, with VBUS sagging 19.86 -> 19.75 V.
+That is the only real wattage available on the IQ-9075, and it is genuinely
+useful — but it is not per-accelerator power, and the probe is named so that it
+can never become a card's `power_for_device()` value.
 
 **`Probes.{h,cpp}` is shared with `mb-powermon-gui`** — the frequency family is a
 new addition here and has *not* been ported there yet. The INA228 energy/charge
@@ -1441,12 +1491,22 @@ factor is the single most common way these figures get quoted wrong.
 `GraphArea`/`util.h`, it is *not* kept identical and must not be `cp`'d in either
 direction. It adds the metrics that postdate the sibling (`_INA228_POWER`,
 `_INA228_TEMP`, `_INA228_ENERGY`, `_INA228_VBUS`, `_INA228_CURRENT`, `_CLK`,
-`_C<n>`), the six benchmark series, and the run/message tables. Its chart order
+`_C<n>`, `_SYS_VBUS`/`_SYS_CURRENT`/`_SYS_POWER`, and the Qualcomm NSP
+`N<i>-<b>` zones), the six
+benchmark series, and the run/message tables. **`_IBUS` and `N<i>-<b>` were
+missing until 2026-09-07** — an unrecognised column is silently *skipped*, so all
+six NSP thermal traces were being dropped from every plot of that board, with
+only a warning to show for it. After adding a metric, re-run the plotter and
+check the printed series counts, not just that it exited 0. Its chart order
 mirrors the GUI's — Bus Voltage, Current, Power, Accumulated Energy, … — so a
 plot reads the same way as the app that produced it. **It also still accepts a bare `_INA228`**, which is what
 the folded shunt power column was called before 2026-09-03 — logs already on disk
 carry that spelling and must keep plotting. `_INA228_CHARGE` is parsed and deliberately *not* charted
 — coulombs cannot share the joules axis. Things in it that are load-bearing:
+- **The `SYS_*` entries must precede the bare `SYS`, `VBUS` and `CURRENT`
+  alternatives**, for exactly the reason the next bullet gives: with `SYS`
+  first, `usb 3-1.4_SYS_VBUS` splits as device `usb 3-1.4_SYS` + metric `VBUS`
+  and invents a phantom device.
 - **`_METRIC_RE`'s alternation is ordered.** The device capture is non-greedy, so
   the first split that matches wins: with the bare `TEMP` listed before
   `INA228_TEMP`, the column `0000:47:00.0_INA228_TEMP` splits as device
@@ -1861,9 +1921,14 @@ four:
   CMake's `/usr/local/*` search hits nothing, `/usr/*` is what matters.
 
 DeepX / MemryX / Axelera are absent, and **`libftdi1` is not installed**, so
-there are no INA228 rails — every efficiency and energy figure on this host is
-legitimately 0. See the Qualcomm entry under telemetry for why no power number
-exists here at all; **do not add an estimate to fill the graph.**
+there are no INA228 rails. The SoC still exposes no power sensor of its own —
+see the Qualcomm entry under telemetry, and **do not add an estimate to fill the
+graph** — but a **ChargerLAB POWER-Z KM003C** is now inline on the board's USB-C
+supply and `PowerZProbe` reads it, so this host does have real watts. They are
+**whole-board** watts (CPU + GPU + NSP + DRAM + peripherals), not NPU watts, so
+the per-card efficiency figures are still 0 by design: the probe's device name
+matches no `accel_name()`, which is what keeps `power_for_device()` returning
+NaN for Qualcomm rather than handing a card a number ~10x its real draw.
 
 The user is in the `fastrpc` group already. If a fresh account is not,
 `/dev/fastrpc-*` can be `stat()`ed but not opened — existence checks pass and

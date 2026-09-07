@@ -24,7 +24,8 @@ What this fork adds:
   * **the app's accelerator colours**, so a card is the same colour here as it
     is on screen in mb-benchmark and mb-powermon-gui.
 
-Seven charts, in the GUI's own order: Power, Accumulated Energy, Temperature,
+Charts follow the GUI's own order: Bus Voltage, Current, System Power, Power,
+Accumulated Energy, Temperature,
 Frequency, Frame Rate, Efficiency, Energy. The two energy charts are different
 quantities from different sources — "Accumulated Energy" is joules read from the
 INA228 accumulators, "Energy" is mJ/frame derived from the benchmark.
@@ -146,7 +147,8 @@ _SHADE_STEPS = [1.0, 1.30, 0.72, 1.55, 0.88, 1.15, 0.60]
 _METRIC_RE = re.compile(
     r"^(.+?)_(INA228_POWER|INA228_TEMP|INA228_ENERGY|INA228_CHARGE|INA228_VBUS"
     r"|INA228_CURRENT"
-    r"|POW|TEMP|TS\d+|T\d+|SYS|AI\d+|PCIE\d+|TOTAL|INA228"
+    r"|SYS_VBUS|SYS_CURRENT|SYS_POWER"
+    r"|POW|TEMP|TS\d+|T\d+|N\d+-\d+|SYS|AI\d+|PCIE\d+|TOTAL|INA228"
     r"|ENERGY|CHARGE|VBUS|CURRENT|CLK|C\d+)$"
 )
 
@@ -178,6 +180,9 @@ def _classify_metric(met):
         return "freq"
     if met in ("energy", "ina228_energy"):
         return "energy"
+    # Qualcomm NSP thermal zones, labelled N<instance>-<block> by QualcommIQProbe.
+    if re.fullmatch(r"n\d+-\d+", met):
+        return "temp"
     # Bus voltage: its own chart. Volts cannot share the watts axis, and this is
     # the series that tests whether the rail browns out under load — on the M.2
     # 3.3 V rail the lower limit is 3.003 V (3.3 V -9%).
@@ -187,6 +192,19 @@ def _classify_metric(met):
     # it is the independent variable behind both the power and the voltage sag.
     if met in ("current", "ina228_current"):
         return "current"
+    # The supply meter's own volts and amps: their own charts, not the
+    # accelerator ones. Same units, different subject -- 19.9 V of board input
+    # would flatten a 3.3 V card rail's sag right out of view.
+    if met == "sys_vbus":
+        return "sysvoltage"
+    if met == "sys_current":
+        return "syscurrent"
+    # Whole-system power from an inline supply meter (the POWER-Z's `_PWR`).
+    # Its own chart, NOT the power one: board draw is ~10x a card's, so sharing
+    # that axis would flatten every card trace, and they are different
+    # quantities anyway -- board total vs one card.
+    if met == "sys_power":
+        return "syspower"
     # Charge is read and logged but deliberately not plotted: it is coulombs,
     # and a chart carries one unit, so it cannot share the joules axis. It is
     # an analysis column — divide by elapsed for average current. Returning
@@ -768,6 +786,9 @@ def build_datasets(rows, telemetry, bench, ident, overlays, t0, bucket_size):
     accum = []                      # INA228 hardware accumulators (J)
     volts = []                      # INA228 bus voltage (V)
     amps  = []                      # INA228 current (A)
+    syspower = []                   # inline supply meter, whole board (W)
+    sysvolts = []                   # inline supply meter, board input (V)
+    sysamps  = []                   # inline supply meter, board input (A)
     fps, eff, energy = [], [], []
     idle = set()
 
@@ -807,6 +828,12 @@ def build_datasets(rows, telemetry, bench, ident, overlays, t0, bucket_size):
             volts.append(style(label, series, color, [], 0.1))
         elif kind == "current":
             amps.append(style(label, series, color, [], 0.1))
+        elif kind == "syspower":
+            syspower.append(style(label, series, color, [], 0.1))
+        elif kind == "sysvoltage":
+            sysvolts.append(style(label, series, color, [], 0.1))
+        elif kind == "syscurrent":
+            sysamps.append(style(label, series, color, [], 0.1))
 
     # Benchmark series. These need no inference — the column names the vendor.
     bench_by = {(v, met): (i, raw) for v, met, i, raw in bench}
@@ -847,7 +874,8 @@ def build_datasets(rows, telemetry, bench, ident, overlays, t0, bucket_size):
                 "borderWidth": 2, "pointRadius": 0,
                 "tension": 0, "showLine": True})
 
-    return power, temp, freq, accum, volts, amps, fps, eff, energy, idle
+    return (power, temp, freq, accum, volts, amps,
+            syspower, sysvolts, sysamps, fps, eff, energy, idle)
 
 
 # ---------------------------------------------------------------------------
@@ -1123,7 +1151,8 @@ def main():
                                    subphase_dur=args.subphase_duration,
                                    threshold=args.phase_threshold)
 
-    power, temp, freq, accum, volts, amps, fps, eff, energy, idle = build_datasets(
+    (power, temp, freq, accum, volts, amps,
+     syspower, sysvolts, sysamps, fps, eff, energy, idle) = build_datasets(
         rows, telemetry, bench, ident, overlays, t0, bucket_size)
 
     runs = extract_runs(rows, context, bench, t0,
@@ -1137,15 +1166,21 @@ def main():
     # Order mirrors the GUI: voltage and current first, because they are the
     # measured quantities and power is their product.
     charts = [
-        {"title": "Bus Voltage", "canvas": "vbusChart", "datasets": volts,
+        {"title": "System Voltage", "canvas": "sysVbusChart", "datasets": sysvolts,
+         "y_label": "system voltage (V)", "unit": "V", "zero_based": False},
+        {"title": "System Current", "canvas": "sysCurrChart", "datasets": sysamps,
+         "y_label": "system current (A)", "unit": "A", "zero_based": False},
+        {"title": "System Power", "canvas": "sysPowChart", "datasets": syspower,
+         "y_label": "system power (W)", "unit": "W", "zero_based": True},
+        {"title": "Accelerator Voltage", "canvas": "vbusChart", "datasets": volts,
          # NOT zero-based: the whole question is a ~200 mV sag on a 3.3 V rail,
          # which is invisible on a 0..3.3 axis.
          "y_label": "bus voltage (V)", "unit": "V", "zero_based": False},
-        {"title": "Current", "canvas": "currChart", "datasets": amps,
+        {"title": "Accelerator Current", "canvas": "currChart", "datasets": amps,
          # Also not zero-based: draw reads negative on this rig, so a zero floor
          # would clip every trace out of view.
          "y_label": "current (A)", "unit": "A", "zero_based": False},
-        {"title": "Power", "canvas": "powChart", "datasets": power,
+        {"title": "Accelerator Power", "canvas": "powChart", "datasets": power,
          "y_label": "power (W)", "unit": "W", "zero_based": True},
         {"title": "Accumulated Energy", "canvas": "accumChart", "datasets": accum,
          "y_label": "energy (J)", "unit": "J", "zero_based": True},
@@ -1178,7 +1213,9 @@ def main():
     print(f"  devices: {named}/{len(ident)} identified — " +
           ", ".join(f"{d}={v or '?'}" for d, v in sorted(ident.items())))
     n_power = len([d for d in power if "log" not in d["label"]])
-    print(f"  series: {n_power} power, {len(temp)} temperature, {len(freq)} frequency, "
+    print(f"  series: {n_power} power, {len(syspower)} syspower, "
+          f"{len(sysvolts)} sysvoltage, {len(sysamps)} syscurrent, "
+          f"{len(temp)} temperature, {len(freq)} frequency, "
           f"{len(accum)} accum, {len(fps)} fps, {len(eff)} efficiency, "
           f"{len(energy)} energy, {len(volts)} voltage, {len(amps)} current")
     print(f"  runs: {len(runs)}, messages: {len(messages)}, "

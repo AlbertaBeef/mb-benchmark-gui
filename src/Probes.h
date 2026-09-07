@@ -80,6 +80,28 @@ public:
     // voltage: one unit per graph, and it must never join power_.
     const std::vector<MetricInfo>& current_metrics() const { return current_metrics_; }
     const std::vector<double>& current_values() const { return current_values_; }
+    // Whole-system power (W) from an inline supply meter — the POWER-Z on the
+    // IQ-9075's USB-C input. Its own family, separate from power_, for two
+    // reasons. It is a different *quantity*: board total (CPU + GPU + NSP +
+    // DRAM + peripherals) rather than one card's draw, so averaging it with
+    // per-card watts is meaningless. And it is an order of magnitude larger —
+    // 22 W against a Hailo's 0.85 — so sharing power_'s axis would flatten
+    // every card trace into the bottom pixel row.
+    //
+    // Keeping it out of power_ also keeps it out of power_for_device(), which
+    // returns the max over that family and feeds the engine its watts: board
+    // power landing there would inflate every fps/W and mJ/frame by ~10x.
+    const std::vector<MetricInfo>& syspower_metrics() const { return syspower_metrics_; }
+    const std::vector<double>& syspower_values() const { return syspower_values_; }
+    // The supply meter's own bus voltage and current, kept out of voltage_ and
+    // current_ for the same reason syspower_ is kept out of power_: those two
+    // families are the *accelerator* rails, and a 19.9 V board input sharing an
+    // axis with a 3.3 V card rail would flatten the sag that graph exists to
+    // show. Same quantity, different subject.
+    const std::vector<MetricInfo>& sysvoltage_metrics() const { return sysvoltage_metrics_; }
+    const std::vector<double>& sysvoltage_values() const { return sysvoltage_values_; }
+    const std::vector<MetricInfo>& syscurrent_metrics() const { return syscurrent_metrics_; }
+    const std::vector<double>& syscurrent_values() const { return syscurrent_values_; }
 
 protected:
     std::vector<MetricInfo> temp_metrics_;
@@ -96,6 +118,12 @@ protected:
     std::vector<double> voltage_values_;
     std::vector<MetricInfo> current_metrics_;
     std::vector<double> current_values_;
+    std::vector<MetricInfo> syspower_metrics_;
+    std::vector<double> syspower_values_;
+    std::vector<MetricInfo> sysvoltage_metrics_;
+    std::vector<double> sysvoltage_values_;
+    std::vector<MetricInfo> syscurrent_metrics_;
+    std::vector<double> syscurrent_values_;
     std::string bdf_;
     std::string note_;
     std::string color_alias_;
@@ -143,6 +171,15 @@ public:
     // Current (A), alias-ordered like power. Empty with no shunts.
     const std::vector<MetricInfo>& current_metrics() const { return current_metrics_; }
     const std::vector<double>& current_values() const { return current_values_; }
+    // Whole-system power (W) from an inline supply meter; see DeviceProbe for
+    // why this is not part of the power family.
+    const std::vector<MetricInfo>& syspower_metrics() const { return syspower_metrics_; }
+    const std::vector<double>& syspower_values() const { return syspower_values_; }
+    // Supply-meter voltage and current; see DeviceProbe.
+    const std::vector<MetricInfo>& sysvoltage_metrics() const { return sysvoltage_metrics_; }
+    const std::vector<double>& sysvoltage_values() const { return sysvoltage_values_; }
+    const std::vector<MetricInfo>& syscurrent_metrics() const { return syscurrent_metrics_; }
+    const std::vector<double>& syscurrent_values() const { return syscurrent_values_; }
 
     int device_count() const { return static_cast<int>(devices_.size()); }
 
@@ -166,6 +203,9 @@ private:
     std::vector<std::unique_ptr<DeviceProbe>> devices_;
     std::vector<MetricInfo> temp_metrics_, power_metrics_, freq_metrics_;
     std::vector<double> temp_values_, power_values_, freq_values_;
+    std::vector<MetricInfo> syspower_metrics_, sysvoltage_metrics_,
+        syscurrent_metrics_;
+    std::vector<double> syspower_values_, sysvoltage_values_, syscurrent_values_;
     std::vector<MetricInfo> energy_metrics_, charge_metrics_, voltage_metrics_,
         current_metrics_;
     std::vector<double> energy_values_, charge_values_, voltage_values_,

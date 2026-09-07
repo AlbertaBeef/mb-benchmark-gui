@@ -193,4 +193,19 @@ private:
     std::vector<Gtk::Label*> curr_values_;
     std::vector<AggEntry> curr_absmax_labels_;
     std::vector<LegendRow> curr_rows_;
+    // Whole-system power from an inline supply meter (POWER-Z). Its own graph,
+    // not a series on power_graph_: board watts are ~10x a card's, and one axis
+    // would flatten every card trace.
+    GraphArea* syspower_graph_ = nullptr;
+    std::vector<Gtk::Label*> syspower_values_;
+    std::vector<AggEntry> syspower_max_labels_;
+    std::vector<LegendRow> syspower_rows_;
+    GraphArea* sysvbus_graph_ = nullptr;
+    std::vector<Gtk::Label*> sysvbus_values_;
+    std::vector<AggEntry> sysvbus_min_labels_;
+    std::vector<LegendRow> sysvbus_rows_;
+    GraphArea* syscurr_graph_ = nullptr;
+    std::vector<Gtk::Label*> syscurr_values_;
+    std::vector<AggEntry> syscurr_absmax_labels_;
+    std::vector<LegendRow> syscurr_rows_;
 };

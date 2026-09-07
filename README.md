@@ -19,13 +19,16 @@ accelerators to run it on, choose a target frame rate (or max speed), and press
 Start. One worker thread per card loops inference on its own device; the graphs
 update once a second.
 
-Nine stacked graphs, each a scrolling 10-minute window:
+Twelve stacked graphs, each a scrolling 10-minute window:
 
 | Graph | What it shows |
 | ----- | ------------- |
-| **Bus Voltage (V)** | Rail voltage per INA228 shunt. First on purpose: the chip *measures* voltage and current and *derives* power, so a sagging supply reads top-to-bottom. Collapsed by default — on a healthy rail it is a flat line. |
-| **Current (A)** | Rail current per shunt. Paired with the voltage above it. |
-| **Power (W)** | Live draw per card — on-die sensors and external INA228 shunts. |
+| **System Voltage (V)** | Board input voltage from an inline USB-C supply meter (POWER-Z). Collapsed by default. |
+| **System Current (A)** | Board input current from the same meter. |
+| **System Power (W)** | Whole-board draw — CPU + GPU + NPU + DRAM + peripherals. Kept off the Accelerator charts: board figures are ~10x a card's and would flatten every card trace. |
+| **Accelerator Voltage (V)** | Rail voltage per INA228 shunt. First on purpose: the chip *measures* voltage and current and *derives* power, so a sagging supply reads top-to-bottom. Collapsed by default — on a healthy rail it is a flat line. |
+| **Accelerator Current (A)** | Rail current per shunt. Paired with the voltage above it. |
+| **Accelerator Power (W)** | Live draw per card — on-die sensors and external INA228 shunts. |
 | **Accumulated Energy (J)** | Joules since launch per rail, from the INA228 hardware accumulators — integrated at the ADC rate, not sampled. |
 | **Temperature (°C)** | Per-sensor die temperatures. |
 | **Frequency (MHz)** | Core clock per NPU. Sits right below temperature because a clock sagging while a die heats *is* thermal throttling. Collapsed by default. |
@@ -36,7 +39,7 @@ Nine stacked graphs, each a scrolling 10-minute window:
 The six telemetry graphs come first because they are live whether or not a
 benchmark is running; the three below them only mean anything during a run.
 
-**Graphs → Range** decides how every axis responds to its data. All nine graphs
+**Graphs → Range** decides how every axis responds to its data. All twelve graphs
 share the setting:
 
 | Range | Behaviour |
@@ -47,7 +50,7 @@ share the setting:
 
 **Graphs → Accelerators** picks which cards the graphs show — one checkbox per
 card, all ticked by default, any subset selectable. Unticking a card hides both
-its **traces and its legend entry**, on all nine graphs, so the section shows only
+its **traces and its legend entry**, on all twelve graphs, so the section shows only
 the cards you are looking at.
 
 It is a view filter, not a run filter: every card keeps running and keeps
@@ -93,7 +96,7 @@ of them — see [Per-accelerator controls](#per-accelerator-controls).
 traces, so consecutive runs stay on one axis and can be read against each other
 — change the model or the API mode and the step is visible in place. Idle
 stretches sit at zero on all three benchmark graphs. The window is the rolling
-10 minutes all nine graphs share — long enough to watch a card heat up and
+10 minutes all twelve graphs share — long enough to watch a card heat up and
 throttle, and to compare several runs side by side without them scrolling off.
 
 `fps/W` and `mJ/frame` are now both raw per-sample figures, which makes them

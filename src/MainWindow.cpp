@@ -183,6 +183,9 @@ MainWindow::MainWindow(AutomationPlan plan)
         add(probes_.energy_metrics());
         add(probes_.charge_metrics());
         add(probes_.voltage_metrics());
+        add(probes_.sysvoltage_metrics());
+        add(probes_.syscurrent_metrics());
+        add(probes_.syspower_metrics());
         add(probes_.current_metrics());
         const std::string path = Logger::default_path();
         if (!path.empty() && log_.open(path, cols))
@@ -282,9 +285,58 @@ MainWindow::MainWindow(AutomationPlan plan)
     // integral), the remaining live telemetry, and finally what a run produces.
     // Collapsed by default: on a healthy supply this is a flat line, and it is
     // only interesting when it is not.
+    // The System triplet leads, and reads voltage -> current -> power like the
+    // Accelerator one below it: the meter measures V and I and derives W, so a
+    // sagging supply reads top-to-bottom. Board total first, then the per-card
+    // breakdown inside it.
+    //
+    // These are deliberately NOT series on the Accelerator graphs. Same units,
+    // different subject: 19.9 V of board input against a 3.3 V card rail, and
+    // 22 W of board draw against a Hailo's 0.85 W, would each flatten the card
+    // trace the graph exists to show.
+    if (!probes_.sysvoltage_metrics().empty()) {
+        graphs->append(make_section(
+            "System Voltage (V)",
+            build_metric_section(probes_.sysvoltage_metrics(),
+                                 colors_for(probes_.sysvoltage_metrics()),
+                                 /*fixed_temp_axis=*/false, fmt_volts,
+                                 sysvbus_graph_, sysvbus_values_,
+                                 "No inline supply meter found.",
+                                 &sysvbus_min_labels_, &sysvbus_rows_,
+                                 // 20 V nominal on USB-C PD; Max mode grows it.
+                                 /*min_axis_max=*/20.0),
+            /*expanded=*/false));
+    }
+
+    if (!probes_.syscurrent_metrics().empty()) {
+        graphs->append(make_section(
+            "System Current (A)",
+            build_metric_section(probes_.syscurrent_metrics(),
+                                 colors_for(probes_.syscurrent_metrics()),
+                                 /*fixed_temp_axis=*/false, fmt_amps,
+                                 syscurr_graph_, syscurr_values_,
+                                 "No inline supply meter found.",
+                                 &syscurr_absmax_labels_, &syscurr_rows_,
+                                 /*min_axis_max=*/2.0),
+            /*expanded=*/false));
+    }
+
+    if (!probes_.syspower_metrics().empty()) {
+        graphs->append(make_section(
+            "System Power (W)",
+            build_metric_section(probes_.syspower_metrics(),
+                                 colors_for(probes_.syspower_metrics()),
+                                 /*fixed_temp_axis=*/false, fmt_power,
+                                 syspower_graph_, syspower_values_,
+                                 "No inline supply meter found.",
+                                 &syspower_max_labels_, &syspower_rows_,
+                                 /*min_axis_max=*/10.0),
+            /*expanded=*/true));
+    }
+
     if (!probes_.voltage_metrics().empty()) {
         graphs->append(make_section(
-            "Bus Voltage (V)",
+            "Accelerator Voltage (V)",
             build_metric_section(probes_.voltage_metrics(),
                                  colors_for(probes_.voltage_metrics()),
                                  /*fixed_temp_axis=*/false, fmt_volts,
@@ -303,7 +355,7 @@ MainWindow::MainWindow(AutomationPlan plan)
     // than abs()'d, so a later rewire is visible rather than silently absorbed.
     if (!probes_.current_metrics().empty()) {
         graphs->append(make_section(
-            "Current (A)",
+            "Accelerator Current (A)",
             build_metric_section(probes_.current_metrics(),
                                  colors_for(probes_.current_metrics()),
                                  /*fixed_temp_axis=*/false, fmt_amps,
@@ -315,7 +367,7 @@ MainWindow::MainWindow(AutomationPlan plan)
     }
 
     graphs->append(make_section(
-        "Power (W)",
+        "Accelerator Power (W)",
         build_metric_section(probes_.power_metrics(),
                              colors_for(probes_.power_metrics()),
                              /*fixed_temp_axis=*/false, fmt_power, power_graph_,
@@ -971,6 +1023,9 @@ void MainWindow::apply_graph_filter() {
     by_device(power_graph_, probes_.power_metrics(), power_rows_);
     by_device(accum_graph_, probes_.energy_metrics(), accum_rows_);
     by_device(vbus_graph_, probes_.voltage_metrics(), vbus_rows_);
+    by_device(syspower_graph_, probes_.syspower_metrics(), syspower_rows_);
+    by_device(sysvbus_graph_, probes_.sysvoltage_metrics(), sysvbus_rows_);
+    by_device(syscurr_graph_, probes_.syscurrent_metrics(), syscurr_rows_);
     by_device(curr_graph_, probes_.current_metrics(), curr_rows_);
     by_device(temp_graph_, probes_.temp_metrics(), temp_rows_);
     by_device(freq_graph_, probes_.freq_metrics(), freq_rows_);
@@ -1151,6 +1206,60 @@ bool MainWindow::on_tick() {
         }
     }
 
+    // System voltage. Min aggregate, like the accelerator rail: a supply
+    // problem shows up as the lowest excursion, and a mean hides a brown-out.
+    const auto& svv = probes_.sysvoltage_values();
+    if (sysvbus_graph_ && !svv.empty() &&
+        static_cast<int>(svv.size()) == sysvbus_graph_->series_count()) {
+        sysvbus_graph_->push(svv);
+        for (size_t i = 0; i < sysvbus_values_.size() && i < svv.size(); ++i)
+            sysvbus_values_[i]->set_text(fmt_volts(svv[i]));
+        for (const auto& a : sysvbus_min_labels_) {
+            double lo = std::numeric_limits<double>::infinity();
+            for (int k = a.start;
+                 k < a.start + a.count && k < static_cast<int>(svv.size()); ++k)
+                if (!std::isnan(svv[k]) && svv[k] < lo) lo = svv[k];
+            a.label->set_text(std::isinf(lo) ? "min —" : "min " + fmt_volts(lo));
+        }
+    }
+
+    // System current. Max by magnitude, matching the accelerator current.
+    const auto& scv = probes_.syscurrent_values();
+    if (syscurr_graph_ && !scv.empty() &&
+        static_cast<int>(scv.size()) == syscurr_graph_->series_count()) {
+        syscurr_graph_->push(scv);
+        for (size_t i = 0; i < syscurr_values_.size() && i < scv.size(); ++i)
+            syscurr_values_[i]->set_text(fmt_amps(scv[i]));
+        for (const auto& a : syscurr_absmax_labels_) {
+            double hi = 0.0;
+            bool any = false;
+            for (int k = a.start;
+                 k < a.start + a.count && k < static_cast<int>(scv.size()); ++k)
+                if (!std::isnan(scv[k]) && std::fabs(scv[k]) > std::fabs(hi)) {
+                    hi = scv[k]; any = true;
+                }
+            a.label->set_text(any ? "max " + fmt_amps(hi) : "max —");
+        }
+    }
+
+    // System power. Max aggregate, like Power — the question is peak board
+    // draw, and a mean would hide the excursion that matters.
+    const auto& spv = probes_.syspower_values();
+    if (syspower_graph_ && !spv.empty() &&
+        static_cast<int>(spv.size()) == syspower_graph_->series_count()) {
+        syspower_graph_->push(spv);
+        for (size_t i = 0; i < syspower_values_.size() && i < spv.size(); ++i)
+            syspower_values_[i]->set_text(fmt_power(spv[i]));
+        for (const auto& a : syspower_max_labels_) {
+            double hi = -std::numeric_limits<double>::infinity();
+            for (int k = a.start;
+                 k < a.start + a.count && k < static_cast<int>(spv.size()); ++k) {
+                if (!std::isnan(spv[k]) && spv[k] > hi) hi = spv[k];
+            }
+            a.label->set_text(std::isinf(hi) ? "max —" : "max " + fmt_power(hi));
+        }
+    }
+
     // Bus voltage. The row aggregate is the MINIMUM, not power's max or
     // temperature's mean: a supply problem shows up as the lowest excursion,
     // and averaging it away is exactly how a brown-out stays invisible.
@@ -1251,9 +1360,15 @@ bool MainWindow::on_tick() {
         const auto& jv = probes_.energy_values();
         const auto& qv = probes_.charge_values();
         const auto& uv = probes_.voltage_values();
+        const auto& sv = probes_.sysvoltage_values();
+        const auto& sc = probes_.syscurrent_values();
+        const auto& sp = probes_.syspower_values();
         telem.insert(telem.end(), jv.begin(), jv.end());
         telem.insert(telem.end(), qv.begin(), qv.end());
         telem.insert(telem.end(), uv.begin(), uv.end());
+        telem.insert(telem.end(), sv.begin(), sv.end());
+        telem.insert(telem.end(), sc.begin(), sc.end());
+        telem.insert(telem.end(), sp.begin(), sp.end());
         const auto& av = probes_.current_values();
         telem.insert(telem.end(), av.begin(), av.end());
 
