@@ -521,12 +521,22 @@ Three layers, cleanly separated. Keep it that way.
   that have no multicore artifact — yolov8s measures 130 fps at batch 1 against
   368 with `MB_AXELERA_MULTI_INSTANCE=1` on four cores. Never label a batch-1 run
   as N cores; report the fallback instead.
-- **Graph order is Power, Accumulated Energy, Temperature, Frequency, Frame
-  Rate, Efficiency, Energy.** The telemetry graphs lead because they are live
-  with no run in progress; Accumulated Energy sits under Power because it is its
-  integral, and Frequency under Temperature because a clock sagging as a die
-  heats is the whole reason to plot it. Accumulated Energy, Frequency and Energy
-  are collapsed by default.
+- **Graph order is Bus Voltage, Current, Power, Accumulated Energy,
+  Temperature, Frequency, Frame Rate, Efficiency, Energy.** The telemetry graphs
+  lead because they are live with no run in progress.
+
+  **Voltage and Current come before Power deliberately, and that ordering is the
+  point of them.** The INA228 *measures* VBUS and the shunt drop and *derives*
+  POWER as their product, so in this order a sagging rail reads top-to-bottom:
+  current rises, voltage falls, power is what results. Power-first inverted the
+  causality — it was the arrangement in use while a 190 mV sag under load went
+  unnoticed for the whole MemryX investigation. Accumulated Energy sits under
+  Power because it is its integral, and Frequency under Temperature because a
+  clock sagging as a die heats is the whole reason to plot it. Everything except
+  Power, Temperature and Frame Rate is collapsed by default.
+
+  `tools/csv-to-html-plot.py` mirrors this order; change one and change both, or
+  a plot stops matching the app it came from.
 
   **Two graphs have "Energy" in the title and they are different quantities.**
   *Accumulated Energy* is joules read from the INA228 hardware accumulators, one
@@ -549,15 +559,23 @@ Three layers, cleanly separated. Keep it that way.
 
 ## Telemetry families (Probes)
 
-`Probes` publishes **five** flat metric families — temperature, power,
-frequency, energy and charge — each with an aligned value vector refreshed by
-`poll()`. Frequency alone follows plain discovery order, because a clock always
-belongs to the card reporting it and there is nothing to fold; the other four use
-`alias_device_order()` and the INA228 fold.
+`Probes` publishes **seven** flat metric families — temperature, power,
+frequency, energy, charge, voltage and current — each with an aligned value
+vector refreshed by `poll()`. Frequency alone follows plain discovery order,
+because a clock always belongs to the card reporting it and there is nothing to
+fold; the other six use `alias_device_order()` and the INA228 fold.
+
+**Voltage and current must never join `power_`.** `power_for_device()` returns
+the *max* over the power family and that value becomes the engine's watts — a
+3.3 parked there would be reported as watts a card is not drawing, and would
+corrupt every fps/W and mJ/frame figure. Same reasoning that keeps energy and
+charge separate, and the reason each of these has its own family rather than a
+shared "electrical" one: a `GraphArea` carries one unit and one formatter.
 
 **A folded INA228 metric is named `<Card> INA228 <FAMILY>`** — `POWER`, `TEMP`,
-`ENERGY`, `CHARGE` — giving CSV columns `<bdf>_INA228_<FAMILY>`. The four families
-share one CSV namespace, so a bare `<Card> INA228` for all of them would collide.
+`ENERGY`, `CHARGE`, `VBUS`, `CURRENT` — giving CSV columns
+`<bdf>_INA228_<FAMILY>`. The families share one CSV namespace, so a bare
+`<Card> INA228` for all of them would collide.
 Power carried exactly that bare name until 2026-09-03; the plotter still accepts
 it so older logs keep working, but nothing writes it any more.
 
@@ -588,6 +606,44 @@ Reading them needed no configuration change.
 | `DIETEMP` 0x06 | 16-bit signed | `7.8125 m°C/LSB` | a *full* 16-bit register — `read24_raw20()` is the wrong helper, and `read16()` is unsigned so it needs the cast |
 | `ENERGY` 0x09 | 40-bit unsigned | `16 × 3.2 × current_lsb` J | 488 µJ/LSB as configured; rolls over after ~3.4 years at 5 W |
 | `CHARGE` 0x0A | 40-bit signed | `current_lsb` C | sign-extend from bit 39 |
+| `VBUS` 0x05 | 24-bit, 20 used | `195.3125 uV/LSB` | unsigned, bits 23:4 |
+| `CURRENT` 0x07 | 24-bit, 20 used | `current_lsb` A | **signed** — sign-extend from bit 19; `read24_raw20()` alone reports ~1.05 MA instead of -3.9 A |
+| `DIAG_ALRT` 0x0B / `BUVL` 0x0F | 16-bit | `3.125 mV/LSB` (BUVL) | latched undervoltage; read clears |
+
+**`VSHUNT` (0x04) is deliberately not read.** It is the raw measurement, but
+`CURRENT` is derived from it through `SHUNT_CAL`, so `VSHUNT / CURRENT` is always
+the programmed 15 mOhm — a tautology that confirms the calibration was written,
+not that the physical shunt is 15 mOhm. It would add only an ADC-headroom check
+(58.5 mV at the 3.9 A peak, 36% of the +/-163.84 mV range at ADCRANGE=0) and a
+canary for lost calibration. Worth a one-off probe, not a permanent series.
+
+**The bus-undervoltage detector is armed, and it is the instrument for a
+brown-out question.** `BUVL` (0x0F) is set to **3.00 V** — the M.2 3.3 V rail's
+own lower limit (3.3 V -9% = 3.003 V), so a trip means the supply left spec, not
+merely that it sagged — with `ALATCH` (DIAG_ALRT bit 15) so a trip is held.
+Reading `DIAG_ALRT` (0x0B) *clears* the latch, which is the whole point: polled
+once a second it answers **"did the rail dip at any point in that second?"**,
+catching excursions far shorter than a 1 Hz sample could ever see. Bit 3 is the
+flag. Verified on hardware 2026-09-07 by setting the threshold above the live
+rail (flag sets), then below it (flag clears); `3.125 mV/LSB` was measured this
+way, not taken from memory.
+
+**Exactly one `undervoltage()` call per sensor per poll.** A second read consumes
+the latch and the counted read then always sees zero — the detector would
+silently never fire. This was written and caught during the port; both projects
+now have a comment on the call saying so.
+
+**Its limit is the averaging.** `ADC_CONFIG` sets AVG=64 (~67 ms per conversion)
+and the comparator sees that *average*, so a dip much shorter than that is
+smoothed away before it can be detected. A negative result therefore rules out
+sustained excursions, not microsecond transients — lowering AVG trades noise for
+bandwidth if that ever matters.
+
+**Measured on the rail, 2026-09-07**: two clean load points (8.0 W / 2.56 A and
+12.0 W / 3.88 A) give a source impedance of **~49 mOhm** and an open-circuit
+**3.271 V**. The floor of 3.003 V would need **5.44 A / 16.3 W**; the vendor's
+850 MHz figure of 20.2 W implies ~6.7 A and **~2.94 V, below spec**. At 600 MHz
+the supply has margin and the detector has never tripped.
 
 **The die temperature is the monitor chip on the breakout, not the accelerator** —
 ambient plus shunt self-heating. Measured 2026-09-03 it runs several degrees below
@@ -596,13 +652,28 @@ is the sanity check: if it ever *tracks* a card's die sensor, the fold has attri
 the wrong reading. It is named `<Card> INA228 TEMP` so it cannot be misread as a die
 temperature, and it is `plausible_temp()`-gated like every other temperature.
 
-**All four shunts read NEGATIVE charge, and that is the harness, not a bug.**
-`P / |dQ/dt|` comes out at **3.16–3.20 V** on every rail — the M.2 3.3 V rail,
-consistent to 1% — so the magnitude is right and only the direction is flipped,
-because IN+/IN- are wired the other way round. `POWER` and `ENERGY` are unsigned
-registers and are unaffected. Reported as measured rather than `abs()`'d: the sign
-is a real fact about the wiring, and discarding it would hide a later rewire.
-Divide by elapsed seconds for average current, and mind the sign.
+**All four shunts are wired IN+/IN- reversed, and `ina228.conf` now corrects
+it.** The INA228 reports the shunt drop *signed*, so reversed leads make a card
+that is drawing read negative — which is what `CURRENT` and `CHARGE` did until
+2026-09-07. `POWER`, `VBUS` and `ENERGY` come from unsigned registers and were
+never affected, which is why the fault showed in only two families.
+
+Confirmed before it was corrected, rather than assumed: `VBUS x |CURRENT|`
+matched `POWER` to within **0.2% on all four rails**, so only the direction was
+wrong. (The older evidence was `P / |dQ/dt|` landing at 3.16-3.20 V on every
+rail, consistent to 1% — the same conclusion by a longer route, from before
+`VBUS` and `CURRENT` were read at all.)
+
+The fix is a per-rail `invert` flag in `config/ina228.conf`, applied in
+`INA228Probe::poll()` to the two signed families only. **Per-rail, not global**:
+the harness can be corrected one breakout at a time, and a global switch would
+then be wrong for every other rail. Applying it to `VBUS`/`POWER`/`ENERGY` would
+be wrong, not merely redundant — they cannot carry a polarity error.
+
+**Consequence for old logs**: `<bdf>_INA228_CHARGE` is negative before
+2026-09-07 and positive after. Anything differencing charge across that boundary
+must account for it. Correcting the wiring instead would let the flags be
+dropped one line at a time, and is the better long-term fix.
 
 **`configure()` pulses `RSTACC`** (CONFIG bit 14, written then cleared — it is an
 ordinary R/W bit and stays latched otherwise) so a session's energy series starts
@@ -1360,15 +1431,18 @@ unprivileged status view. That bug was in the first version of this script.
 **`csv-to-html-plot.py` is a fork of `../mb-powermon`'s, not a copy** — unlike
 `GraphArea`/`util.h`, it is *not* kept identical and must not be `cp`'d in either
 direction. It adds the metrics that postdate the sibling (`_INA228_POWER`,
-`_INA228_TEMP`, `_INA228_ENERGY`, `_CLK`, `_C<n>`), the six benchmark series, and
-the run/message tables. **It also still accepts a bare `_INA228`**, which is what
+`_INA228_TEMP`, `_INA228_ENERGY`, `_INA228_VBUS`, `_INA228_CURRENT`, `_CLK`,
+`_C<n>`), the six benchmark series, and the run/message tables. Its chart order
+mirrors the GUI's — Bus Voltage, Current, Power, Accumulated Energy, … — so a
+plot reads the same way as the app that produced it. **It also still accepts a bare `_INA228`**, which is what
 the folded shunt power column was called before 2026-09-03 — logs already on disk
 carry that spelling and must keep plotting. `_INA228_CHARGE` is parsed and deliberately *not* charted
 — coulombs cannot share the joules axis. Things in it that are load-bearing:
 - **`_METRIC_RE`'s alternation is ordered.** The device capture is non-greedy, so
   the first split that matches wins: with the bare `TEMP` listed before
   `INA228_TEMP`, the column `0000:47:00.0_INA228_TEMP` splits as device
-  `0000:47:00.0_INA228` and invents a phantom device no card can match.
+  `0000:47:00.0_INA228` and invents a phantom device no card can match. The same trap applies to every family added since — `INA228_VBUS`
+  and `INA228_CURRENT` must precede the bare `VBUS` / `CURRENT` alternatives.
 - **`identify_devices()` has to be folding-aware.** It cross-checks each card's
   temperature-column count against the note's `<n> temp`, but a folded shunt
   gives the card one *more* temp column than its probe reported. `_card_temps()`

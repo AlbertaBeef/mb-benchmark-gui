@@ -185,4 +185,12 @@ private:
     std::vector<Gtk::Label*> accum_values_;
     std::vector<AggEntry> accum_sum_labels_;
     std::vector<LegendRow> accum_rows_;
+    GraphArea* vbus_graph_ = nullptr;
+    std::vector<Gtk::Label*> vbus_values_;
+    std::vector<AggEntry> vbus_min_labels_;
+    std::vector<LegendRow> vbus_rows_;
+    GraphArea* curr_graph_ = nullptr;
+    std::vector<Gtk::Label*> curr_values_;
+    std::vector<AggEntry> curr_absmax_labels_;
+    std::vector<LegendRow> curr_rows_;
 };

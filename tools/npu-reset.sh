@@ -6,6 +6,10 @@
 #   sudo npu-reset.sh memryx        # reset one (hailo|deepx|memryx|axelera)
 #   sudo npu-reset.sh all --force   # ...even if an app still holds a device
 #   sudo npu-reset.sh memryx --hard # ...and reload the driver too (see warning)
+#   sudo npu-reset.sh memryx --rescan          # re-enumerate on PCI only
+#                                              (card enumerated but UNBOUND,
+#                                               driver=NONE — a reboot does
+#                                               NOT clear D3cold)
 #   sudo npu-reset.sh memryx --hard --rescan   # ...then re-enumerate on PCI
 #
 # Status is the default on purpose: a reset tears down driver modules, which is
@@ -123,11 +127,40 @@ reset_memryx() {
     else
         bad "/dev/memx0 missing"
     fi
+    # --rescan without --hard: the card is enumerated on PCI but unbound, so the
+    # driver is already loaded and reloading it would only repeat the step that
+    # causes D3cold. You reach this state from a --hard that failed *or* from a
+    # warm reboot, which does not remove power and so does not clear D3cold —
+    # observed 2026-09-04, where a reboot left the card exactly as it was. Do the
+    # re-enumeration alone.
+    if [ "$HARD" -eq 0 ] && [ "$RESCAN" -eq 1 ]; then
+        local bdf; bdf=$(bdf_by_vendor 0x1fe9)
+        if [ -z "$bdf" ]; then
+            bad "no MemryX PCI device found — nothing to re-enumerate"
+            return 1
+        fi
+        warn "--rescan: re-enumerating $bdf on PCI (driver left alone)"
+        echo 1 > "/sys/bus/pci/devices/$bdf/remove" 2>/dev/null
+        sleep 2
+        echo 1 > /sys/bus/pci/rescan 2>/dev/null
+        sleep 3
+        systemctl restart mxa-manager 2>/dev/null
+        sleep 2
+        if [ -e /dev/memx0 ]; then
+            ok "/dev/memx0 back after rescan"
+            return 0
+        fi
+        bad "still missing — power the machine OFF (a reboot does not clear D3cold)"
+        return 1
+    fi
+
     if [ "$HARD" -eq 0 ]; then
         info "this restarts the daemon only — it clears a stale session, which is"
         info "the usual cause of a pre-main() hang in memx_fops_open."
         info "If the chip itself is unresponsive (sensors reading 65262000),"
         info "escalate with:  sudo $0 memryx --hard"
+        info "If the card is enumerated but UNBOUND (driver=NONE), the driver is"
+        info "not the problem — re-enumerate instead:  sudo $0 memryx --rescan"
         return 0
     fi
 
@@ -145,6 +178,14 @@ reset_memryx() {
         info "check: journalctl -k | grep -i 'D3cold\|probe with driver'"
         info "try re-enumerating the PCI device before resorting to a power cycle:"
         local bdf; bdf=$(bdf_by_vendor 0x1fe9)
+        if [ "$RESCAN" -ne 1 ]; then
+            # Name the flag, not just the commands it runs. Without this the
+            # output reads as "you are out of options short of a power cycle",
+            # and a reboot is the obvious next move -- which is what happened
+            # 2026-09-04. The tool can do this itself.
+            info "  sudo $0 memryx --hard --rescan"
+            info "or by hand:"
+        fi
         info "  echo 1 > /sys/bus/pci/devices/${bdf:-<bdf>}/remove"
         info "  echo 1 > /sys/bus/pci/rescan"
         if [ -n "$bdf" ] && [ "$RESCAN" -eq 1 ]; then

@@ -27,6 +27,7 @@
 
 #include <unistd.h>
 
+#include <array>
 #include <atomic>
 #include <cstdlib>
 #include <condition_variable>
@@ -77,6 +78,53 @@ void apply_mpu_clock(int freq_mhz) {
         pretending it changed */ }
 }
 
+// Device access mode: local (direct) vs shared (through the mxa-manager daemon).
+//
+// Measured 2026-09-04, `mx_bench` over 30 000 frames on ResNet-50: local
+// 1796.10 fps against shared 1796.11 -- so this buys NOTHING for throughput and
+// is not a performance knob. What it buys is the teardown path.
+//
+// When the MX3 wedged under a depth-8 soak, our destructor was left blocked in
+// `unix_stream_data_wait` on the manager's UNIX socket, holding a session the
+// daemon could then not reclaim. That unreclaimed session is the documented
+// cause of the *next* launch hanging before main() in memx_fops_open, which
+// nothing in the app can guard against. Local mode has no daemon socket to
+// block on, and the kernel drops the device fd when the process dies.
+//
+// It cannot prevent the wedge itself -- both modes bottom out in the same
+// libmemx / /dev/memx0 path, and the failure is `admin timeout ... chip 0` in
+// the kernel driver.
+//
+// Local mode needs exclusive access and throws if the manager already holds the
+// device. Falling back to shared beats failing the run, but the fallback must be
+// VISIBLE: it goes into describe(), and so into the CSV's memryx_cfg, because a
+// run that quietly changed how it reached the device is one you cannot read back
+// later. $MB_MEMRYX_SHARED=1 forces the old behaviour.
+template <class Accl>
+static std::unique_ptr<Accl> make_accl(const std::string& path, std::string* mode) {
+    const char* e = std::getenv("MB_MEMRYX_SHARED");
+    const bool force_shared = e && *e && std::string(e) != "0";
+    if (!force_shared) {
+        try {
+            auto a = std::make_unique<Accl>(path, std::vector<int>{0},
+                                            std::array<bool, 2>{true, true},
+                                            /*local_mode=*/true);
+            if (mode) *mode = "local";
+            return a;
+        } catch (const std::exception& ex) {
+            // Almost always "try_local_lock failed" -- the daemon holds it.
+            if (mode) *mode = std::string("shared (local refused: ") + ex.what() + ")";
+        }
+    } else if (mode) {
+        *mode = "shared (MB_MEMRYX_SHARED)";
+    }
+    auto a = std::make_unique<Accl>(path, std::vector<int>{0},
+                                    std::array<bool, 2>{true, true},
+                                    /*local_mode=*/false);
+    if (mode && mode->empty()) *mode = "shared";
+    return a;
+}
+
 class MemryXAsyncRunner : public BenchRunner {
 public:
     MemryXAsyncRunner() : depth_(kAsyncDepth) {}
@@ -92,7 +140,7 @@ public:
         for (const auto& m : members) {
             auto st = std::make_unique<Stage>(depth_);
             st->reps = m.reps > 0 ? m.reps : 1;
-            st->accl = std::make_unique<MX::Runtime::MxAccl>(m.path);
+            st->accl = make_accl<MX::Runtime::MxAccl>(m.path, &access_);
 
             // One stream, driven by our two callbacks.
             st->accl->connect_stream(
@@ -103,7 +151,8 @@ public:
                 /*stream_id=*/0);
             st->accl->start();
 
-            if (describe_.empty()) describe_ = "depth " + std::to_string(depth_);
+            if (describe_.empty())
+                describe_ = "depth " + std::to_string(depth_) + " · " + access_;
             stages_.push_back(std::move(st));
         }
         // Geometry is only known once the runtime has handed us a FeatureMap,
@@ -117,7 +166,8 @@ public:
         if (!shape_done_ && !stages_.empty()) {
             const std::string s = stages_.front()->shape_text();
             if (!s.empty()) {
-                describe_ = s + " float32 · " + "depth " + std::to_string(depth_);
+                describe_ = s + " float32 · depth " + std::to_string(depth_) +
+                            " · " + access_;
                 shape_done_ = true;
             }
         }
@@ -127,13 +177,33 @@ public:
     std::string describe() const override { return describe_; }
 
 private:
-    // 8, not the 4 every other card uses. The permit depth caps frames in
-    // flight, and this card needs 8 to saturate: measured on ResNet-50,
-    // 1077.5 / 1597.1 / 1796.7 fps at depth 4 / 6 / 8, where 8 matches
-    // `mx_bench -d <dfp>` (1796.10) exactly. 16 and an unthrottled stream
-    // both measure the same 1795, so 8 is the saturation point and not
-    // merely the top of the UI range.
-    static constexpr size_t kAsyncDepth = 8;
+    // 4, and NOT 8 — reverted 2026-09-04 after depth 8 wedged the card three
+    // times. Depth 8 is genuinely faster: 1077.5 / 1597.1 / 1796.7 fps at
+    // depth 4 / 6 / 8 on ResNet-50, where 8 matches `mx_bench` (1796.10)
+    // exactly, and 16 and an unthrottled stream both measure the same 1795.
+    // So 8 is the real saturation point. It is also not survivable here.
+    //
+    // Three reproductions, ResNet-50, all ending with the same kernel
+    // signature (`memryx: admin timeout device status 1 subop N chip 0`) and a
+    // card that then needs a POWER CYCLE — a daemon restart does not clear it:
+    //
+    //   run 1  shared  wedged ~80 s   T0 83 C
+    //   run 2  shared  wedged ~80 s   T0 74 C
+    //   run 3  local   wedged  33 s   T0 72 C
+    //
+    // What it is NOT: not thermal (died at 72 C, while depth 4 ran to 86 C and
+    // survived 244 s); not a fixed duration (33 s vs 80 s); not a frame count
+    // (~143 k at depth 8, against ~269 k at depth 4 with no trouble); and not
+    // the mxa-manager daemon (run 3 was local mode, which the daemon never saw).
+    // The only invariant is depth 8 at ~1796 fps, and the collapse is abrupt —
+    // full rate one second, chip 0 unresponsive the next, no throttle or decay.
+    //
+    // Depth 6 (1597 fps) is untested for stability and may well be fine; it
+    // needs a soak before it can be a default. Until then this stays at 4,
+    // which has run 244 s to 86 C without incident. Raising it again needs
+    // evidence, not the throughput argument alone — that argument was already
+    // made once, and cost three power cycles.
+    static constexpr size_t kAsyncDepth = 4;
 
     struct Stage {
         explicit Stage(size_t depth) : permits(depth) {}
@@ -230,6 +300,7 @@ private:
 
     std::vector<std::unique_ptr<Stage>> stages_;
     std::string describe_;
+    std::string access_;   // "local" / "shared (...)"
     bool shape_done_ = false;
     size_t depth_ = 1;
 };
@@ -251,7 +322,7 @@ public:
             auto st = std::make_unique<Stage>();
             st->reps = m.reps > 0 ? m.reps : 1;
             // No start()/stop() on this class — construct, run, destruct.
-            st->accl = std::make_unique<MX::Runtime::MxAcclMT>(m.path);
+            st->accl = make_accl<MX::Runtime::MxAcclMT>(m.path, &access_);
 
             const MX::Types::MxModelInfo info = st->accl->get_model_info(0);
             st->in_bufs.resize(static_cast<size_t>(info.num_in_featuremaps));
@@ -279,7 +350,7 @@ public:
                     if (!shape.empty()) shape += "x";
                     shape += std::to_string(d);
                 }
-                describe_ = shape + " float32 · depth 1";
+                describe_ = shape + " float32 · depth 1 · " + access_;
             }
             stages_.push_back(std::move(st));
         }
@@ -316,6 +387,7 @@ private:
 
     std::vector<std::unique_ptr<Stage>> stages_;
     std::string describe_;
+    std::string access_;   // "local" / "shared (...)"
 };
 
 }  // namespace

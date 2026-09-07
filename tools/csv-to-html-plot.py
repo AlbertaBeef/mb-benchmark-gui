@@ -144,9 +144,10 @@ _SHADE_STEPS = [1.0, 1.30, 0.72, 1.55, 0.88, 1.15, 0.60]
 # The bare ENERGY/CHARGE forms are what an *unfolded* shunt produces (one that
 # is not mapped to a PCIe card), where the device is the bridge itself.
 _METRIC_RE = re.compile(
-    r"^(.+?)_(INA228_POWER|INA228_TEMP|INA228_ENERGY|INA228_CHARGE"
+    r"^(.+?)_(INA228_POWER|INA228_TEMP|INA228_ENERGY|INA228_CHARGE|INA228_VBUS"
+    r"|INA228_CURRENT"
     r"|POW|TEMP|TS\d+|T\d+|SYS|AI\d+|PCIE\d+|TOTAL|INA228"
-    r"|ENERGY|CHARGE|CLK|C\d+)$"
+    r"|ENERGY|CHARGE|VBUS|CURRENT|CLK|C\d+)$"
 )
 
 # Benchmark columns: <vendor>_<metric>, vendor being accel_vendor().
@@ -177,6 +178,15 @@ def _classify_metric(met):
         return "freq"
     if met in ("energy", "ina228_energy"):
         return "energy"
+    # Bus voltage: its own chart. Volts cannot share the watts axis, and this is
+    # the series that tests whether the rail browns out under load — on the M.2
+    # 3.3 V rail the lower limit is 3.003 V (3.3 V -9%).
+    if met in ("vbus", "ina228_vbus"):
+        return "voltage"
+    # Current: its own chart too. Amps share an axis with nothing else here, and
+    # it is the independent variable behind both the power and the voltage sag.
+    if met in ("current", "ina228_current"):
+        return "current"
     # Charge is read and logged but deliberately not plotted: it is coulombs,
     # and a chart carries one unit, so it cannot share the joules axis. It is
     # an analysis column — divide by elapsed for average current. Returning
@@ -756,6 +766,8 @@ def assign_colors(telemetry, ident):
 def build_datasets(rows, telemetry, bench, ident, overlays, t0, bucket_size):
     power, temp, freq = [], [], []
     accum = []                      # INA228 hardware accumulators (J)
+    volts = []                      # INA228 bus voltage (V)
+    amps  = []                      # INA228 current (A)
     fps, eff, energy = [], [], []
     idle = set()
 
@@ -791,6 +803,10 @@ def build_datasets(rows, telemetry, bench, ident, overlays, t0, bucket_size):
             freq.append(style(label, series, color, [], 0.1))
         elif kind == "energy":
             accum.append(style(label, series, color, [], 0.1))
+        elif kind == "voltage":
+            volts.append(style(label, series, color, [], 0.1))
+        elif kind == "current":
+            amps.append(style(label, series, color, [], 0.1))
 
     # Benchmark series. These need no inference — the column names the vendor.
     bench_by = {(v, met): (i, raw) for v, met, i, raw in bench}
@@ -831,7 +847,7 @@ def build_datasets(rows, telemetry, bench, ident, overlays, t0, bucket_size):
                 "borderWidth": 2, "pointRadius": 0,
                 "tension": 0, "showLine": True})
 
-    return power, temp, freq, accum, fps, eff, energy, idle
+    return power, temp, freq, accum, volts, amps, fps, eff, energy, idle
 
 
 # ---------------------------------------------------------------------------
@@ -1107,7 +1123,7 @@ def main():
                                    subphase_dur=args.subphase_duration,
                                    threshold=args.phase_threshold)
 
-    power, temp, freq, accum, fps, eff, energy, idle = build_datasets(
+    power, temp, freq, accum, volts, amps, fps, eff, energy, idle = build_datasets(
         rows, telemetry, bench, ident, overlays, t0, bucket_size)
 
     runs = extract_runs(rows, context, bench, t0,
@@ -1118,7 +1134,17 @@ def main():
 
     # Same order as the GUI's graph column: telemetry leads because it is live
     # with no run in progress.
+    # Order mirrors the GUI: voltage and current first, because they are the
+    # measured quantities and power is their product.
     charts = [
+        {"title": "Bus Voltage", "canvas": "vbusChart", "datasets": volts,
+         # NOT zero-based: the whole question is a ~200 mV sag on a 3.3 V rail,
+         # which is invisible on a 0..3.3 axis.
+         "y_label": "bus voltage (V)", "unit": "V", "zero_based": False},
+        {"title": "Current", "canvas": "currChart", "datasets": amps,
+         # Also not zero-based: draw reads negative on this rig, so a zero floor
+         # would clip every trace out of view.
+         "y_label": "current (A)", "unit": "A", "zero_based": False},
         {"title": "Power", "canvas": "powChart", "datasets": power,
          "y_label": "power (W)", "unit": "W", "zero_based": True},
         {"title": "Accumulated Energy", "canvas": "accumChart", "datasets": accum,
@@ -1154,7 +1180,7 @@ def main():
     n_power = len([d for d in power if "log" not in d["label"]])
     print(f"  series: {n_power} power, {len(temp)} temperature, {len(freq)} frequency, "
           f"{len(accum)} accum, {len(fps)} fps, {len(eff)} efficiency, "
-          f"{len(energy)} energy")
+          f"{len(energy)} energy, {len(volts)} voltage, {len(amps)} current")
     print(f"  runs: {len(runs)}, messages: {len(messages)}, "
           f"log overlays: {len(overlays)}")
     if idle:

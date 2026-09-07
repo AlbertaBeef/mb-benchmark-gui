@@ -23,6 +23,8 @@ Six stacked graphs, each a scrolling 10-minute window:
 
 | Graph | What it shows |
 | ----- | ------------- |
+| **Bus Voltage (V)** | Rail voltage per INA228 shunt. First on purpose: the chip *measures* voltage and current and *derives* power, so a sagging supply reads top-to-bottom. Collapsed by default — on a healthy rail it is a flat line. |
+| **Current (A)** | Rail current per shunt. Paired with the voltage above it. |
 | **Power (W)** | Live draw per card — on-die sensors and external INA228 shunts. |
 | **Accumulated Energy (J)** | Joules since launch per rail, from the INA228 hardware accumulators — integrated at the ADC rate, not sampled. |
 | **Temperature (°C)** | Per-sensor die temperatures. |

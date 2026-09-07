@@ -55,6 +55,20 @@ std::string fmt_joules(double v) {
     std::snprintf(b, sizeof b, "%.1f", v);
     return b;
 }
+// Volts. Three decimals on purpose: the question this graph answers is a
+// ~200 mV sag on a 3.3 V rail, and %.1f would quantise that away entirely.
+// Amps, signed. Three decimals: the interesting range here is 0.5-4 A and the
+// question is a few hundred mA of delta.
+std::string fmt_amps(double v) {
+    char b[32];
+    std::snprintf(b, sizeof b, "%+.3f", v);
+    return b;
+}
+std::string fmt_volts(double v) {
+    char b[32];
+    std::snprintf(b, sizeof b, "%.3f", v);
+    return b;
+}
 std::string fmt_freq(double v) {
     if (std::isnan(v)) return "—";
     char b[24];
@@ -168,6 +182,8 @@ MainWindow::MainWindow(AutomationPlan plan)
         add(probes_.freq_metrics());
         add(probes_.energy_metrics());
         add(probes_.charge_metrics());
+        add(probes_.voltage_metrics());
+        add(probes_.current_metrics());
         const std::string path = Logger::default_path();
         if (!path.empty() && log_.open(path, cols))
             notes.push_back("logging to " + path);
@@ -258,9 +274,46 @@ MainWindow::MainWindow(AutomationPlan plan)
     paned->set_end_child(*scroller);
     paned->set_resize_end_child(true);
 
-    // Order is deliberate: the two telemetry graphs first (they are live even
-    // with no benchmark running), then what a run produces — rate, then the two
-    // efficiency views derived from rate and power.
+    // Order is deliberate. Voltage and Current come FIRST because they are the
+    // independent measurements — the INA228 measures VBUS and the shunt drop,
+    // and derives POWER as their product. When a rail sags under load, the
+    // cause reads top-to-bottom: current rises, voltage falls, power is what
+    // results. Putting Power first inverted that. Then Accumulated Energy (its
+    // integral), the remaining live telemetry, and finally what a run produces.
+    // Collapsed by default: on a healthy supply this is a flat line, and it is
+    // only interesting when it is not.
+    if (!probes_.voltage_metrics().empty()) {
+        graphs->append(make_section(
+            "Bus Voltage (V)",
+            build_metric_section(probes_.voltage_metrics(),
+                                 colors_for(probes_.voltage_metrics()),
+                                 /*fixed_temp_axis=*/false, fmt_volts,
+                                 vbus_graph_, vbus_values_,
+                                 "No INA228 shunts, so no rail voltage.",
+                                 &vbus_min_labels_, &vbus_rows_,
+                                 // 3.4 floor keeps a nominal 3.3 V rail off the
+                                 // top edge without flattening the sag; Max mode
+                                 // grows it if a rail ever runs higher.
+                                 /*min_axis_max=*/3.4),
+            /*expanded=*/false));
+    }
+
+    // Current, paired with the voltage above it. Reads NEGATIVE on this rig —
+    // IN+/IN- are wired the other way round — and is shown as measured rather
+    // than abs()'d, so a later rewire is visible rather than silently absorbed.
+    if (!probes_.current_metrics().empty()) {
+        graphs->append(make_section(
+            "Current (A)",
+            build_metric_section(probes_.current_metrics(),
+                                 colors_for(probes_.current_metrics()),
+                                 /*fixed_temp_axis=*/false, fmt_amps,
+                                 curr_graph_, curr_values_,
+                                 "No INA228 shunts, so no rail current.",
+                                 &curr_absmax_labels_, &curr_rows_,
+                                 /*min_axis_max=*/1.0),
+            /*expanded=*/false));
+    }
+
     graphs->append(make_section(
         "Power (W)",
         build_metric_section(probes_.power_metrics(),
@@ -917,6 +970,8 @@ void MainWindow::apply_graph_filter() {
     };
     by_device(power_graph_, probes_.power_metrics(), power_rows_);
     by_device(accum_graph_, probes_.energy_metrics(), accum_rows_);
+    by_device(vbus_graph_, probes_.voltage_metrics(), vbus_rows_);
+    by_device(curr_graph_, probes_.current_metrics(), curr_rows_);
     by_device(temp_graph_, probes_.temp_metrics(), temp_rows_);
     by_device(freq_graph_, probes_.freq_metrics(), freq_rows_);
 
@@ -939,7 +994,7 @@ void MainWindow::apply_graph_filter() {
 // the six plots answer different questions at the same moment.
 void MainWindow::apply_range_mode() {
     const auto m = controls_->range_mode();
-    for (GraphArea* g : {power_graph_, accum_graph_, temp_graph_, freq_graph_,
+    for (GraphArea* g : {power_graph_, accum_graph_, vbus_graph_, curr_graph_, temp_graph_, freq_graph_,
                          fps_.graph, eff_.graph, energy_.graph}) {
         if (g) g->set_range_mode(m);
     }
@@ -1096,6 +1151,47 @@ bool MainWindow::on_tick() {
         }
     }
 
+    // Bus voltage. The row aggregate is the MINIMUM, not power's max or
+    // temperature's mean: a supply problem shows up as the lowest excursion,
+    // and averaging it away is exactly how a brown-out stays invisible.
+    const auto& uvv = probes_.voltage_values();
+    if (vbus_graph_ && !uvv.empty() &&
+        static_cast<int>(uvv.size()) == vbus_graph_->series_count()) {
+        vbus_graph_->push(uvv);
+        for (size_t i = 0; i < vbus_values_.size() && i < uvv.size(); ++i)
+            vbus_values_[i]->set_text(fmt_volts(uvv[i]));
+        for (const auto& a : vbus_min_labels_) {
+            double lo = std::numeric_limits<double>::infinity();
+            for (int k = a.start;
+                 k < a.start + a.count && k < static_cast<int>(uvv.size()); ++k) {
+                if (!std::isnan(uvv[k]) && uvv[k] < lo) lo = uvv[k];
+            }
+            a.label->set_text(std::isinf(lo) ? "min —" : "min " + fmt_volts(lo));
+        }
+    }
+
+    // Current. The row aggregate is the PEAK BY MAGNITUDE, shown with its sign:
+    // draw reads negative on this rig, so a plain max would report the quietest
+    // moment and a plain min would be right only by accident of the wiring.
+    const auto& avv = probes_.current_values();
+    if (curr_graph_ && !avv.empty() &&
+        static_cast<int>(avv.size()) == curr_graph_->series_count()) {
+        curr_graph_->push(avv);
+        for (size_t i = 0; i < curr_values_.size() && i < avv.size(); ++i)
+            curr_values_[i]->set_text(fmt_amps(avv[i]));
+        for (const auto& a : curr_absmax_labels_) {
+            double peak = 0.0;
+            bool any = false;
+            for (int k = a.start;
+                 k < a.start + a.count && k < static_cast<int>(avv.size()); ++k) {
+                if (std::isnan(avv[k])) continue;
+                if (!any || std::fabs(avv[k]) > std::fabs(peak)) peak = avv[k];
+                any = true;
+            }
+            a.label->set_text(any ? "peak " + fmt_amps(peak) : "peak —");
+        }
+    }
+
     // --- CSV row, last thing in the tick -------------------------------------
     // Deliberately outside the three `size() == series_count()` guards above:
     // those silently skip a graph push on a size mismatch, and the log must not
@@ -1154,8 +1250,12 @@ bool MainWindow::on_tick() {
         // declared — Logger fixes its width at open and silently drops extras.
         const auto& jv = probes_.energy_values();
         const auto& qv = probes_.charge_values();
+        const auto& uv = probes_.voltage_values();
         telem.insert(telem.end(), jv.begin(), jv.end());
         telem.insert(telem.end(), qv.begin(), qv.end());
+        telem.insert(telem.end(), uv.begin(), uv.end());
+        const auto& av = probes_.current_values();
+        telem.insert(telem.end(), av.begin(), av.end());
 
         Logger::Row row;
         row.telemetry = &telem;

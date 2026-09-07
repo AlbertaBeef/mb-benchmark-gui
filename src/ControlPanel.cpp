@@ -366,12 +366,16 @@ ControlPanel::ControlPanel(const Catalog& catalog)
                 row->append(*lbl);
                 auto* sp = Gtk::make_managed<Gtk::SpinButton>();
                 const int max_depth = (a == Accel::Axelera) ? 2 : 8;
-                // Defaults are per card because the saturation point is.
-                // MemryX needs 8 (1077 / 1597 / 1797 fps at 4 / 6 / 8 on
-                // ResNet-50 — 4 left 40% of the card unused against
-                // mx_bench); DeepX peaks at 4 and regresses at 8.
-                const int def_depth = (a == Accel::Axelera) ? 2
-                                    : (a == Accel::MemryX)  ? 8 : 4;
+                // 4 for every card but Axelera, whose ceiling is 2.
+                //
+                // MemryX briefly defaulted to 8, which is where it saturates
+                // (1797 fps against 1077 at 4). It was reverted the same day:
+                // depth 8 wedged the card three times, each needing a power
+                // cycle. See the kAsyncDepth comment in bench_memryx.cpp for
+                // the evidence. The spin button still reaches 8, so the speed
+                // is available to anyone who accepts the risk deliberately —
+                // it is just not the default.
+                const int def_depth = (a == Accel::Axelera) ? 2 : 4;
                 sp->set_adjustment(
                     Gtk::Adjustment::create(def_depth, 1, max_depth, 1, 1));
                 sp->set_numeric(true);
