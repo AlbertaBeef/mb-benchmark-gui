@@ -930,7 +930,11 @@ public:
         ftdi_usb_reset(ftdi_);
         ftdi_set_interface(ftdi_, INTERFACE_A);
         ftdi_set_latency_timer(ftdi_, 1);
+#if MB_FTDI_NO_TCIOFLUSH
+        ftdi_usb_purge_buffers(ftdi_);   // libftdi < 1.5
+#else
         ftdi_tcioflush(ftdi_);
+#endif
         if (ftdi_set_bitmode(ftdi_, 0x00, BITMODE_RESET) < 0) { error = "bitmode reset"; return false; }
         if (ftdi_set_bitmode(ftdi_, 0x00, BITMODE_MPSSE) < 0) { error = "bitmode MPSSE"; return false; }
         std::this_thread::sleep_for(std::chrono::milliseconds(20));

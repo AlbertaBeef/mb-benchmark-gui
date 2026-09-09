@@ -61,7 +61,7 @@ public:
         // One line per entry: name, what it is, which cards can run it. Fixed
         // character widths on the first two keep the columns aligned down the
         // list rather than ragged.
-        auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 10);
+        auto* box = Gtk::make_managed<gtkc::Box>(gtkc::Orientation::HORIZONTAL, 10);
         box->set_margin_top(3);
         box->set_margin_bottom(3);
         box->set_margin_start(6);
@@ -71,7 +71,7 @@ public:
         name->set_markup("<b>" + Glib::Markup::escape_text(s.name) + "</b>");
         name->set_xalign(0.0);
         name->set_width_chars(24);
-        name->set_ellipsize(Pango::EllipsizeMode::END);
+        name->set_ellipsize(gtkc::EllipsizeMode::END);
         box->append(*name);
 
         auto* detail = Gtk::make_managed<Gtk::Label>();
@@ -79,18 +79,18 @@ public:
                            "</small>");
         detail->set_xalign(0.0);
         detail->set_width_chars(30);
-        detail->set_ellipsize(Pango::EllipsizeMode::END);
-        detail->add_css_class("dim-label");
+        detail->set_ellipsize(gtkc::EllipsizeMode::END);
+        gtkc::add_css_class(*detail, "dim-label");
         box->append(*detail);
 
         cards_ = Gtk::make_managed<Gtk::Label>();
         cards_->set_xalign(0.0);
         cards_->set_hexpand(true);
-        cards_->set_ellipsize(Pango::EllipsizeMode::END);
-        cards_->add_css_class("dim-label");
+        cards_->set_ellipsize(gtkc::EllipsizeMode::END);
+        gtkc::add_css_class(*cards_, "dim-label");
         box->append(*cards_);
 
-        set_child(*box);
+        gtkc::set_child(*this, *box);
         refresh();
     }
 
@@ -127,13 +127,13 @@ private:
 };
 
 ControlPanel::ControlPanel(const Catalog& catalog)
-    : Gtk::Box(Gtk::Orientation::VERTICAL, 8), catalog_(catalog) {
-    set_margin(4);
+    : gtkc::Box(gtkc::Orientation::VERTICAL, 8), catalog_(catalog) {
+    gtkc::set_margin(*this, 4);
     // 640 is the *minimum*; the panel fills whatever the divider gives it and
     // its contents stay flush left. Spelled out rather than left to defaults.
     set_size_request(640, -1);
-    set_halign(Gtk::Align::FILL);
-    set_valign(Gtk::Align::FILL);
+    set_halign(gtkc::Align::FILL);
+    set_valign(gtkc::Align::FILL);
 
     // ---- what to run ----
     populate(model_list_, catalog_.models());
@@ -141,8 +141,8 @@ ControlPanel::ControlPanel(const Catalog& catalog)
 
     auto wrap = [](Gtk::ListBox& list) -> Gtk::Widget& {
         auto* sw = Gtk::make_managed<Gtk::ScrolledWindow>();
-        sw->set_policy(Gtk::PolicyType::NEVER, Gtk::PolicyType::AUTOMATIC);
-        sw->set_child(list);
+        sw->set_policy(gtkc::PolicyType::NEVER, gtkc::PolicyType::AUTOMATIC);
+        gtkc::set_child(*sw, list);
         sw->set_vexpand(true);
         return *sw;
     };
@@ -162,8 +162,8 @@ ControlPanel::ControlPanel(const Catalog& catalog)
     // ---- inference: how to drive it, and how fast ----
     {
         auto* frame = Gtk::make_managed<Gtk::Frame>("Inference");
-        auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 6);
-        box->set_margin(8);
+        auto* box = Gtk::make_managed<gtkc::Box>(gtkc::Orientation::VERTICAL, 6);
+        gtkc::set_margin(*box, 8);
 
         // Matching label widths so the two rows' controls line up.
         constexpr int kLabelChars = 12;
@@ -175,7 +175,7 @@ ControlPanel::ControlPanel(const Catalog& catalog)
         };
 
         // --- frame rate ---
-        auto* rate_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
+        auto* rate_row = Gtk::make_managed<gtkc::Box>(gtkc::Orientation::HORIZONTAL, 12);
         rate_row->append(*row_label("Frame Rate"));
         max_speed_.set_active(true);
         max_speed_.set_tooltip_text(
@@ -201,7 +201,7 @@ ControlPanel::ControlPanel(const Catalog& catalog)
 
         // --- which cards to run on ---
         // A Grid, not a Box: wraps past four, same rule as the graph legends.
-        auto* accel_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
+        auto* accel_row = Gtk::make_managed<gtkc::Box>(gtkc::Orientation::HORIZONTAL, 12);
         accel_row->append(*row_label("Accelerators"));
         auto* accel_grid = Gtk::make_managed<Gtk::Grid>();
         accel_grid->set_column_spacing(16);
@@ -230,24 +230,24 @@ ControlPanel::ControlPanel(const Catalog& catalog)
         accel_row->append(*accel_grid);
         box->append(*accel_row);
 
-        frame->set_child(*box);
+        gtkc::set_child(*frame, *box);
         append(*frame);
     }
 
     // ---- Graphs ----
     {
         auto* frame = Gtk::make_managed<Gtk::Frame>("Graphs");
-        auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 6);
-        box->set_margin(8);
+        auto* box = Gtk::make_managed<gtkc::Box>(gtkc::Orientation::VERTICAL, 6);
+        gtkc::set_margin(*box, 8);
 
-        auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
+        auto* row = Gtk::make_managed<gtkc::Box>(gtkc::Orientation::HORIZONTAL, 12);
         auto* lbl = Gtk::make_managed<Gtk::Label>("Range");
         lbl->set_xalign(0.0);
         lbl->set_width_chars(12);   // same as the Inference rows, so they align
         row->append(*lbl);
 
-        range_max_.set_group(range_fixed_);
-        range_dynamic_.set_group(range_fixed_);
+        gtkc::join_radio_group(range_max_, range_fixed_);
+        gtkc::join_radio_group(range_dynamic_, range_fixed_);
         range_max_.set_active(true);   // current behaviour is the default
 
         range_fixed_.set_tooltip_text(
@@ -278,7 +278,7 @@ ControlPanel::ControlPanel(const Catalog& catalog)
         // --- which cards' traces to draw ---
         // Independent checkboxes: any subset. Untick a card to take it out of
         // the plots (and out of the axis calculation) without stopping it.
-        auto* filt = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
+        auto* filt = Gtk::make_managed<gtkc::Box>(gtkc::Orientation::HORIZONTAL, 12);
         auto* flbl = Gtk::make_managed<Gtk::Label>("Accelerators");
         flbl->set_xalign(0.0);
         flbl->set_width_chars(12);
@@ -301,7 +301,7 @@ ControlPanel::ControlPanel(const Catalog& catalog)
         }
         box->append(*filt);
 
-        frame->set_child(*box);
+        gtkc::set_child(*frame, *box);
         append(*frame);
     }
 
@@ -313,20 +313,20 @@ ControlPanel::ControlPanel(const Catalog& catalog)
             const Accel a = accel_at(i);
             // No tab for a card this build has no backend for.
             if (!accel_present(a)) { depth_spin_[i] = nullptr; continue; }
-            auto* page = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 4);
-            page->set_margin(8);
+            auto* page = Gtk::make_managed<gtkc::Box>(gtkc::Orientation::VERTICAL, 4);
+            gtkc::set_margin(*page, 8);
             // API mode, first row of every tab. Radios where the vendor ships
             // both a blocking and an async inference API; a plain label where it
             // ships only one, so the UI never offers a mode that does not exist.
             {
-                auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+                auto* row = Gtk::make_managed<gtkc::Box>(gtkc::Orientation::HORIZONTAL, 8);
                 auto* lbl = Gtk::make_managed<Gtk::Label>("API");
                 lbl->set_xalign(0.0);
                 row->append(*lbl);
                 if (accel_has_both_api_modes(a)) {
-                    auto* sy = Gtk::make_managed<Gtk::CheckButton>("Sync");
-                    auto* as = Gtk::make_managed<Gtk::CheckButton>("Async");
-                    as->set_group(*sy);
+                    auto* sy = Gtk::make_managed<gtkc::RadioButton>("Sync");
+                    auto* as = Gtk::make_managed<gtkc::RadioButton>("Async");
+                    gtkc::join_radio_group(*as, *sy);
                     as->set_active(true);   // async is the default everywhere
                     sy->set_tooltip_text(
                         "One frame at a time, waiting for each — what a "
@@ -346,8 +346,8 @@ ControlPanel::ControlPanel(const Catalog& catalog)
                     auto* only = Gtk::make_managed<Gtk::Label>(
                         accel_sole_api_mode_note(a));
                     only->set_xalign(0.0);
-                    only->set_wrap(true);
-                    only->add_css_class("dim-label");
+                    gtkc::label_set_wrap(*only, true);
+                    gtkc::add_css_class(*only, "dim-label");
                     row->append(*only);
                 }
                 page->append(*row);
@@ -360,7 +360,7 @@ ControlPanel::ControlPanel(const Catalog& catalog)
             // blocking API it is that card's *only* concurrency knob and stays
             // live (Axelera's double_buffer, Qualcomm's engines per NSP).
             {
-                auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+                auto* row = Gtk::make_managed<gtkc::Box>(gtkc::Orientation::HORIZONTAL, 8);
                 auto* lbl = Gtk::make_managed<Gtk::Label>("Depth");
                 lbl->set_xalign(0.0);
                 row->append(*lbl);
@@ -387,7 +387,7 @@ ControlPanel::ControlPanel(const Catalog& catalog)
 
             // Per-card controls, beyond the API and Depth rows every tab has.
             if (a == Accel::MemryX) {
-                auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+                auto* row = Gtk::make_managed<gtkc::Box>(gtkc::Orientation::HORIZONTAL, 8);
                 auto* lbl = Gtk::make_managed<Gtk::Label>("Core frequency");
                 lbl->set_xalign(0.0);
                 row->append(*lbl);
@@ -402,7 +402,7 @@ ControlPanel::ControlPanel(const Catalog& catalog)
                 row->append(*Gtk::make_managed<Gtk::Label>("MHz"));
                 page->append(*row);
             } else if (a == Accel::Axelera) {
-                auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+                auto* row = Gtk::make_managed<gtkc::Box>(gtkc::Orientation::HORIZONTAL, 8);
                 auto* lbl = Gtk::make_managed<Gtk::Label>("AIPU cores");
                 lbl->set_xalign(0.0);
                 row->append(*lbl);
@@ -434,7 +434,7 @@ ControlPanel::ControlPanel(const Catalog& catalog)
                 // NSPs. Unlike Axelera's cores there is no cliff here — nothing
                 // wedges — so the default is the maximum. Measured on OSNet:
                 // 1556 fps on one NSP, 3571 on two (2.30x).
-                auto* nrow = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+                auto* nrow = Gtk::make_managed<gtkc::Box>(gtkc::Orientation::HORIZONTAL, 8);
                 auto* nlbl = Gtk::make_managed<Gtk::Label>("NSPs");
                 nlbl->set_xalign(0.0);
                 nrow->append(*nlbl);
@@ -453,7 +453,7 @@ ControlPanel::ControlPanel(const Catalog& catalog)
                 // Performance mode. Not a cosmetic knob: the spread across
                 // modes is ~1.8x, so a Qualcomm frame rate without a stated
                 // mode is not comparable to anything.
-                auto* prow = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+                auto* prow = Gtk::make_managed<gtkc::Box>(gtkc::Orientation::HORIZONTAL, 8);
                 auto* plbl = Gtk::make_managed<Gtk::Label>("Performance");
                 plbl->set_xalign(0.0);
                 prow->append(*plbl);
@@ -479,7 +479,7 @@ ControlPanel::ControlPanel(const Catalog& catalog)
                 // GPU_ERROR_INVALID_VERSION and libQnnCpu.so reports no devices
                 // at all. Offered anyway so a GPU/CPU-compiled artifact would
                 // just work — the failure is loud and names the real cause.
-                auto* brow = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+                auto* brow = Gtk::make_managed<gtkc::Box>(gtkc::Orientation::HORIZONTAL, 8);
                 auto* blbl = Gtk::make_managed<Gtk::Label>("Backend");
                 blbl->set_xalign(0.0);
                 brow->append(*blbl);
@@ -506,13 +506,13 @@ ControlPanel::ControlPanel(const Catalog& catalog)
     }
 
     // ---- run ----
-    run_button_.add_css_class("suggested-action");
+    gtkc::add_css_class(run_button_, "suggested-action");
     run_button_.signal_clicked().connect([this] { sig_start_stop_.emit(); });
     append(run_button_);
 
     status_.set_xalign(0.0);
-    status_.set_wrap(true);
-    status_.add_css_class("dim-label");
+    gtkc::label_set_wrap(status_, true);
+    gtkc::add_css_class(status_, "dim-label");
     append(status_);
 
     select_first_runnable();
@@ -529,23 +529,23 @@ ControlPanel::~ControlPanel() {
 
 void ControlPanel::populate(Gtk::ListBox& list,
                             const std::vector<BenchSubject>& subjects) {
-    list.set_selection_mode(Gtk::SelectionMode::SINGLE);
+    list.set_selection_mode(gtkc::SelectionMode::SINGLE);
     for (const auto& s : subjects) {
         auto* row = Gtk::make_managed<SubjectRow>(s);
         rows_.push_back(row);
-        list.append(*row);
+        gtkc::list_append(list, *row);
     }
     if (subjects.empty()) {
         auto* note = Gtk::make_managed<Gtk::Label>(
             "Nothing in the catalog.\nCheck config/models.conf — it is what "
             "populates these lists.");
-        note->set_wrap(true);
-        note->set_margin(12);
-        note->add_css_class("dim-label");
+        gtkc::label_set_wrap(*note, true);
+        gtkc::set_margin(*note, 12);
+        gtkc::add_css_class(*note, "dim-label");
         auto* row = Gtk::make_managed<Gtk::ListBoxRow>();
-        row->set_child(*note);
+        gtkc::set_child(*row, *note);
         row->set_selectable(false);
-        list.append(*row);
+        gtkc::list_append(list, *row);
     }
 }
 
@@ -813,8 +813,8 @@ int ControlPanel::axelera_cores() const {
 void ControlPanel::set_running(bool running) {
     running_ = running;
     run_button_.set_label(running ? "Stop benchmark" : "Start benchmark");
-    run_button_.remove_css_class(running ? "suggested-action" : "destructive-action");
-    run_button_.add_css_class(running ? "destructive-action" : "suggested-action");
+    gtkc::remove_css_class(run_button_, running ? "suggested-action" : "destructive-action");
+    gtkc::add_css_class(run_button_, running ? "destructive-action" : "suggested-action");
     // Both flags gate the selection, and both paths must agree: set_running(false)
     // fires the instant Stop is pressed, while set_busy(true) only arrives on the
     // next 1 Hz tick — and set_busy early-returns when its flag is unchanged, so

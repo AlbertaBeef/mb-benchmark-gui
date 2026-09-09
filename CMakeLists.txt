@@ -11,7 +11,34 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(GTKMM REQUIRED IMPORTED_TARGET gtkmm-4.0)
+# ---------------------------------------------------------------------------
+# Toolkit. One source tree, two gtkmm majors (see src/gtk_compat.h). gtkmm-4 is
+# preferred wherever it exists; gtkmm-3.24 is what Ubuntu 20.04 focal has, where
+# libgtkmm-4.0-dev is not in the archive at all.
+# ---------------------------------------------------------------------------
+set(MB_GTKMM "auto" CACHE STRING "gtkmm major version: auto, 3 or 4")
+set_property(CACHE MB_GTKMM PROPERTY STRINGS auto 3 4)
+if(MB_GTKMM STREQUAL "auto")
+  # Distinct probe prefixes, so nothing depends on pkg_check_modules' re-run
+  # heuristic when the arguments change.
+  pkg_check_modules(GTKMM4 QUIET IMPORTED_TARGET gtkmm-4.0)
+  if(GTKMM4_FOUND)
+    set(MB_GTKMM 4)
+  else()
+    pkg_check_modules(GTKMM3 QUIET IMPORTED_TARGET gtkmm-3.0)
+    if(GTKMM3_FOUND)
+      set(MB_GTKMM 3)
+    else()
+      message(FATAL_ERROR
+        "Neither gtkmm-4.0 nor gtkmm-3.0 found. Install libgtkmm-4.0-dev, "
+        "or libgtkmm-3.0-dev on distributions that do not package gtkmm-4.")
+    endif()
+  endif()
+elseif(NOT MB_GTKMM STREQUAL "3" AND NOT MB_GTKMM STREQUAL "4")
+  message(FATAL_ERROR "MB_GTKMM must be auto, 3 or 4 (got '${MB_GTKMM}')")
+endif()
+pkg_check_modules(GTKMM REQUIRED IMPORTED_TARGET gtkmm-${MB_GTKMM}.0)
+message(STATUS "Toolkit:           gtkmm-${MB_GTKMM}.0 (${GTKMM_VERSION})")
 find_package(Threads REQUIRED)
 
 # ---------------------------------------------------------------------------
@@ -124,7 +151,13 @@ endif()
 # ---------------------------------------------------------------------------
 # Assets -> GResource (the About dialog loads its logo from it).
 # ---------------------------------------------------------------------------
-find_program(GLIB_COMPILE_RESOURCES glib-compile-resources REQUIRED)
+# NB: no REQUIRED here — that keyword only arrived in CMake 3.18 and this
+# project pins 3.16, where it would silently parse as a search path.
+find_program(GLIB_COMPILE_RESOURCES glib-compile-resources)
+if(NOT GLIB_COMPILE_RESOURCES)
+  message(FATAL_ERROR
+    "glib-compile-resources not found (apt install libglib2.0-dev-bin).")
+endif()
 set(GRESOURCE_XML ${CMAKE_CURRENT_SOURCE_DIR}/mb-benchmark-gui.gresource.xml)
 set(GRESOURCE_C ${CMAKE_CURRENT_BINARY_DIR}/mb-benchmark-gui.gresource.c)
 execute_process(
@@ -157,6 +190,24 @@ add_executable(mb-benchmark
 
 target_include_directories(mb-benchmark PRIVATE src)
 target_link_libraries(mb-benchmark PRIVATE PkgConfig::GTKMM Threads::Threads)
+target_compile_definitions(mb-benchmark PRIVATE MB_GTKMM_MAJOR=${MB_GTKMM})
+
+# std::filesystem (Logger, Fetcher, Catalog and two backends). GCC 8/9 keep it in
+# a separate library; probe rather than version-test, so this stays right on
+# every compiler the project sees.
+include(CheckCXXSourceCompiles)
+set(_mb_fs_src "#include <filesystem>\nint main(){ return std::filesystem::exists(\"/\") ? 0 : 1; }")
+check_cxx_source_compiles("${_mb_fs_src}" MB_FS_BUILTIN)
+if(NOT MB_FS_BUILTIN)
+  set(CMAKE_REQUIRED_LIBRARIES stdc++fs)
+  check_cxx_source_compiles("${_mb_fs_src}" MB_FS_NEEDS_STDCXXFS)
+  unset(CMAKE_REQUIRED_LIBRARIES)
+  if(MB_FS_NEEDS_STDCXXFS)
+    target_link_libraries(mb-benchmark PRIVATE stdc++fs)
+  else()
+    message(FATAL_ERROR "std::filesystem does not link.")
+  endif()
+endif()
 target_compile_options(mb-benchmark PRIVATE
   -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
 
@@ -209,6 +260,12 @@ if(FTDI_FOUND)
   target_link_libraries(mb-benchmark PRIVATE ${FTDI_LIBRARIES})
   target_link_directories(mb-benchmark PRIVATE ${FTDI_LIBRARY_DIRS})
   target_compile_definitions(mb-benchmark PRIVATE MB_HAVE_FTDI=1)
+  # ftdi_tcioflush() arrived in libftdi 1.5; 1.4 (Ubuntu 20.04) has only the
+  # older ftdi_usb_purge_* family, and ships no version macro to test at
+  # compile time — so the version has to come from pkg-config.
+  if(FTDI_VERSION VERSION_LESS 1.5)
+    target_compile_definitions(mb-benchmark PRIVATE MB_FTDI_NO_TCIOFLUSH=1)
+  endif()
 endif()
 
 install(TARGETS mb-benchmark RUNTIME DESTINATION bin)

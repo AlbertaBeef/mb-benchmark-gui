@@ -7,6 +7,7 @@
 
 #include "Automation.h"
 #include "MainWindow.h"
+#include "gtk_compat.h"
 
 namespace {
 
@@ -67,6 +68,6 @@ int main(int argc, char* argv[]) {
 
     int pargc = static_cast<int>(passthrough.size());
     auto app = Gtk::Application::create("org.albertabeef.mbbenchmark");
-    return app->make_window_and_run<MainWindow>(pargc, passthrough.data(),
-                                                std::move(plan));
+    return gtkc::run_window<MainWindow>(app, pargc, passthrough.data(),
+                                       std::move(plan));
 }

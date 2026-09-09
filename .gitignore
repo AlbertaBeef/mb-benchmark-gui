@@ -1,4 +1,7 @@
 /build/
+# ... and the per-toolkit build dirs (build-gtk3/, build-gtk4/) used while the
+# gtkmm-3 and gtkmm-4 builds are kept side by side.
+/build-*/
 # Downloaded model artifacts — reproducible from config/models.conf, so they
 # are never committed. Locally compiled ones (the `source = local` entries)
 # have to be dropped back in by hand after a fresh clone.

@@ -1,10 +1,10 @@
 #include "MainWindow.h"
 
+#include "gtk_compat.h"
+
 #include <glib.h>
 #include <glibmm/main.h>
 #include <glibmm/markup.h>
-#include <gdkmm/display.h>
-#include <gdkmm/texture.h>
 #include <gtkmm/aboutdialog.h>
 #include <gtkmm/box.h>
 #include <gtkmm/button.h>
@@ -112,20 +112,23 @@ MainWindow::MainWindow(AutomationPlan plan)
     // sibling power monitor, so the two read as one family of tools.
     auto* header = Gtk::make_managed<Gtk::HeaderBar>();
     auto* title = Gtk::make_managed<Gtk::Label>(kTitle);
-    title->add_css_class("title");
-    header->set_title_widget(*title);
+    gtkc::add_css_class(*title, "title");
+    gtkc::header_set_title_widget(*header, *title);
 
     auto* about_btn = Gtk::make_managed<Gtk::Button>();
-    about_btn->set_icon_name("help-about-symbolic");
+    gtkc::button_set_icon_name(*about_btn, "help-about-symbolic");
     about_btn->set_tooltip_text("About");
-    about_btn->add_css_class("flat");
+    gtkc::add_css_class(*about_btn, "flat");
     about_btn->signal_clicked().connect(sigc::mem_fun(*this, &MainWindow::on_about));
     header->pack_end(*about_btn);
+    // GTK3 defaults show-close-button to FALSE, so without this the window
+    // would come up with no close, minimize or maximize button at all.
+    gtkc::header_show_window_controls(*header);
     set_titlebar(*header);
 
     auto css = Gtk::CssProvider::create();
-    css->load_from_data(
-        "headerbar { background: #64A19D; box-shadow: none; }"
+    gtkc::load_css(css,
+        "headerbar, headerbar:backdrop { background: #64A19D; box-shadow: none; }"
         "headerbar label.title { color: #FFFFFF; font-weight: bold; }"
         // Round the bottom corners the way GNOME's own windows do (System
         // Monitor, and anything libadwaita-based). Plain GTK4's Adwaita rounds
@@ -146,8 +149,7 @@ MainWindow::MainWindow(AutomationPlan plan)
         "window.csd paned,"
         "window.csd scrolledwindow { background: transparent; }"
         ".mb-about selection { background-color: transparent; color: inherit; }");
-    Gtk::StyleContext::add_provider_for_display(
-        Gdk::Display::get_default(), css, GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    gtkc::add_css_provider_for_default(css, GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 
     // Before any worker thread exists: setenv() must not race with getenv().
     prepare_backend_environment();
@@ -250,9 +252,9 @@ MainWindow::MainWindow(AutomationPlan plan)
     last_time_us_ = g_get_monotonic_time();
 
     // ---- layout: controls | graphs ----
-    auto* paned = Gtk::make_managed<Gtk::Paned>(Gtk::Orientation::HORIZONTAL);
+    auto* paned = Gtk::make_managed<Gtk::Paned>(gtkc::Orientation::HORIZONTAL);
     paned->set_position(680);
-    set_child(*paned);
+    gtkc::set_child(*this, *paned);
 
     controls_ = Gtk::make_managed<ControlPanel>(catalog_);
     controls_->signal_start_stop().connect(
@@ -261,21 +263,19 @@ MainWindow::MainWindow(AutomationPlan plan)
         sigc::mem_fun(*this, &MainWindow::apply_range_mode));
     controls_->signal_graph_filter_changed().connect(
         sigc::mem_fun(*this, &MainWindow::apply_graph_filter));
-    paned->set_start_child(*controls_);
-    paned->set_resize_start_child(false);
     // Never allocate the controls less than their minimum: GTK4's default
     // shrink-start-child lets the handle squeeze a child below its size
     // request, and a widget rendered under its minimum anchors its contents
-    // unpredictably instead of staying flush left.
-    paned->set_shrink_start_child(false);
+    // unpredictably instead of staying flush left. GTK3 defaults shrink to
+    // TRUE as well, so passing it explicitly matters on both.
+    gtkc::paned_pack1(*paned, *controls_, /*resize=*/false, /*shrink=*/false);
 
-    auto* graphs = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 6);
-    graphs->set_margin(12);
+    auto* graphs = Gtk::make_managed<gtkc::Box>(gtkc::Orientation::VERTICAL, 6);
+    gtkc::set_margin(*graphs, 12);
     auto* scroller = Gtk::make_managed<Gtk::ScrolledWindow>();
-    scroller->set_policy(Gtk::PolicyType::NEVER, Gtk::PolicyType::AUTOMATIC);
-    scroller->set_child(*graphs);
-    paned->set_end_child(*scroller);
-    paned->set_resize_end_child(true);
+    scroller->set_policy(gtkc::PolicyType::NEVER, gtkc::PolicyType::AUTOMATIC);
+    gtkc::set_child(*scroller, *graphs);
+    gtkc::paned_pack2(*paned, *scroller, /*resize=*/true, /*shrink=*/true);
 
     // Order is deliberate. Voltage and Current come FIRST because they are the
     // independent measurements — the INA228 measures VBUS and the shunt drop,
@@ -442,6 +442,13 @@ MainWindow::MainWindow(AutomationPlan plan)
     graphs->append(make_section("Energy (mJ/frame — lower is better)",
                                 *energy_.root, /*expanded=*/false));
 
+    // GTK3 widgets start hidden where GTK4's start visible, so the tree has to
+    // be shown before anything that deliberately hides part of it. This must
+    // stay above apply_graph_filter(), which hides the legend entries for cards
+    // this build has no backend for — running it the other way round would
+    // silently re-show every one of them.
+    gtkc::show_all_children(*this);
+
     // Seed every graph from the Range radios. They agree with GraphArea's own
     // default today, but binding it here means the two cannot drift apart.
     apply_range_mode();
@@ -513,12 +520,12 @@ Gtk::Expander& MainWindow::make_section(const char* title, Gtk::Widget& content,
     exp->set_vexpand(expanded);
     exp->property_expanded().signal_changed().connect(
         [exp] { exp->set_vexpand(exp->get_expanded()); });
-    auto* pad = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL);
+    auto* pad = Gtk::make_managed<gtkc::Box>(gtkc::Orientation::VERTICAL);
     pad->set_margin_top(6);
     pad->set_margin_start(4);
     pad->set_vexpand(true);
     pad->append(content);
-    exp->set_child(*pad);
+    gtkc::set_child(*exp, *pad);
     return *exp;
 }
 
@@ -541,7 +548,7 @@ MainWindow::AccelSection MainWindow::build_accel_section(
     std::function<std::string(double)> value_fmt, double min_axis_max) {
     AccelSection sec;
 
-    auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 8);
+    auto* box = Gtk::make_managed<gtkc::Box>(gtkc::Orientation::VERTICAL, 8);
     box->set_vexpand(true);
 
     auto* graph = Gtk::make_managed<GraphArea>(kHistory, kSpanSeconds);
@@ -556,7 +563,7 @@ MainWindow::AccelSection MainWindow::build_accel_section(
     auto* grid = Gtk::make_managed<Gtk::Grid>();
     grid->set_row_spacing(3);
     grid->set_column_spacing(20);
-    grid->set_halign(Gtk::Align::START);
+    grid->set_halign(gtkc::Align::START);
 
     // The series vector stays kAccelCount long — the engine folds onto fixed
     // slots in Accel order and GraphArea::push() no-ops on a size mismatch — so
@@ -568,14 +575,13 @@ MainWindow::AccelSection MainWindow::build_accel_section(
             graph->set_series_visible(i, false);
             continue;
         }
-        auto* cell = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+        auto* cell = Gtk::make_managed<gtkc::Box>(gtkc::Orientation::HORIZONTAL, 6);
 
         const Gdk::RGBA c = accel_color_[i];
         auto* swatch = Gtk::make_managed<Gtk::DrawingArea>();
-        swatch->set_content_width(16);
-        swatch->set_content_height(12);
-        swatch->set_valign(Gtk::Align::CENTER);
-        swatch->set_draw_func([c](const Cairo::RefPtr<Cairo::Context>& cr, int w, int h) {
+        gtkc::set_content_size(*swatch, 16, 12);
+        swatch->set_valign(gtkc::Align::CENTER);
+        gtkc::set_draw_func(*swatch, [c](const Cairo::RefPtr<Cairo::Context>& cr, int w, int h) {
             cr->rectangle(0.5, 0.5, w - 1, h - 1);
             cr->set_source_rgb(c.get_red(), c.get_green(), c.get_blue());
             cr->fill_preserve();
@@ -614,7 +620,7 @@ Gtk::Widget& MainWindow::build_metric_section(
     GraphArea*& graph_out, std::vector<Gtk::Label*>& value_labels_out,
     const char* empty_note, std::vector<AggEntry>* agg_out,
     std::vector<LegendRow>* rows_out, double min_axis_max) {
-    auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 8);
+    auto* box = Gtk::make_managed<gtkc::Box>(gtkc::Orientation::VERTICAL, 8);
     box->set_vexpand(true);
 
     const int n = static_cast<int>(metrics.size());
@@ -637,8 +643,8 @@ Gtk::Widget& MainWindow::build_metric_section(
     if (n == 0) {
         auto* note = Gtk::make_managed<Gtk::Label>(empty_note);
         note->set_xalign(0.0);
-        note->set_wrap(true);
-        note->add_css_class("dim-label");
+        gtkc::label_set_wrap(*note, true);
+        gtkc::add_css_class(*note, "dim-label");
         note->set_margin_top(4);
         box->append(*note);
         return *box;
@@ -647,7 +653,7 @@ Gtk::Widget& MainWindow::build_metric_section(
     auto* grid = Gtk::make_managed<Gtk::Grid>();
     grid->set_row_spacing(3);
     grid->set_column_spacing(20);
-    grid->set_halign(Gtk::Align::START);
+    grid->set_halign(gtkc::Align::START);
 
     value_labels_out.assign(n, nullptr);
     if (rows_out) rows_out->clear();
@@ -674,21 +680,20 @@ Gtk::Widget& MainWindow::build_metric_section(
             agg_label = Gtk::make_managed<Gtk::Label>("—");
             agg_label->set_xalign(0.0);
             agg_label->set_margin_end(6);
-            agg_label->add_css_class("dim-label");
+            gtkc::add_css_class(*agg_label, "dim-label");
             grid->attach(*agg_label, col, row, 1, 1);
             lr.widgets.push_back(agg_label);
             ++col;
         }
 
         while (i < n && metrics[i].device == dev) {
-            auto* cell = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+            auto* cell = Gtk::make_managed<gtkc::Box>(gtkc::Orientation::HORIZONTAL, 6);
 
             Gdk::RGBA c = colors[i];
             auto* swatch = Gtk::make_managed<Gtk::DrawingArea>();
-            swatch->set_content_width(16);
-            swatch->set_content_height(12);
-            swatch->set_valign(Gtk::Align::CENTER);
-            swatch->set_draw_func(
+            gtkc::set_content_size(*swatch, 16, 12);
+            swatch->set_valign(gtkc::Align::CENTER);
+            gtkc::set_draw_func(*swatch,
                 [c](const Cairo::RefPtr<Cairo::Context>& cr, int w, int h) {
                     cr->rectangle(0.5, 0.5, w - 1, h - 1);
                     cr->set_source_rgb(c.get_red(), c.get_green(), c.get_blue());
@@ -1390,24 +1395,27 @@ bool MainWindow::on_tick() {
 void MainWindow::on_about() {
     if (!about_ready_) {
         about_ready_ = true;
-        about_dialog_.add_css_class("mb-about");
+        gtkc::add_css_class(about_dialog_, "mb-about");
         about_dialog_.set_transient_for(*this);
         about_dialog_.set_modal(true);
-        about_dialog_.set_hide_on_close(true);
+        gtkc::about_dialog_hide_on_close(about_dialog_);
         about_dialog_.set_program_name(kTitle);
         about_dialog_.set_version("0.01");
         about_dialog_.set_comments(
             "Benchmarks edge-AI NPUs and charts the frame rate, power and "
             "energy efficiency they achieve.");
         about_dialog_.set_copyright("© 2026 Mario Bergeron");
-        about_dialog_.set_license_type(Gtk::License::APACHE_2_0);
+        gtkc::about_set_license_apache2(about_dialog_);
         about_dialog_.set_website("https://mariobergeron.com");
         about_dialog_.set_website_label("mariobergeron.com");
         try {
-            about_dialog_.set_logo(Gdk::Texture::create_from_resource(
-                "/com/mariobergeron/mbbenchmark/M_benchmarking.png"));
+            gtkc::about_set_logo_from_resource(
+                about_dialog_, "/com/mariobergeron/mbbenchmark/M_benchmarking.png");
         } catch (const Glib::Error& e) {
-            g_warning("about logo: %s", e.what());
+            // Glib::Error::what() is a const char* in glibmm-2.68 but a
+            // Glib::ustring in glibmm-2.4, and neither may be passed straight
+            // to a varargs %s. Round-tripping through ustring works on both.
+            g_warning("about logo: %s", Glib::ustring(e.what()).c_str());
         }
     }
     about_dialog_.set_visible(true);

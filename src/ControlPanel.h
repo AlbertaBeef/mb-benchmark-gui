@@ -19,12 +19,14 @@
 #include <string>
 #include <vector>
 
+#include "gtk_compat.h"
+
 #include "Automation.h"
 #include "Bench.h"
 #include "Catalog.h"
 #include "GraphArea.h"
 
-class ControlPanel : public Gtk::Box {
+class ControlPanel : public gtkc::Box {
 public:
     explicit ControlPanel(const Catalog& catalog);
     ~ControlPanel() override;
@@ -119,9 +121,9 @@ private:
 
     // Graphs / Range. Max is the default: it is the behaviour the graphs have
     // had since the headroom rule landed, and the one that never clips.
-    Gtk::CheckButton range_fixed_{"Fixed"};
-    Gtk::CheckButton range_max_{"Max"};
-    Gtk::CheckButton range_dynamic_{"Dynamic"};
+    gtkc::RadioButton range_fixed_{"Fixed"};
+    gtkc::RadioButton range_max_{"Max"};
+    gtkc::RadioButton range_dynamic_{"Dynamic"};
 
     // Graphs / Accelerators: one independent checkbox per card, in Accel order.
     // Independent, not a radio group — the point is comparing several cards on
@@ -133,8 +135,8 @@ private:
     // vendor ships both a blocking and an async inference API
     // (accel_has_both_api_modes()); the rest get a static label instead, so the
     // UI never offers a mode the runtime does not have.
-    Gtk::CheckButton* api_sync_[kAccelCount] = {};
-    Gtk::CheckButton* api_async_[kAccelCount] = {};
+    gtkc::RadioButton* api_sync_[kAccelCount] = {};
+    gtkc::RadioButton* api_async_[kAccelCount] = {};
 
     // Per-accelerator controls, one tab each. Empty scaffolding for now — the
     // enable/disable checkboxes live in the Inference frame, since they choose

@@ -1,5 +1,6 @@
 #include "GraphArea.h"
 
+#include "gtk_compat.h"
 #include "util.h"
 
 #include <algorithm>
@@ -17,10 +18,10 @@ constexpr double kHeadroom = 1.10;
 
 GraphArea::GraphArea(int history, int span_seconds)
     : history_(history), span_seconds_(span_seconds) {
-    set_content_height(90);  // minimum; grows to fill via vexpand
+    gtkc::set_content_size(*this, -1, 90);  // minimum; grows to fill via vexpand
     set_hexpand(true);
     set_vexpand(true);
-    set_draw_func(sigc::mem_fun(*this, &GraphArea::draw));
+    gtkc::set_draw_func(*this, sigc::mem_fun(*this, &GraphArea::draw));
 }
 
 void GraphArea::set_series(const std::vector<Gdk::RGBA>& colors) {
@@ -161,8 +162,8 @@ void GraphArea::draw(const Cairo::RefPtr<Cairo::Context>& cr, int w, int h) {
     const double axis_span = std::max(axis_hi - axis_lo, 1e-12);
 
     // Horizontal grid + right-hand scale labels at 50/75/100 % of the axis.
-    cr->select_font_face("Sans", Cairo::ToyFontFace::Slant::NORMAL,
-                         Cairo::ToyFontFace::Weight::NORMAL);
+    cr->select_font_face("Sans", gtkc::FONT_SLANT_NORMAL,
+                         gtkc::FONT_WEIGHT_NORMAL);
     cr->set_font_size(10);
     const double fracs[] = {0.0, 0.25, 0.5, 0.75, 1.0};
     for (double fr : fracs) {
