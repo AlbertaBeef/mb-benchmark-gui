@@ -38,10 +38,16 @@ const char* depth_tooltip(Accel a) {
                    "Greyed out in Sync, which uses the blocking MxAcclMT::run() "
                    "instead — one frame by definition.";
         case Accel::Axelera:
-            return "The Metis's only buffering knob is the runtime's boolean "
-                   "double_buffer property, which overlaps the next frame's DMA "
-                   "with the current run — so depth is 1 (off) or 2 (on), and "
-                   "there is nothing deeper to ask for.\n\n"
+            return "The runtime's boolean double_buffer property, which "
+                   "overlaps the next frame's DMA with the current run. It is "
+                   "shown as On/Off rather than a depth because that is all it "
+                   "is: `depth` is not one of the runtime's instance properties "
+                   "and the library clamps internally (\"overriding to depth=2 "
+                   "for double buffering\").\n\n"
+                   "Measured at one AIPU core: off 362.2 fps, on 379.6. On the "
+                   "fixed-batch path it is worth almost nothing (2441 vs 2457 "
+                   "us at batch 4) — one blocking call keeps exactly one batch "
+                   "in flight, so there is nothing to overlap against.\n\n"
                    "Always live: libaxruntime has no async API, so this is the "
                    "card's only concurrency control besides AIPU cores.";
         case Accel::Qualcomm:
@@ -359,13 +365,39 @@ ControlPanel::ControlPanel(const Catalog& catalog)
             // Sync, where the depth is 1 by definition; on a card with only a
             // blocking API it is that card's *only* concurrency knob and stays
             // live (Axelera's double_buffer, Qualcomm's engines per NSP).
-            {
+            if (a == Accel::Axelera) {
+                // Not a Depth spin: the Metis has no depth to set. `depth` is
+                // not among the runtime's eight documented instance properties,
+                // and the library clamps internally — its own log string is
+                // ", overriding to depth=2 for double buffering." next to
+                // LockstepExecutor::get_pipeline_depth(). The only thing we can
+                // actually send is the boolean double_buffer, so the control
+                // says that rather than dressing a boolean up as a 1-2 range
+                // where a user could reasonably expect 3 to mean something.
+                auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+                auto* lbl = Gtk::make_managed<Gtk::Label>("Double buffering");
+                lbl->set_xalign(0.0);
+                row->append(*lbl);
+                axelera_dbuf_off_.set_group(axelera_dbuf_on_);
+                // Off is shown first so the row reads off -> on, matching the
+                // Range and API rows. set_active comes AFTER set_group: joining
+                // a group can clear the flag, so ordering it the other way
+                // would leave neither button selected.
+                axelera_dbuf_on_.set_active(true);   // default is still On
+                const char* tip = depth_tooltip(a);
+                axelera_dbuf_on_.set_tooltip_text(tip);
+                axelera_dbuf_off_.set_tooltip_text(tip);
+                row->append(axelera_dbuf_off_);
+                row->append(axelera_dbuf_on_);
+                depth_spin_[i] = nullptr;            // no spin on this tab
+                page->append(*row);
+            } else {
                 auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
                 auto* lbl = Gtk::make_managed<Gtk::Label>("Depth");
                 lbl->set_xalign(0.0);
                 row->append(*lbl);
                 auto* sp = Gtk::make_managed<Gtk::SpinButton>();
-                const int max_depth = (a == Accel::Axelera) ? 2 : 8;
+                const int max_depth = 8;
                 // 4 for every card but Axelera, whose ceiling is 2.
                 //
                 // MemryX briefly defaulted to 8, which is where it saturates
@@ -375,7 +407,7 @@ ControlPanel::ControlPanel(const Catalog& catalog)
                 // the evidence. The spin button still reaches 8, so the speed
                 // is available to anyone who accepts the risk deliberately —
                 // it is just not the default.
-                const int def_depth = (a == Accel::Axelera) ? 2 : 4;
+                const int def_depth = 4;
                 sp->set_adjustment(
                     Gtk::Adjustment::create(def_depth, 1, max_depth, 1, 1));
                 sp->set_numeric(true);
@@ -570,8 +602,13 @@ void ControlPanel::apply_automation_settings(const AutomationSettings& in) {
                 b.api = api_sync_[i]->get_active() ? 0 : 1;
             if (depth_spin_[i])          // raw, not depth(a): that reports 1 in Sync
                 b.depth = static_cast<int>(depth_spin_[i]->get_value());
-            if (a == Accel::Axelera)
+            if (a == Accel::Axelera) {
+                // The radio still travels as BenchItem::depth, so the engine and
+                // the runner are unchanged: bench_axelera.cpp already clamps to
+                // 1-2 and turns depth > 1 into ";double_buffer=1".
+                b.depth = axelera_double_buffer() ? 2 : 1;
                 b.cores = static_cast<int>(axelera_cores_.get_value());
+            }
             if (a == Accel::MemryX && memryx_freq_mhz() > 0)
                 b.freq_mhz = memryx_freq_mhz();
             if (a == Accel::Qualcomm) {
@@ -602,9 +639,15 @@ void ControlPanel::apply_automation_settings(const AutomationSettings& in) {
             (cfg.api == 0 ? api_sync_[i] : api_async_[i])->set_active(true);
         }
         if (cfg.depth != AccelSettings::kUnset && depth_spin_[i]) {
-            // set_value clamps to the adjustment, so a plan asking Axelera for
-            // depth 8 lands on its real ceiling of 2 rather than being refused.
+            // set_value clamps to the adjustment, so an over-large request lands
+            // on that card's real ceiling rather than being refused.
             depth_spin_[i]->set_value(cfg.depth);
+        }
+        if (cfg.depth != AccelSettings::kUnset && a == Accel::Axelera) {
+            // `axelera.depth` keeps working for plans already written against
+            // it: anything > 1 is double buffering on, 1 is off. `axelera.dbuf`
+            // says the same thing in the control's own words.
+            (cfg.depth > 1 ? axelera_dbuf_on_ : axelera_dbuf_off_).set_active(true);
         }
         if (cfg.cores != AccelSettings::kUnset && a == Accel::Axelera)
             axelera_cores_.set_value(cfg.cores);
@@ -742,6 +785,13 @@ ApiMode ControlPanel::api_mode(Accel a) const {
 // Depth is meaningless on a card running Sync (one frame by definition), so
 // each card's spin button follows its own API radio.
 void ControlPanel::refresh_depth_sensitivity() {
+    // Axelera's control is a radio pair, not a spin, and it has no API-mode
+    // radios to follow -- libaxruntime has no async path -- so it is live
+    // whenever a run is not in progress.
+    if (accel_present(Accel::Axelera)) {
+        axelera_dbuf_on_.set_sensitive(!running_);
+        axelera_dbuf_off_.set_sensitive(!running_);
+    }
     for (int i = 0; i < kAccelCount; ++i) {
         if (!depth_spin_[i]) continue;
         const Accel a = accel_at(i);
@@ -799,11 +849,21 @@ unsigned ControlPanel::graph_accel_mask() const {
 
 int ControlPanel::depth(Accel a) const {
     const int i = accel_index(a);
+    // Axelera has no spin button: its control is the double-buffering radio,
+    // which still reports as 1 or 2 so callers and the CSV read the same as
+    // every other card.
+    if (a == Accel::Axelera) return axelera_double_buffer() ? 2 : 1;
     if (i < 0 || i >= kAccelCount || !depth_spin_[i]) return 1;
     // Sync means exactly one frame outstanding — that is what Sync *is* — so a
     // dual-mode card reports 1 regardless of where its spin button sits.
     if (accel_has_both_api_modes(a) && api_mode(a) == ApiMode::Sync) return 1;
     return static_cast<int>(depth_spin_[i]->get_value());
+}
+
+// The Metis's only buffering control. Kept separate from depth() because it is
+// a boolean, not a count -- see the radios' comment in the header.
+bool ControlPanel::axelera_double_buffer() const {
+    return axelera_dbuf_on_.get_active();
 }
 
 int ControlPanel::axelera_cores() const {

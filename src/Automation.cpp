@@ -97,6 +97,15 @@ bool apply_accel_key(AutomationSettings& s, const std::string& vendor,
         return false;
     }
     if (k == "depth")  return parse_int(v, t.depth)    ? true : (why = "depth must be a number", false);
+    // Axelera's control is double buffering, not a depth — see ControlPanel.
+    // It still travels as `depth` (1 off / 2 on) so nothing downstream changes,
+    // and `<vendor>.depth` keeps working for plans already written against it.
+    if (k == "double_buffer" || k == "dbuf") {
+        bool b{};
+        if (!parse_bool(v, b)) { why = "double_buffer must be true or false"; return false; }
+        t.depth = b ? 2 : 1;
+        return true;
+    }
     if (k == "cores")  return parse_int(v, t.cores)    ? true : (why = "cores must be a number", false);
     if (k == "freq")   return parse_int(v, t.freq_mhz) ? true : (why = "freq must be a number (MHz)", false);
     if (k == "nsps")   return parse_int(v, t.nsps)     ? true : (why = "nsps must be a number", false);

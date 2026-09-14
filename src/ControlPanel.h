@@ -76,6 +76,7 @@ public:
 
     // Per-accelerator settings from the card tabs.
     int memryx_freq_mhz() const;   // MPU clock to request before a run
+    bool axelera_double_buffer() const;  // Axelera: the double_buffer property
     int axelera_cores() const;     // AIPU cores to claim on the Metis
     int qualcomm_nsps() const;     // Hexagon NSPs to claim on the SoC
     std::string qualcomm_perf_mode() const;  // HTP DCVS mode
@@ -142,6 +143,14 @@ private:
     Gtk::Notebook accel_notebook_;
     Gtk::ComboBoxText memryx_freq_;   // MemryX tab: MPU clock
     Gtk::SpinButton axelera_cores_;   // Axelera tab: AIPU cores (1-4)
+    // Axelera tab: double buffering, as radios rather than a Depth spin.
+    // The Metis has no depth to set — `depth` is not one of the runtime's eight
+    // instance properties, and the library clamps internally ("overriding to
+    // depth=2 for double buffering"). All we can send is the boolean
+    // double_buffer, so the control says so instead of dressing it as 1-2.
+    // BenchItem::depth is still the transport (1 = off, 2 = on) so nothing
+    // downstream of ControlPanel changes.
+    Gtk::CheckButton axelera_dbuf_on_{"On"}, axelera_dbuf_off_{"Off"};
     Gtk::SpinButton qualcomm_nsps_;      // Qualcomm tab: Hexagon NSPs (1-2)
     Gtk::ComboBoxText qualcomm_perf_;    // Qualcomm tab: HTP DCVS mode
     Gtk::ComboBoxText qualcomm_backend_; // Qualcomm tab: HTP / GPU / CPU
