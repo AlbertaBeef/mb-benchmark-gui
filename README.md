@@ -19,6 +19,14 @@ accelerators to run it on, choose a target frame rate (or max speed), and press
 Start. One worker thread per card loops inference on its own device; the graphs
 update once a second.
 
+A **target frame rate throttles submission, not counting** — the point of
+capping is to measure what a card costs at a rate you actually need, so the
+watts have to fall with the frames. Three backends submit from their own
+producer threads rather than from the engine's loop (MemryX's SDK callbacks,
+Axelera's stream loop, Qualcomm's per-engine workers) and until 2026-09-13 the
+cap did not reach them: ResNet-50 on MemryX capped to 300 fps still drew 8.24 W
+against 8.18 W uncapped. It now draws 4.04 W.
+
 Twelve stacked graphs, each a scrolling 10-minute window:
 
 | Graph | What it shows |
@@ -133,7 +141,7 @@ modes, and any load failure all go to the **status line** under the Start button
 | ---- | -------------- | --------------- | ----- | ----------- |
 | **Hailo-8** | `InferVStreams::infer()` | `InferModel::run_async()` | firmware `POW` + INA228 | `TS0` / `TS1`, clock `CLK` |
 | **DeepX M1** | `InferenceEngine::Run()` | `RunAsync()` / `Wait()` | INA228 (no on-die sensor) | `T0`–`T2`, clock `C0`–`C2` |
-| **Axelera Metis** | `axr_run_model_instance()` | **none** — `double_buffer` only | INA228 | `SYS` / `AI0`–`AI3` (needs a live collector), clock `C0`–`C3` |
+| **Axelera Metis** | `axr_run_model_instance()` | **none** — double buffering only | INA228 | `SYS` / `AI0`–`AI3` (needs a live collector), clock `C0`–`C3` |
 | **MemryX MX3** | `MxAcclMT::run()` | `MxAccl::connect_stream()` | MemryX SDK + INA228 | `T0`–`T3`, clock `C0`–`C3` |
 | **Qualcomm Hexagon NSP** | `QnnGraph_execute()` | **none** — host threads per NSP | **none exists** — see below | `N0-0`–`N1-2` from the TSENS zones, no clock |
 
@@ -212,7 +220,8 @@ modes — these cards are not directly comparable with each other."*
 
 **Async is the default** on every card that offers the choice, because it is
 what the hardware can actually do. Axelera and Qualcomm have no choice to make —
-they always run their blocking call, with **Depth** as their concurrency knob.
+they always run their blocking call — Qualcomm with **Depth** as its
+concurrency knob, Axelera with **Double buffering**.
 
 - **Sync** — one frame at a time, waiting for each. What a latency-bound
   real-time pipeline does. Native everywhere: Hailo, DeepX, Axelera, Qualcomm,
@@ -222,10 +231,13 @@ they always run their blocking call, with **Depth** as their concurrency knob.
 - **Async** — several frames outstanding. Peak throughput. Native on Hailo
   (`run_async` + `AsyncInferJob`), DeepX (`RunAsync`/`Wait`) and
   MemryX (`connect_stream`, depth from the Depth control). Axelera's runtime
-  exposes **no async inference API whatsoever** — 41 `axr_*` entry points,
+  exposes **no async inference API whatsoever** — 40 `axr_*` entry points,
   exactly one of which is inference, and it blocks — so overlap there comes from
-  the runtime's own
-  `double_buffer` property, which is a much weaker mechanism.
+  the runtime's own `double_buffer` property, which is a much weaker mechanism.
+  That blocking call is why the card tops out near 1600 fps on ResNet-50: at
+  2.50 ms a call and a batch of 4, Little's law pins frames-in-flight at exactly
+  4, and a second instance will not load because the batch-4 artifact already
+  holds 28.3 MB of the part's ~32.5 MB of L2.
 
 ### Depth
 
@@ -237,18 +249,27 @@ useful range:
 | ---- | --------------- | ----- | ------- |
 | **Hailo-8** | requested async queue depth, capped by HailoRT's own reported queue size | 1–8 | 4 |
 | **DeepX M1** | outstanding `RunAsync` jobs | 1–8 | 4 |
-| **MemryX MX3** | `connect_stream` permit depth | 1–8 | **8** |
-| **Axelera Metis** | `double_buffer` — 2 is the ceiling the API has, see below | 1–2 | 2 |
-| **Qualcomm NSP** | engines in flight per NSP, one host thread each | 1–8 | 4 |
+| **MemryX MX3** | `connect_stream` permit depth | 1–8 | 4 |
+| **Axelera Metis** | double buffering — an **Off / On** radio pair, not a depth | Off / On | On |
+| **Qualcomm NSP** | engines in flight per NSP, **one host thread each** | 1–8 | 4 |
 
-The default differs per card because the saturation point does. MemryX needs 8
-(1077 / 1597 / 1797 fps at depth 4 / 6 / 8 on ResNet-50); DeepX peaks at 4 and
-falls back slightly at 8.
+The default differs per card because the saturation point does. DeepX peaks at 4
+and falls back slightly at 8. MemryX is fastest at 8 (1077 / 1597 / 1797 fps at
+depth 4 / 6 / 8 on ResNet-50) but **wedges the card there**, reproducibly, after
+anywhere from 11 to 80 seconds — including under the vendor's own `mx_bench`, so
+it is not this harness. Recovery is a power cycle. The default is therefore 4.
 
-Axelera's 1–2 is the API's own limit, not a chosen one: the runtime logs
-*"overriding to depth=2 for double buffering"*, an explicit `depth=4` property is
-rejected with `Unknown property key: depth`, and `double_buffer=4` measures the
-same as `double_buffer=1`. Anything above 2 would silently be 2.
+Depth is **frames in flight**, and on four of the five cards it is *not* a
+thread count: measured thread totals are fixed at 6 (Hailo), 13 (DeepX) and 21
+(MemryX) whether depth is 1 or 8 — those SDKs size their own worker pools.
+Qualcomm is the exception, where the app really does create `NSPs × depth`
+threads.
+
+Axelera has no depth control at all any more, because the runtime has no such
+property: it logs *"overriding to depth=2 for double buffering"*, an explicit
+`depth=4` is rejected with `Unknown property key: depth`, and `double_buffer=4`
+measures the same as `double_buffer=1`. The tab shows what the API actually
+offers — double buffering off or on.
 
 On a card that offers both API modes, depth greys out in **Sync** — one frame at
 a time is what Sync means. On the two cards with no async API (Axelera,
@@ -258,10 +279,10 @@ live.
 Depth buys a lot until the device saturates and nothing after. Measured on
 ResNet-50:
 
-| DeepX depth | fps | | Axelera depth | fps |
+| DeepX depth | fps | | Axelera double buffering | fps |
 | ----------: | --: | --- | ----------: | --: |
-| 1 | 402.2 | | 1 | 573.7 |
-| 4 | **1085.1** | | 2 | **589.6** |
+| 1 | 402.2 | | off | 573.7 |
+| 4 | **1085.1** | | on | **589.6** |
 | 8 | 1061.6 | | | |
 
 Measured on this host, max speed:
@@ -270,13 +291,13 @@ Measured on this host, max speed:
 | ------- | ---: | ----: | --- |
 | Hailo-8 | 123.0 | **490.7** | 4.0× |
 | DeepX M1 | 32.2 | **148.1** | 4.6× |
-| Axelera Metis | 131.2 | 154.3 | 1.2× *(depth 1 → 2)* |
+| Axelera Metis | 131.2 | 154.3 | 1.2× *(double buffering off → on)* |
 
 | ResNet-50 | Sync | Async | |
 | --------- | ---: | ----: | --- |
 | Hailo-8 | 297.3 | **1370.1** | 4.6× |
 | DeepX M1 | 392.9 | **1086.7** | 2.8× |
-| Axelera Metis | 352.1 | 376.1 | 1.1× *(depth 1 → 2)* |
+| Axelera Metis | 352.1 | 376.1 | 1.1× *(double buffering off → on)* |
 
 Two things worth drawing out. DeepX's poor *sync* YOLOv8s figure is an artifact
 of the mode, not the card — DXRT is built around its job queue, and in async it
@@ -297,7 +318,11 @@ controls each card has, then whatever else that device exposes:
   [Sync API vs Async API](#sync-api-vs-async-api).
 - **Depth** — frames in flight; range and meaning are per card, see
   [Depth](#depth). Greys out on a card running Sync, where the depth is 1 by
-  definition.
+  definition. **Axelera has no Depth control** — see the next item.
+- **Axelera — Double buffering** (`Off` / `On`, default `On`). What the runtime
+  actually offers in place of a depth: a boolean property worth roughly 3–7%.
+  Off / On replaced a 1–2 spin button, which could only ever have those two
+  values and read as though 3–8 had merely been withheld.
 
 - **MemryX — Core frequency** (200–850 MHz, default 600). 600 is the 14 TOPS
   mode, 850 the 20 TOPS one. Applied before the run starts. There is no C++
@@ -748,10 +773,12 @@ MB_BENCH_NO_LOG=1             ./build/mb-benchmark   # off
 | `<bdf>_INA228_POWER` | the external shunt's power reading, folded onto the card it measures (bare `<bdf>_INA228` in logs written before 2026-09-03) |
 | `<bdf>_INA228_TEMP` | the shunt monitor's own die temperature — ambient plus self-heating, **not** the card's die |
 | `<bdf>_INA228_ENERGY` | joules accumulated since launch, integrated in hardware at the ADC rate |
-| `<bdf>_INA228_CHARGE` | coulombs since launch; ÷ elapsed gives exact average current (negative on this rig — see below) |
+| `<bdf>_INA228_CHARGE` | coulombs since launch; ÷ elapsed gives exact average current |
+| `<bdf>_INA228_VBUS` | rail voltage as the chip measures it, before it derives power |
+| `<bdf>_INA228_CURRENT` | rail current, sign-corrected per rail by `ina228.conf` |
 | `bench_state` | `idle` · `starting` · `running` · `stopping` · `stopped` |
 | `bench_model`, `bench_target_fps` | what was selected; target is empty at max speed |
-| `<vendor>_cfg` | what that card actually ran — the runner's own description, e.g. `1x224x224x3 int8 · 2 cores · depth 2` |
+| `<vendor>_cfg` | what that card actually ran — the runner's own description, e.g. `1x224x224x3 int8 · 4 AIPU cores · double buffer` |
 | `<vendor>_fps`, `<vendor>_fps_per_w`, `<vendor>_mj_per_frame` | its results that second |
 | `message` | anything worth knowing about that second |
 
@@ -766,12 +793,22 @@ happened.
 
 The INA228 accumulator columns are the reason to prefer the log over the graph
 for energy: differencing two rows gives the exact energy for that interval, at
-ADC-rate accuracy rather than 1 Hz sampling. On this rig the charge columns read
-**negative** — the shunts are wired with IN+/IN- reversed. The magnitude is right
-(`P ÷ |dQ/dt|` gives 3.16–3.20 V, the M.2 rail, on all four), and power and energy
-are unsigned so they are unaffected; the sign is reported as measured rather than
-hidden, because it is a real fact about the harness.
+ADC-rate accuracy rather than 1 Hz sampling.
 
+All four shunts on this rig are wired with IN+/IN- reversed, so the two *signed*
+registers — `CURRENT` and `CHARGE` — read negative for a card that is drawing.
+That is corrected by a per-rail `invert` flag in `config/ina228.conf` rather than
+globally, so the harness can be fixed one breakout at a time. `VBUS`, `POWER` and
+`ENERGY` come from unsigned registers and cannot carry a polarity error, which is
+why the fault showed in only two families. **Logs written before 2026-09-07 have
+negative `_INA228_CHARGE`**; anything differencing charge across that date has to
+account for the sign flip.
+
+The rails also carry a **latched bus-undervoltage check**: `BUVL` is set to
+3.00 V (the M.2 3.3 V rail's own -9% limit) with the latch enabled, and reading
+`DIAG_ALRT` once per second clears it — so each row answers "did this rail leave
+spec at any point in that second?", catching dips far shorter than 1 Hz sampling
+could see.
 Two conventions worth knowing. **A missing reading is an empty field**, never
 `nan` and never `0` — `0.0 W` is a real INA228 overflow signal, so the
 distinction carries information. And there is a column for **every** card the

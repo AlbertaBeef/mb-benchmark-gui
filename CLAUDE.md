@@ -23,7 +23,7 @@ matters when porting:
   change; a `cp` in either direction is the correct way to port. Everything
   added here (`RangeMode`, per-series visibility, the adaptive time-label step)
   went into both, even where only one app exposes a control for it.
-- **`Probes.{h,cpp}` has diverged** — 1554 lines here against 1333 there. Four
+- **`Probes.{h,cpp}` has diverged** — 1724 lines here against 1502 there. Four
   deliberate edits, none of them portable as a whole file: the INA228
   config-path search (see **Config**); `Probes::power_for_device()`, which needs
   `Catalog.h` and **cannot compile** in the sibling; the whole frequency family;
@@ -32,12 +32,24 @@ matters when porting:
   happened once.
 
   Things that *should* travel both ways already have: the `plausible_temp()`
-  gate, the helper's `os._exit(0)`, and (2026-09-03) the whole INA228
-  accumulator family — `DIETEMP`/`ENERGY`/`CHARGE`, `alias_device_order()`, and
-  the temperature fold. That port was clean precisely because `struct Ina228`,
+  gate, the helper's `os._exit(0)`, (2026-09-03) the whole INA228 accumulator
+  family — `DIETEMP`/`ENERGY`/`CHARGE`, `alias_device_order()` and the
+  temperature fold — and (2026-09-07 … 09-12) `VBUS`, `CURRENT` with its
+  per-rail `invert` flag, the latched undervoltage detector, and
+  `plausible_power()`. Those ports were clean precisely because `struct Ina228`,
   `INA228Probe`, `power_device_order()` and `pcie_merge_target()` were still
   **byte-identical** between the two files; check that with `diff` on the block
   before assuming any future INA228 change can be transplanted the same way.
+
+  **Two traps, both paid for during those ports.** A `str.replace`-style edit
+  **silently no-ops** when the sibling's signature differs — its `emit`/`fill`
+  helpers take no `order` argument — so two hunks "landed" and the voltage
+  family came back empty; assert on the replacement count, never on the exit
+  status. And a lifted block extracted by searching for
+  `root->append(make_section(` mangled the sibling's `MainWindow.cpp` while
+  **still compiling**, because the braces happened to balance. After any
+  cross-project transplant, print the section order and `diff` against
+  `git HEAD` rather than trusting the build.
 
 The model/pipeline catalog is derived from `../envic_ai_cpp`'s
 `ai_common/pipeline_registry.cpp` — same models, same detector+recognizer
@@ -246,8 +258,11 @@ Three layers, cleanly separated. Keep it that way.
   which drives **the widgets** rather than a parallel state. Two reasons: the
   panel keeps showing what is actually running, and `selection()` stays the one
   place a `BenchItem` is built. `set_value()` clamps to each adjustment, so a
-  plan asking Axelera for depth 8 lands on its real ceiling of 2 rather than
-  being rejected.
+  plan asking DeepX for depth 99 lands on its real ceiling of 8 rather than
+  being rejected. Axelera is the exception now that its control is a radio
+  pair rather than a spin button: `cfg.depth > 1` picks On, anything else Off,
+  so a plan written as `axelera.depth = 8` still means "double buffering on",
+  and `axelera.double_buffer = true` says the same thing more honestly.
 
   **It snapshots the panel once and applies every step as baseline + defaults +
   step**, never as a delta on the previous step. Widget state is sticky, so
@@ -458,6 +473,18 @@ Three layers, cleanly separated. Keep it that way.
   an ungated sentinel would always win and become that zone's temperature.
   **Never widen this to "just clamp it"**: a fabricated in-range number next to
   genuine readings is worse than a gap.
+
+  **`plausible_power()` is the same gate for watts, and it had to exist.** An
+  MX3 populated without power telemetry answers `0xFFFFFFFF` mW, which the app
+  reported as **4294967.29 W**. That is worse than a wrong number on a graph:
+  `power_for_device()` returns the **max** over the power family and skips NaN
+  but *not* a finite huge one, so the sentinel won, became the engine's watts,
+  and corrupted every fps/W and mJ/frame figure by six orders of magnitude. The
+  gate maps anything outside 0…1000 W to NaN, at all four parse sites, plus a
+  matching gate in the Python telemetry helper
+  (`w = _w/1000.0 if 0 <= _w < 1e6 else nan`) so the sentinel never crosses the
+  pipe in the first place. Both projects have it. **A card with no power sensor
+  must read NaN, never a number** — the same rule as "never estimate watts".
 - **The Graphs / Accelerators filter hides series and legend entries; it does
   not drop samples.** Unticking a card calls `GraphArea::set_series_visible()`
   on every graph and hides that card's legend widgets;
@@ -796,10 +823,19 @@ That is the only real wattage available on the IQ-9075, and it is genuinely
 useful — but it is not per-accelerator power, and the probe is named so that it
 can never become a card's `power_for_device()` value.
 
-**`Probes.{h,cpp}` is shared with `mb-powermon-gui`** — the frequency family is a
-new addition here and has *not* been ported there yet. The INA228 energy/charge
-families and the die-temperature fold **have** been (2026-09-03), so those two
-files now differ only by the four edits listed under **What this is**.
+**`Probes.{h,cpp}` is shared with `mb-powermon-gui`** — the frequency family is
+still **not** ported there (the sibling has no `freq_metrics_` at all), and
+neither is `PowerZProbe`'s system V/I/W triplet. Everything INA228 **has** been:
+energy/charge and the die-temperature fold (2026-09-03), then `VBUS`, `CURRENT`
+with the per-rail `invert` flag, the latched undervoltage check and
+`plausible_power()` (2026-09-07 … 09-12). Current line counts are 1724 here
+against 1502 there.
+
+**`ina228.conf` is not shared and the search orders differ.** Ours is
+`$MB_INA228_CONFIG` → repo `config/` → `~/.config/mb-benchmark-gui/`; the
+sibling's is `$MB_INA228_CONFIG` → `~/.config` only, with no repo copy. A
+`config/ina228.conf` was created in the sibling once and was **inert** — it is
+never consulted. Don't add one back.
 
 ## API modes (Sync / Async)
 
@@ -844,27 +880,40 @@ which does have one and will not warn.
   - The SDK documents `run()` as a synchronous *facade* over an async internal
     pipeline, and the class serialises on a private mutex — so it is honest
     one-frame-at-a-time throughput, but not a clean single-frame latency probe.
-  - **`local_mode` is a real constructor argument and is NOT worth taking.**
+  - **`local_mode` is taken now, and it buys latency, not throughput.**
     `MxAccl`/`MxAcclMT`/`MxAcclBase` all take `bool local_mode = false` (5th
-    positional arg), and `mx_bench --help` advertises its default as "Local mode
+    positional arg) and `mx_bench --help` advertises its default as "Local mode
     for peak FPS", which makes the manager daemon look like the obvious suspect
     for any MemryX shortfall. It is not: measured 2026-09-04 on ResNet-50 over
     30 000 frames, `mx_bench` reports **1796.10 fps local against 1796.11
-    shared** — identical throughput, and only latency differs (3.34 vs 3.69 ms).
-    Three reasons not to revisit it: the gain is zero; the SDK documents local
-    mode as not supporting "multi-process or multi-DFP usage"; and it needs
-    exclusive access, so with `mxa-manager` holding the device the constructor
-    throws `Error in client->try_local_lock for device id: 0`. Our own MemryX
-    telemetry helper is a second client on that card, so local mode would fight
-    it. **The MemryX shortfall was never the daemon — it was our permit depth.**
+    shared** — identical throughput; only latency differs (3.34 vs 3.69 ms).
+    **This file previously said local mode was not worth taking. It is taken
+    anyway**, because the latency is free and because a run that reaches the
+    device the shortest way is the one to compare against `mx_bench`. The
+    mechanism is `make_accl<>()` in `bench_memryx.cpp`:
+    - local is tried first; `$MB_MEMRYX_SHARED=1` forces the old behaviour;
+    - local needs **exclusive access**, so with `mxa-manager` holding the device
+      the constructor throws `Error in client->try_local_lock for device id: 0`
+      — our own MemryX telemetry helper is a second client on that card, so
+      this happens routinely;
+    - the fallback to shared is therefore expected, and it is **visible**: the
+      string `shared (local refused: …)` goes into `describe()` and so into the
+      CSV's `memryx_cfg`. A run that quietly changed how it reached the device
+      is one nobody can read back later. Don't "tidy" that string away.
+
+    It does **not** help the depth-8 wedge — both modes bottom out in the same
+    `libmemx` / `/dev/memx0` path. **The MemryX shortfall was never the daemon —
+    it was our permit depth.**
 - **Measured after the split** (ResNet-50, this host): Hailo 298.1 / 1217.2,
   DeepX 384.0 / 1085.5, MemryX **259.9** / **1796.7** (sync / async). The MemryX sync
   figure is new — the old emulated one is not comparable and should not be quoted
-  against it. The async figure was 1104.4 until 2026-09-04, when the default
-  depth went 4 -> 8; see the depth table below. Anything quoting MemryX at ~1100
-  is measuring a card 40% idle.
-- **Axelera really has no async API.** All 41 `axr_*` symbols enumerated; exactly
-  one is inference and it blocks. The 233 `ze*` symbols are the statically linked
+  against it. **1796.7 is depth 8, and depth 8 is no longer the default** — it
+  wedges the card (see the depth table below). The shipped default of 4
+  measures ~1077 fps; quote whichever you like, but always with its depth.
+- **Axelera really has no async API.** All 40 `axr_*` symbols in libaxruntime
+  1.7.0 enumerated (`nm -D --defined-only`); exactly one is inference and it
+  blocks. The undocumented export `axr_run_graph_model_instance` is not a second
+  one — it is not asynchronous. The 233 `ze*` symbols are the statically linked
   oneAPI Level Zero loader — headers, pkg-config and CMake are all shipped, but it
   is model-agnostic, so driving inference through it means reimplementing
   `axr_load_model` against internal types. "Async" there sets the runtime's own
@@ -999,10 +1048,34 @@ which does have one and will not warn.
   multi-core builds were previously listed here as ruled out. They were not —
   they were most of the gap**: the fixed-batch-4 artifact took us from 695 to
   1602 fps, i.e. from 34% of the vendor's figure to 78%. Still ruled out: a
-  second API. The
-  untested difference is `--enable-opencl` with real video streams, where the
-  pipeline may feed the NPU through **dmabuf** — `input_dmabuf` / `output_dmabuf`
-  are real instance properties we do not use.
+  second API.
+
+  **The dmabuf lead is now tested, and it is worth nothing.** This file listed
+  `--enable-opencl` / `input_dmabuf` / `output_dmabuf` as "the untested
+  difference" for a month. Measured 2026-09-14, ResNet-50, batch-4 artifact,
+  four cores: `input_dmabuf=1` gives **1597.8 fps** against **1599.6** with
+  plain host pointers — inside run-to-run noise. The buffers were real, not a
+  shim (memfd → `F_SEAL_SHRINK` → `UDMABUF_CREATE`, a genuine dmabuf fd), so
+  this measures the property and not a failed setup. **Do not re-raise it.**
+
+  **What remains is a Little's-law ceiling, and ~1600 fps is where
+  libaxruntime tops out.** `frames_in_flight = throughput × latency`. Our
+  runner: 1598.5 fps × 2.501 ms = **4.0 frames** — exactly the batch size,
+  because `axr_run_model_instance()` blocks and there is no async API to
+  overlap with. Voyager's own inference element: 2160.8 fps × 9.713 ms =
+  **21.0 frames**. It is not faster per call; it has twenty-one frames resident
+  where we have four.
+
+  The obvious answer — a second instance — is closed by L2. The batch-4
+  artifact is **28.34 MB of the part's ~32.47 MB**, and a second
+  `axr_load_model_instance()` fails outright:
+  `Not enough memory: free memory 4130304, request memory 28342784`. Verified
+  end to end by running **the vendor pipeline's own artifact through our path**:
+  1600.9 fps against our 1598.5. Same card, same ceiling. **The rest of the
+  vendor's gap is the GStreamer pipeline around the runtime, not the runtime** —
+  so stop looking for a property we are failing to set. (There are 40 `axr_*`
+  symbols and one undocumented export, `axr_run_graph_model_instance`; it is not
+  an async entry point.)
 
   The cold-card race is handled by *ordering*, not by avoiding connections: the
   **first** connect is made alone and allowed to complete (it is the one that
@@ -1073,13 +1146,30 @@ which does have one and will not warn.
   | --- | --- | --- | --- |
   | Hailo | requested async queue depth, `min(requested, get_async_queue_size())` | 1-8 | yes — Sync forces 1 |
   | DeepX | outstanding `RunAsync` jobs | 1-8 | yes — Sync forces 1 |
-  | MemryX | `connect_stream` permit depth | 1-8, **default 8** | yes — Sync uses `MxAcclMT::run()` |
-  | Axelera | `double_buffer` — a **boolean**, so 2 is as deep as it goes | 1-2 | **no** |
-  | Qualcomm | engines in flight per NSP, one host thread each | 1-8 | **no** |
+  | MemryX | `connect_stream` permit depth | 1-8, **default 4** (was 8; see the wedge below) | yes — Sync uses `MxAcclMT::run()` |
+  | Axelera | `double_buffer` — **not a depth control any more**; an Off/On radio pair | Off / On | **no** |
+  | Qualcomm | engines in flight per NSP, **one host thread each** | 1-8 | **no** |
 
-  **Axelera's 1-2 is not an arbitrary cap — 2 is the ceiling the API has.**
-  Verified 2026-08-04 against the shipped library, because "why not 1-8?" is an
-  obvious question:
+  **Depth is frames-in-flight everywhere, and threads on Qualcomm alone.**
+  Measured 2026-09-13 by counting `/proc/<pid>/task` across a run: Hailo **6**,
+  DeepX **13**, MemryX **21** — *fixed*, the same count at depth 1 as at
+  depth 8. Those SDKs size their own worker pools and depth only changes how
+  many frames the app keeps outstanding inside them. Qualcomm is the one
+  backend that creates threads from the control (`nsps × depth`), which is the
+  only place a separate "Threads" parameter would mean anything distinct. So
+  **never describe depth as a thread count** in the UI, in `describe()`, or in
+  the CSV — it is one on exactly one card out of five.
+
+  **Axelera's depth spin button is gone — the tab carries an Off/On
+  double-buffering radio pair instead** (`axelera_dbuf_off_` /
+  `axelera_dbuf_on_` in `ControlPanel.cpp`, **Off listed first**, On still the
+  default; `depth(Accel)` maps them to 1 and 2 for `BenchItem`). Automation
+  accepts `axelera.double_buffer` / `axelera.dbuf` as aliases for the same
+  thing. Note the widget order trap: `set_active()` must come **after**
+  `set_group()`, or joining the group clears the selection.
+
+  The reason it was never a 1-8 range is below — verified 2026-08-04 against
+  the shipped library, because "why not 1-8?" is an obvious question:
   - The runtime's own log string is `' has depth=<n>, overriding to depth=2 for
     double buffering.`, next to `axr::ze_utils::LockstepExecutor::
     get_pipeline_depth()`. So double buffering *is* depth 2, in its own words.
@@ -1091,10 +1181,11 @@ which does have one and will not warn.
     against `double_buffer=1`'s 379.6 — the same run, because any truthy value
     just turns it on.
 
-  So a 1-8 range would have 3..8 silently behave as 2, and a run could later be
-  recorded as "Axelera at depth 8" when no such thing happened. Measured ladder,
-  one core: no property 362.2 fps, `double_buffer=1` 379.6. At two cores:
-  573.7 → 589.6.
+  So a 1-8 range would have had 3..8 silently behave as 2, and a run could
+  later be recorded as "Axelera at depth 8" when no such thing happened — which
+  is why the control became a radio pair rather than merely being clamped.
+  Measured ladder, one core: no property 362.2 fps, `double_buffer=1` 379.6. At
+  two cores: 573.7 → 589.6.
 
   **The two sync-only cards deliberately ignore the API mode here.** Axelera and
   Qualcomm show no mode radios (they have no async API), so gating depth on
@@ -1109,7 +1200,8 @@ which does have one and will not warn.
   **The default is per card, because the saturation point is.** Measured on
   ResNet-50: DeepX 1 → 402.2 fps, 4 → 1085.1, 8 → 1061.6 — depth pays until the
   device saturates and *regresses* after, so DeepX defaults to 4. Axelera
-  1 → 573.7, 2 → 589.6 (2 is the API ceiling).
+  1 → 573.7, 2 → 589.6 (2 is the API ceiling, now expressed as the On/Off
+  double-buffering radio).
 
   **MemryX saturates only at 8, and defaulting it to 4 cost 40% of the card**
   (fixed 2026-09-04). Measured on the real runner: **1077.5 / 1597.1 / 1796.7 fps
@@ -1124,8 +1216,68 @@ which does have one and will not warn.
   `configure()` is not called) and `def_depth` in `ControlPanel.cpp` (what the
   GUI and automation actually use, via `BenchItem::depth`).
 
-  `describe()` reports it uniformly as `· depth N`. It used to say
-  `· N in flight`, and Axelera said `· double-buffered`; both are gone.
+  **That default has been reverted to 4, because depth 8 wedges the MX3** — and
+  the 40%-of-the-card argument above was already made once and cost several
+  power cycles, so **do not make it again without stability evidence.** Five
+  reproductions, every one at depth 8 / ~1796 fps, wedging after 80 s, 80 s,
+  57 s, 33 s and 11 s. The collapse is abrupt: full rate one second, chip 0
+  unresponsive the next — `admin timeout … chip 0` from the kernel driver, no
+  throttle and no decay first. What it is **not**:
+  - **not thermal** — it died at 72 °C, while depth 4 ran to 86 °C and survived;
+  - **not a frame count** — ~143 k frames at depth 8 against ~269 k at depth 4
+    with no trouble;
+  - **not a fixed duration** — 11 s to 80 s;
+  - **not the `mxa-manager` daemon** — one of the runs was local mode, which the
+    daemon never saw;
+  - **not brown-out** — the INA228 read 3.074 V at the wedge, 74 mV above the
+    3.003 V floor, and the latched undervoltage detector never tripped;
+  - **not our runner** — `mx_bench -f 200000` wedges identically at ~57 s. An
+    earlier comparison that seemed to exonerate depth 8 in `mx_bench` was
+    invalid: `-f 30000` is 16.7 s, below the shortest wedge window then known.
+
+  The one remaining invariant is depth 8 at ~1796 fps, and the **time-to-wedge
+  is monotonically decreasing across the five runs**, which looks like the card
+  degrading rather than a threshold being crossed. Depth 6 (1597 fps) is
+  untested for stability and may well be fine; it needs a soak before it can be
+  a default. `bench_memryx.cpp` carries the same log beside `kAsyncDepth`.
+
+  `describe()` reports it as `· depth N` on the four cards that have a depth.
+  It used to say `· N in flight`; that is gone. **Axelera says
+  `· double buffer` / `· no double buffer`**, which is not an oversight — it is
+  the only card whose control is not a depth, and a `depth 2` in the CSV would
+  claim a knob the runtime does not have.
+
+- **The frame-rate cap was cosmetic on three backends until `c4e07e0`, and
+  `src/bench_pacer.h` is the fix.** The cap only ever throttled runners whose
+  producer *is* the engine's own `run_frame()` loop. Where the producer
+  free-runs — MemryX's SDK threads calling `on_input`, Axelera's `stream_loop`,
+  Qualcomm's per-engine `worker_loop` — the cap limited **counting, not
+  submission**: the reported fps obeyed it while the card stayed at full tilt.
+  The power graph is what proves it, and is the reason this matters at all:
+  ResNet-50 on MemryX capped to 300 fps drew **8.24 W** against 8.18 W
+  uncapped — i.e. a "300 fps" row in the CSV carried the watts of a 1796 fps
+  run, so every fps/W and mJ/frame figure taken at a cap was wrong. Capped now
+  measures **4.04 W**.
+
+  `FramePacer` is one class shared by all three: `set_target(item.target_fps)`
+  in `configure()`, `await()` at the top of the producer, `stop()` **first** in
+  `shutdown()`. `BenchItem` gained `target_fps` and `Bench.cpp` fills it in
+  `start()`. Four things in it are load-bearing:
+  - **An unpaced runner takes no lock at all.** `await()` returns on
+    `period_ <= 0` before touching the mutex, so the uncapped hot path is
+    unchanged — the pacer must never cost throughput when it is not asked for.
+  - **Axelera calls `await(batch_)`**, because one invocation retires four
+    frames. Pacing per call would cap the card at a quarter of the target.
+  - **A producer more than a second behind its schedule re-origins** rather than
+    sprinting to catch up; otherwise a slow model load turns into a burst the
+    moment it finishes.
+  - **`stop()` before the condition variable is signalled**, or a producer
+    parked in `wait_until` holds teardown for a whole period — on MemryX that is
+    an SDK callback thread, which is exactly where a wedge gets manufactured.
+
+  Hailo and DeepX need none of this: their producer is `run_frame()`, so the
+  engine's existing cap already bites at submission. **Qualcomm's pacer is
+  compile-verified only** — it has not been run on the IQ-9075.
 
 ## Measurement choices (don't quietly change these)
 
@@ -1413,7 +1565,18 @@ at zero — so if a driver lets the run settle for N seconds and *then* takes it
 first sample with `dt = 1 s`, that sample reports N× the true rate and poisons
 any average built from it. This produced a bogus "we beat `hailortcli` by 24 %"
 before `hailortcli` was run on the same host and showed parity. The GUI is
-immune because it samples continuously from before the run starts.
+immune because it samples continuously from before the run starts. It was hit
+again 2026-09-13 while measuring the frame-rate cap — DeepX read 1525 fps
+instead of 1284 — so the trap survives being documented; **discard it in the
+driver, don't remember to.**
+
+**Stamp `dt` at the top of the tick, before `poll()`.** The second half of the
+same bug: `Probes::poll()` takes ~190 ms over four FTDI bridges, so a driver
+that polls and *then* measures the interval divides by a `dt` 19% short and
+inflates every rate by 1.19× — 357 fps reported for a 300 fps cap, which read
+exactly like pacer overshoot and nearly got a correct pacer "fixed".
+`MainWindow::on_tick` is right (it stamps `last_time_us_` first); a headless
+driver has to do the same deliberately.
 
 **Vendor tools available on this host** for cross-checking, and worth using —
 they are the ground truth this app is validated against. **Run them from a
@@ -1642,6 +1805,16 @@ Every one of these cost real debugging time. If a symptom here reappears, start
 from the cause rather than re-deriving it.
 
 ### Open
+
+**The MX3 wedges at async depth 8, and only a power cycle clears it.** Five
+reproductions, 11 s to 80 s at ~1796 fps, including one through the vendor's own
+`mx_bench`; ruled out thermal, frame count, duration, the `mxa-manager` daemon
+and rail brown-out. The default is back at 4. Full evidence and the "do not
+re-raise the throughput argument" note are in the depth table under
+**API modes**; `bench_memryx.cpp` carries the same log beside `kAsyncDepth`.
+Recovery is a power cycle — a `mxa-manager` restart is not enough once the
+driver reports `admin timeout … chip 0`, and the app then hits the pre-`main()`
+hang below on its next launch.
 
 **The app hangs before `main()` when the MX3 is left wedged.** Symptom: clicking
 the desktop icon appears to do nothing — no window, no error, and GNOME's
