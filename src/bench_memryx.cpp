@@ -40,6 +40,7 @@
 
 #include "Bench.h"
 #include "bench_input.h"
+#include "bench_pacer.h"
 
 namespace {
 
@@ -133,12 +134,17 @@ public:
 
     void configure(const BenchItem& item) override {
         if (item.depth >= 1) depth_ = static_cast<size_t>(item.depth);
+        // The SDK pulls frames from its own threads whenever a permit is free,
+        // so BenchEngine's sleep cannot throttle this card — it only slows the
+        // counter. Pace in on_input() instead, at the point of submission.
+        pacer_.set_target(item.target_fps);
         apply_mpu_clock(item.freq_mhz);
     }
 
     void load(const std::vector<BenchMember>& members) override {
         for (const auto& m : members) {
             auto st = std::make_unique<Stage>(depth_);
+            st->pacer = &pacer_;
             st->reps = m.reps > 0 ? m.reps : 1;
             st->accl = make_accl<MX::Runtime::MxAccl>(m.path, &access_);
 
@@ -209,6 +215,7 @@ private:
         explicit Stage(size_t depth) : permits(depth) {}
 
         std::unique_ptr<MX::Runtime::MxAccl> accl;
+        FramePacer* pacer = nullptr;   // owned by the runner, shared by stages
         std::vector<std::vector<float>> in_bufs;  // one per input map
         std::string shape;
         int reps = 1;
@@ -221,6 +228,11 @@ private:
 
         // Called by an MxAccl worker when the runtime wants a frame.
         bool on_input(const std::vector<const MX::Types::FeatureMap*>& maps) {
+            // Pace BEFORE taking a permit: this is the only place a frame is
+            // offered to the card, so it is the only place a cap can bite.
+            // await() returns false on stop so a stream being torn down does
+            // not leave this SDK callback thread parked for a whole period.
+            if (pacer && !pacer->await()) return false;
             {
                 std::unique_lock<std::mutex> lk(mu);
                 cv.wait(lk, [this] { return permits > 0 || stopping; });
@@ -291,6 +303,10 @@ private:
     void shutdown() {
         // Release any worker parked in on_input before asking MxAccl to stop,
         // otherwise stop() waits on a thread that is waiting on us.
+        // Wake the pacer FIRST: a producer parked waiting for its next slot
+        // would otherwise not reach the stopping check below until the period
+        // elapsed, and on a slow cap that is a long time to hold an SDK thread.
+        pacer_.stop();
         for (auto& st : stages_) st->begin_stop();
         for (auto& st : stages_) {
             if (st->accl) st->accl->stop();
@@ -301,6 +317,7 @@ private:
     std::vector<std::unique_ptr<Stage>> stages_;
     std::string describe_;
     std::string access_;   // "local" / "shared (...)"
+    FramePacer pacer_;
     bool shape_done_ = false;
     size_t depth_ = 1;
 };

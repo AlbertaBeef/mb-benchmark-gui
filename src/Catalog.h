@@ -154,6 +154,14 @@ struct BenchItem {
     //   Qualcomm engines in flight per NSP
     // On a card offering both API modes, Sync forces it to 1 by definition.
     int depth = 4;
+    // Target frame rate for this run, 0 = unpaced. BenchEngine paces its own
+    // loop from the same number, which is enough for a backend that submits
+    // inside run_frame(). Backends whose producers free-run on their own
+    // threads (MemryX's SDK callbacks, Qualcomm's workers, Axelera under
+    // MB_AXELERA_MULTI_INSTANCE) must pace at the point of submission instead,
+    // or the cap throttles the frame counter while the card runs flat out —
+    // measured, see bench_pacer.h.
+    double target_fps = 0.0;
     // Qualcomm: how many of the SoC's NSPs to claim. QCS9075 has 2, each with
     // its own VTCM, addressed as QNN device ids 0 and 1. Measured ~2.3x on
     // OSNet, so unlike Axelera's cores there is no reason to default below the

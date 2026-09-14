@@ -40,6 +40,7 @@
 
 #include "Bench.h"
 #include "bench_input.h"
+#include "bench_pacer.h"
 
 namespace {
 
@@ -73,6 +74,11 @@ public:
         // libaxruntime has no async API, so there is no mode radio here and
         // depth would otherwise be unreachable.
         depth_ = std::max(1, std::min(2, item.depth));
+        // Only the multi-instance path needs this: the shipped batched path
+        // submits inline in run_frame(), so BenchEngine's own sleep already
+        // gates it. Setting it unconditionally is harmless and keeps the two
+        // paths from drifting.
+        pacer_.set_target(item.target_fps);
         // Experimental: the old behaviour, N independent batch-1 connections.
         // See the note on multi_instance_ for why it is no longer the default.
         multi_instance_ = env_flag("MB_AXELERA_MULTI_INSTANCE");
@@ -393,6 +399,9 @@ private:
 
     void stream_loop(int s) {
         while (!stop_.load(std::memory_order_relaxed)) {
+            // Free-running producer: pace at submission. Advance by batch_,
+            // so a target stays a frame rate on a fixed-batch artifact.
+            if (!pacer_.await(static_cast<unsigned>(batch_))) return;
             try {
                 run_one(s);
             } catch (const std::exception& e) {
@@ -409,6 +418,7 @@ private:
 
     void shutdown() {
         stop_.store(true);
+        pacer_.stop();   // wake a producer parked waiting for its next slot
         cv_.notify_all();
         for (auto& t : threads_) {
             if (t.joinable()) t.join();
@@ -605,6 +615,7 @@ private:
     std::string ddr_note_;      // device-memory footprint per instance
 
     std::vector<std::thread> threads_;
+    FramePacer pacer_;
     std::atomic<bool> stop_{false};
     std::mutex mu_;
     std::condition_variable cv_;

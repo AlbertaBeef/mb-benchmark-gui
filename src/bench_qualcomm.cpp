@@ -57,6 +57,7 @@
 
 #include "Bench.h"
 #include "bench_input.h"
+#include "bench_pacer.h"
 #include "qnnruntime.h"
 
 namespace fs = std::filesystem;
@@ -96,6 +97,7 @@ public:
         // graph-execute, so this card shows no mode radio and depth would
         // otherwise be stuck at 1 — losing the measured ~1.45x it is worth.
         depth_ = std::max(1, item.depth);
+        item_target_fps_ = item.target_fps;
     }
 
     void load(const std::vector<BenchMember>& members) override {
@@ -114,6 +116,10 @@ public:
         }
         nsps_ = std::clamp(nsps_, 1, have);
         depth_ = std::clamp(depth_, 1, 8);
+        // nsps x depth free-running workers: BenchEngine's sleep only slows the
+        // completion counter, so pace at submission instead. One pacer shared
+        // by every worker, so the cap is the total rate and not per thread.
+        pacer_.set_target(item_target_fps_);
 
         // One worker per (NSP, depth slot); each owns a full chain of engines so
         // a multi-stage pipeline runs end to end on one NSP rather than
@@ -261,6 +267,8 @@ private:
 
     void worker_loop(size_t w) {
         while (!stop_.load(std::memory_order_relaxed)) {
+            // Free-running producer: pace at submission.
+            if (!pacer_.await()) return;
             try {
                 run_one(w);
             } catch (const std::exception& e) {
@@ -277,6 +285,7 @@ private:
 
     void shutdown() {
         stop_.store(true);
+        pacer_.stop();   // wake a worker parked waiting for its next slot
         cv_.notify_all();
         for (auto& t : threads_) {
             if (t.joinable()) t.join();
@@ -295,6 +304,8 @@ private:
 
     std::vector<std::unique_ptr<Worker>> workers_;
     std::vector<std::thread> threads_;
+    FramePacer pacer_;
+    double item_target_fps_ = 0.0;
     std::mutex mu_;
     std::condition_variable cv_;
     std::atomic<bool> stop_{false};

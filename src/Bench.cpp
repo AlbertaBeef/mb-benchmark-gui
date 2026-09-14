@@ -126,6 +126,10 @@ void BenchEngine::start(const std::vector<BenchItem>& items, double target_fps) 
     for (const auto& it : items) {
         auto w = std::make_unique<Worker>();
         w->item = it;
+        // The runner sees the target too: a backend whose producer free-runs
+        // has to pace at submission, because this loop's sleep only slows the
+        // counter. See bench_pacer.h.
+        w->item.target_fps = target_fps;
         w->target_fps = target_fps;
         w->mode = it.api_mode;
 
