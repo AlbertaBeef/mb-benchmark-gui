@@ -1,0 +1,61 @@
+MX3 host capture — abbeefepyc-ROMED8-2T — 2026-09-14T15:56:40-04:00
+
+== host ==
+  kernel                 6.17.0-40-generic
+  arch                   x86_64
+  cpu                    AMD EPYC 7B13 64-Core Processor
+  distro                 Ubuntu 24.04.4 LTS
+
+== memryx packages (apt) ==
+  memx-accl                    2.2.5-1
+  memx-accl-plugins            2.2.0-1
+  memx-accl-plugins-d12        2.2.5-1
+  memx-drivers                 2.2.4-1
+  memx-utils-gui               2.2.0
+  memx-utils-gui-cv46          2.2.0-1
+  mxa-manager                  2.2.5-1
+
+== memryx install history (dpkg log) ==
+  2026-07-17 12:35:43 install memx-accl:amd64 <none> 2.2.5-1
+  2026-07-17 12:35:43 install memx-drivers:amd64 <none> 2.2.4-1
+  2026-07-17 12:35:43 install mxa-manager:amd64 <none> 2.2.5-1
+  2026-07-17 12:42:52 install memx-accl-plugins-d12:amd64 <none> 2.2.5-1
+  2026-07-17 12:43:01 install memx-accl-plugins:all <none> 2.2.0-1
+  2026-07-17 12:43:01 install memx-utils-gui:all <none> 2.2.0
+  2026-07-17 12:43:01 install memx-utils-gui-cv46:amd64 <none> 2.2.0-1
+  log covers: 2025-08-05 .. 2026-09-12
+
+== python memryx (venv) ==
+  interpreter            /home/abbeefepyc/mb-edgeai/memryx-env/bin/python
+  memryx                 2.2.2
+  path                   /home/abbeefepyc/mb-edgeai/memryx-env/lib/python3.12/site-packages/memryx
+
+== kernel module ==
+  module version         1.3.13.1
+  loaded                 1
+  memx-drivers/2.2.4, 6.17.0-40-generic, x86_64: installed
+  memx-drivers/2.2.4, 6.8.0-137-generic, x86_64: installed
+  memx-drivers/2.2.4, 6.8.0-138-generic, x86_64: installed
+  memx-drivers/2.2.4, 6.8.0-139-generic, x86_64: installed
+
+== pcie ==
+  bdf                    0000:c1:00.0
+  link speed             8.0 GT/s PCIe
+  link width             x2
+  max width              x2
+  ids                    Processing accelerators [1200]: MemryX MX3 [1fe9:0100]
+  -- other accelerators, for link-width comparison --
+  hailo              0000:01:00.0   8.0 GT/s PCIe x4
+  dx_dma_pcie        0000:47:00.0   8.0 GT/s PCIe x4
+  axl                0000:81:00.0   8.0 GT/s PCIe x4
+
+== thermal (idle unless something is running) ==
+  temp1_input            59 C
+  temp2_input            57 C
+  temp3_input            57 C
+  temp4_input            57 C
+
+== mxa-manager ==
+  active                 active
+  mx_bench               /home/abbeefepyc/mb-edgeai/memryx-env/bin/mx_bench
+  acclBench              /usr/bin/acclBench

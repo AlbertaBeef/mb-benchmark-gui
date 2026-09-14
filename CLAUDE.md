@@ -1286,6 +1286,16 @@ which does have one and will not warn.
     earlier comparison that seemed to exonerate depth 8 in `mx_bench` was
     invalid: `-f 30000` is 16.7 s, below the shortest wedge window then known.
 
+  **This is an open cross-machine investigation — see
+  `docs/memryx-mx3-wedge.md` before re-deriving any of it.** The same workload
+  ran to completion on the author's AMD Strix Halo machine in 2026-05/06
+  (`mx_bench -f 200000` = 111 s at 1796.54 fps, published), reaching **90 °C**,
+  where this host dies at **70 °C**. So it is not thermal and not the harness.
+  Everything on this host post-dates those runs: kernel 6.8.0 -> 6.17.0
+  (2026-07-15) and the whole MemryX stack installed 2026-07-17. That doc holds
+  the evidence, the ranked suspects and the capture script
+  (`tools/mx3-capture-env.sh`, read-only, runs on both machines).
+
   The one remaining invariant is depth 8 at ~1796 fps, and the **time-to-wedge
   is monotonically decreasing across the five runs**, which looks like the card
   degrading rather than a threshold being crossed. Depth 6 (1597 fps) is
