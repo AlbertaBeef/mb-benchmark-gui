@@ -1155,10 +1155,61 @@ which does have one and will not warn.
   DeepX **13**, MemryX **21** — *fixed*, the same count at depth 1 as at
   depth 8. Those SDKs size their own worker pools and depth only changes how
   many frames the app keeps outstanding inside them. Qualcomm is the one
-  backend that creates threads from the control (`nsps × depth`), which is the
-  only place a separate "Threads" parameter would mean anything distinct. So
+  backend that creates threads from *the depth control* (`nsps × depth`). So
   **never describe depth as a thread count** in the UI, in `describe()`, or in
   the CSV — it is one on exactly one card out of five.
+
+  **Two SDKs do expose a settable thread pool, and neither is worth a control.**
+  An earlier version of this paragraph said Qualcomm was "the only place a
+  separate Threads parameter would mean anything". That was wrong — it came
+  from grepping the wrong headers, the same mistake this file already records
+  twice for Hailo clocks:
+  - **MemryX** — `MxAccl::set_num_workers(in, out, model_id)` and
+    `MxAcclBase::set_parallel_fmap_convert(n, model_id)`. Both must be called
+    **after** `connect_stream()` and **before** `start()` (`set_num_workers`
+    documents that as a `@pre`). The default worker count is *the number of
+    connected streams*, and we connect one.
+  - **DeepX** — `NFH_INPUT_WORKER_THREADS` / `NFH_OUTPUT_WORKER_THREADS`, read
+    from the **environment**, not a C++ setter (`dxrt/common.h:192`,
+    `GetNfhInputWorkerThreads()`). Verified by calling the accessors: defaults
+    **2 in / 4 out**, valid **1-64**, anything outside logs
+    `Invalid NFH_INPUT_WORKER_THREADS value, using default=` and is ignored.
+    Being an env var, it must be set on the **main thread before any worker
+    exists** — `setenv` races `getenv` elsewhere, the same constraint that puts
+    `prepare_backend_environment()` where it is.
+
+  **Measured on MemryX 2026-09-14, and the answer is no.** ResNet-50, depth 4,
+  local mode, against a baseline whose run-to-run spread is 0.13%
+  (1151.2 / 1149.7 / 1150.4 fps):
+
+  | setting | threads | fps | vs baseline |
+  | --- | ---: | ---: | ---: |
+  | default (workers = stream count) | 10 | **1171.1** | — |
+  | `set_num_workers(2,2)` | 12 | 1150.3 | -1.8% |
+  | `set_num_workers(4,4)` | 16 | 1132.7 | -3.3% |
+  | `set_parallel_fmap_convert(4)` | 13 | 1094.0 | -6.6% |
+  | `set_parallel_fmap_convert(2)` | 12 | 1070.7 | -8.6% |
+
+  Both setters are real — the thread count moves exactly as asked — and both
+  **cost** throughput. `MB_MEMRYX_WORKERS` / `MB_MEMRYX_FMAP` in
+  `bench_memryx.cpp` keep the experiment reproducible; unset means the SDK
+  default, so the shipped path is unchanged.
+
+  **The reason is the one worth keeping: at depth 4 this app is nowhere near
+  host-bound.** Per-thread CPU during a depth-4 run — busiest thread **19% of
+  one core**, whole process **75% of one core**, on a 128-core host. There is
+  no host-side constraint for extra threads to relieve, so they only add
+  contention; the MemryX header says as much
+  ("may even degrade performance due to increased CPU load"). It also settles
+  the question **without risking a depth-8 wedge**: per-frame host work scales
+  with rate, so at depth 8's 1796 fps the busiest thread lands near 29% of a
+  core — still idle even if that estimate is off by 2x. The 1077 -> 1796 fps
+  gap is **permits, not threads**, and a Threads control would have no
+  demonstrated consumer. The plausible-looking lead — the DFP is float32-in, so
+  every frame packs f32 -> bf16 — is dead: that conversion is the 19%.
+
+  **DeepX's pool is untested**, and testing it needs no code at all, only the
+  two env vars plus the same per-thread CPU check.
 
   **Axelera's depth spin button is gone — the tab carries an Off/On
   double-buffering radio pair instead** (`axelera_dbuf_off_` /

@@ -265,6 +265,14 @@ thread count: measured thread totals are fixed at 6 (Hailo), 13 (DeepX) and 21
 Qualcomm is the exception, where the app really does create `NSPs × depth`
 threads.
 
+MemryX and DeepX *do* let you resize those pools — `set_num_workers` /
+`set_parallel_fmap_convert` and the `NFH_*_WORKER_THREADS` environment
+variables respectively — and there is deliberately **no control for it**.
+Measured on MemryX, raising either costs 2–9% and never gains: during a run the
+busiest host thread uses 19% of one core and the whole process 75% of one core,
+so nothing host-side is a bottleneck for more threads to relieve. What limits
+this card is frames in flight, not CPU.
+
 Axelera has no depth control at all any more, because the runtime has no such
 property: it logs *"overriding to depth=2 for double buffering"*, an explicit
 `depth=4` is rejected with `Unknown property key: depth`, and `double_buffer=4`

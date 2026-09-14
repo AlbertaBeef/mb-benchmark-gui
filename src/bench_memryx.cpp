@@ -96,6 +96,17 @@ void apply_mpu_clock(int freq_mhz) {
 // libmemx / /dev/memx0 path, and the failure is `admin timeout ... chip 0` in
 // the kernel driver.
 //
+// Small integer from the environment; 0 (and any unparsable value) means
+// "not set", i.e. leave the SDK's own default alone.
+static int env_int(const char* name, int def) {
+    const char* v = std::getenv(name);
+    if (!v || !*v) return def;
+    char* end = nullptr;
+    const long n = std::strtol(v, &end, 10);
+    if (end == v || n < 0 || n > 1024) return def;
+    return static_cast<int>(n);
+}
+
 // Local mode needs exclusive access and throws if the manager already holds the
 // device. Falling back to shared beats failing the run, but the fallback must be
 // VISIBLE: it goes into describe(), and so into the CSV's memryx_cfg, because a
@@ -155,10 +166,40 @@ public:
                 [st = st.get()](std::vector<const MX::Types::FeatureMap*> maps,
                                 int) { return st->on_output(maps); },
                 /*stream_id=*/0);
+
+            // Host-side worker pools. Both must be set AFTER connect_stream()
+            // and BEFORE start() -- set_num_workers() documents that as a @pre.
+            //
+            // The default worker count is the number of CONNECTED STREAMS, and
+            // we connect exactly one, so out of the box this card converts every
+            // FeatureMap on a single input thread. The DFP is float32-in
+            // (dfp_inspect: data_type 'float'), so that thread packs f32 -> bf16
+            // for every frame at ~1796 fps. set_parallel_fmap_convert is
+            // documented as being for "high FPS single-stream scenarios", which
+            // is exactly this one.
+            //
+            // Env-gated while it is being measured; unset means the SDK default,
+            // i.e. behaviour is unchanged. Values are reported in describe() so
+            // a run can never claim a pool it did not get.
+            if (const int w = env_int("MB_MEMRYX_WORKERS", 0); w > 0) {
+                st->accl->set_num_workers(w, w);
+                workers_ = w;
+            }
+            if (const int f = env_int("MB_MEMRYX_FMAP", 0); f > 0) {
+                // < 2 disables per the header; don't pretend otherwise.
+                st->accl->set_parallel_fmap_convert(f);
+                fmap_ = f;
+            }
+
             st->accl->start();
 
-            if (describe_.empty())
+            if (describe_.empty()) {
                 describe_ = "depth " + std::to_string(depth_) + " · " + access_;
+                if (workers_ > 0)
+                    describe_ += " · " + std::to_string(workers_) + " workers";
+                if (fmap_ > 0)
+                    describe_ += " · fmap x" + std::to_string(fmap_);
+            }
             stages_.push_back(std::move(st));
         }
         // Geometry is only known once the runtime has handed us a FeatureMap,
@@ -210,6 +251,9 @@ private:
     // evidence, not the throughput argument alone — that argument was already
     // made once, and cost three power cycles.
     static constexpr size_t kAsyncDepth = 4;
+
+    int workers_ = 0;   // 0 = SDK default (= connected stream count)
+    int fmap_ = 0;      // 0 = SDK default (conversion multithreading off)
 
     struct Stage {
         explicit Stage(size_t depth) : permits(depth) {}
