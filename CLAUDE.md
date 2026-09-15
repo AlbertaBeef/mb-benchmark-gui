@@ -1269,11 +1269,14 @@ which does have one and will not warn.
 
   **That default has been reverted to 4, because depth 8 wedges the MX3** — and
   the 40%-of-the-card argument above was already made once and cost several
-  power cycles, so **do not make it again without stability evidence.** Five
-  reproductions, every one at depth 8 / ~1796 fps, wedging after 80 s, 80 s,
-  57 s, 33 s and 11 s. The collapse is abrupt: full rate one second, chip 0
-  unresponsive the next — `admin timeout … chip 0` from the kernel driver, no
-  throttle and no decay first. What it is **not**:
+  power cycles, so **do not make it again without stability evidence.** Seven
+  reproductions across **two hosts and two different cards** — five on the EPYC
+  host (80, 80, 57, 33, 11 s) and two on the Strix Halo machine (64, 79 s) —
+  every one at depth 8 / ~1796 fps. The collapse is abrupt: full rate one
+  second, the chip unresponsive the next, no throttle and no decay first. The
+  kernel says `admin timeout … chip 0` on EPYC and `fops_write: wait timeout
+  1(s), retrying again` on Strix Halo; probably the same event logged by two
+  driver versions, but that is unverified. What it is **not**:
   - **not thermal** — it died at 72 °C, while depth 4 ran to 86 °C and survived;
   - **not a frame count** — ~143 k frames at depth 8 against ~269 k at depth 4
     with no trouble;
@@ -1282,25 +1285,75 @@ which does have one and will not warn.
     daemon never saw;
   - **not brown-out** — the INA228 read 3.074 V at the wedge, 74 mV above the
     3.003 V floor, and the latched undervoltage detector never tripped;
-  - **not our runner** — `mx_bench -f 200000` wedges identically at ~57 s. An
-    earlier comparison that seemed to exonerate depth 8 in `mx_bench` was
-    invalid: `-f 30000` is 16.7 s, below the shortest wedge window then known.
+  - **not our runner — ON EPYC ONLY.** There `mx_bench -f 200000` wedges
+    identically at ~57 s. (An earlier comparison that seemed to exonerate depth
+    8 in `mx_bench` was invalid: `-f 30000` is 16.7 s, below the shortest wedge
+    window then known.) **On Strix Halo the opposite holds**: measured
+    2026-09-14, `mx_bench -f 200000` completed **3/3** at 1796.51 fps, peaking
+    at **99 °C** — hotter than the app's 67–69 °C at the wedge — so there the
+    discriminator *is* our depth-8 path. Never quote "not our runner" as a
+    general result; it is host-specific.
 
   **This is an open cross-machine investigation — see
-  `docs/memryx-mx3-wedge.md` before re-deriving any of it.** The same workload
-  ran to completion on the author's AMD Strix Halo machine in 2026-05/06
-  (`mx_bench -f 200000` = 111 s at 1796.54 fps, published), reaching **90 °C**,
-  where this host dies at **70 °C**. So it is not thermal and not the harness.
-  Everything on this host post-dates those runs: kernel 6.8.0 -> 6.17.0
-  (2026-07-15) and the whole MemryX stack installed 2026-07-17. That doc holds
-  the evidence, the ranked suspects and the capture script
+  `docs/memryx-mx3-wedge.md` before re-deriving any of it.** That doc holds the
+  evidence, the ranked suspects and the capture script
   (`tools/mx3-capture-env.sh`, read-only, runs on both machines).
 
-  The one remaining invariant is depth 8 at ~1796 fps, and the **time-to-wedge
-  is monotonically decreasing across the five runs**, which looks like the card
-  degrading rather than a threshold being crossed. Depth 6 (1597 fps) is
-  untested for stability and may well be fine; it needs a soak before it can be
-  a default. `bench_memryx.cpp` carries the same log beside `kAsyncDepth`.
+  **It was originally written as "EPYC wedges, Strix Halo does not". That
+  premise is false** (corrected 2026-09-14 from the Strix Halo capture): the
+  same workload wedges on both machines. Consequences, so they are not
+  re-derived:
+  - **The SDK version is NOT ruled out — that claim is retracted.** It read
+    "Strix Halo runs the May stack and wedges anyway, so 2.2.4/2.2.5 did not
+    introduce this". The premise is true; the conclusion does not follow.
+    Measured 2026-09-14 after upgrading Strix Halo to EPYC's exact combination
+    (`memx-accl` 2.2.5-1, `memx-drivers` 2.2.4-1, `mxa-manager` 2.2.5-1, module
+    1.3.13.1, firmware unchanged): our depth-8 path survived **309 s against
+    64–79 s on 2.2.2** — 4x longer and 30 °C hotter. It still wedged. The SDK
+    is the only variable that has moved this failure at all.
+  - **Not the PCIe width.** `x2` is `max_link_width` on both hosts, i.e. the
+    module's native width, not a link-training fault.
+  - **Not cooling.** Strix Halo idles 20 °C cooler (37–40 vs 57–59 °C) and
+    still dies, at 67–69 °C — matching the article's card surviving 90 °C.
+  - **Not "the 6.8 → 6.17 jump".** Strix Halo never ran 6.8: it was on
+    **6.17.0-23/-29 while the runs were succeeding** in May, and EPYC is on
+    6.17.0-40 while failing today. Any kernel boundary is inside or above
+    6.17.0.
+  - **Not degradation inferred from run order.** The "monotonically decreasing
+    time-to-wedge" this file used to cite was an artefact of five samples;
+    Strix Halo's two went 64 → 79 s, and pooled over seven there is no trend.
+
+  **The kernel is out too, at least here** — measured 2026-09-14 before
+  spending a reboot on the rollback: on the *current* 7.0.0-31, `mx_bench
+  -f 200000` completed three times at 1796.51 fps (the May figure was 1796.54),
+  climbing to 99 °C. So this host still runs the published workload perfectly,
+  and there is nothing for a 6.17.0-29 rollback to fix. That also kills thermal
+  outright: the surviving case is 30 °C **hotter** than the failing one.
+
+  **What is left here is the difference between our runner and `mx_bench`,
+  and as of 2026-09-14 that difference is the clock.** On SDK 2.2.5 our run
+  held **600 MHz on all four MPUs from t=1 through 99 °C and into the wedge** —
+  no DVFS step, throughput flat to ±0.2% for 309 s, then one partial second and
+  gone. `mx_bench` on the same card, same SDK, same temperature stepped down to
+  ~533 MHz (1596.78 fps, 88.9% of 1796.51) at 100 °C and **completed**. So the
+  card's thermal backoff works on this stack; it just never engages for us.
+  That also retires "it does not throttle, it stops answering" as evidence of a
+  driver regression — it throttles fine for the vendor tool.
+
+  The older Little's-law lead still stands and points the same way: `mx_bench`
+  runs at 3.27 ms / 1796.51 fps = **5.87 frames in flight**, reaching the
+  throughput our depth-8 permit count needs 8 for. Depth 8 is the invariant
+  across all eight wedges.
+
+  Two tests separate the remaining hypotheses, and they imply different fixes:
+  **depth 6** (1597 fps — almost exactly the rate the card throttles itself to)
+  soaked past 400 s, and **depth 8 capped to ~1600 fps** via `FramePacer`. The
+  first asks whether 8 permits is the trigger, the second whether 1796 fps is.
+  Watch `_C0.._C3` in the CSV on both — the clock is the discriminator now, not
+  the frame rate. EPYC is a separate question: its `mx_bench` fails too, and
+  adopting its SDK here did **not** reproduce that, so this machine's answer
+  does not transfer. `bench_memryx.cpp` carries the same log beside
+  `kAsyncDepth`.
 
   `describe()` reports it as `· depth N` on the four cards that have a depth.
   It used to say `· N in flight`; that is gone. **Axelera says
@@ -1867,10 +1920,12 @@ from the cause rather than re-deriving it.
 
 ### Open
 
-**The MX3 wedges at async depth 8, and only a power cycle clears it.** Five
-reproductions, 11 s to 80 s at ~1796 fps, including one through the vendor's own
-`mx_bench`; ruled out thermal, frame count, duration, the `mxa-manager` daemon
-and rail brown-out. The default is back at 4. Full evidence and the "do not
+**The MX3 wedges at async depth 8, and only a power cycle clears it.** Eight
+reproductions, 11 s to **309 s** at ~1796 fps, **on two hosts and two different
+cards**, including one through the vendor's own `mx_bench`; ruled out frame
+count, duration, the `mxa-manager` daemon, rail brown-out, PCIe width and
+cooling. **Not** ruled out: the SDK version — 2.2.5 stretched survival from
+64–79 s to 309 s here without fixing it. The default is back at 4. Full evidence and the "do not
 re-raise the throughput argument" note are in the depth table under
 **API modes**; `bench_memryx.cpp` carries the same log beside `kAsyncDepth`.
 Recovery is a power cycle — a `mxa-manager` restart is not enough once the

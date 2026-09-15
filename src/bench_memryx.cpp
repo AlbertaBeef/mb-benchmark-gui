@@ -230,20 +230,52 @@ private:
     // exactly, and 16 and an unthrottled stream both measure the same 1795.
     // So 8 is the real saturation point. It is also not survivable here.
     //
-    // Three reproductions, ResNet-50, all ending with the same kernel
-    // signature (`memryx: admin timeout device status 1 subop N chip 0`) and a
-    // card that then needs a POWER CYCLE — a daemon restart does not clear it:
+    // Seven reproductions now, ResNet-50, on TWO hosts and two different
+    // cards, every one ending with the chip unresponsive and a card that needs
+    // a POWER CYCLE — a daemon restart does not clear it:
     //
-    //   run 1  shared  wedged ~80 s   T0 83 C
-    //   run 2  shared  wedged ~80 s   T0 74 C
-    //   run 3  local   wedged  33 s   T0 72 C
+    //   EPYC host (memx-accl 2.2.5, kernel 6.17.0-40):
+    //     run 1  shared  wedged ~80 s   T0 83 C
+    //     run 2  shared  wedged ~80 s   T0 74 C
+    //     run 3  local   wedged  33 s   T0 72 C
+    //     + two more at 57 s and 11 s, one of them through `mx_bench` itself
+    //   Strix Halo (memx-accl 2.2.2, kernel 7.0.0-31):
+    //     run 6  local   wedged  64 s   T0 67 C
+    //     run 7  local   wedged  79 s   T0 69 C
+    //   Strix Halo (memx-accl 2.2.5 / drv 2.2.4, same kernel and card):
+    //     run 8  local   wedged 309 s   T0 99 C   <- 4x longer, 30 C hotter
+    //
+    // The SDK is therefore NOT neutral, and an earlier note here saying so was
+    // wrong. 2.2.5 removes whatever killed it early and cool; the card then
+    // runs to its thermal ceiling and dies there anyway.
+    //
+    // Sharpest lead: on run 8 all four MPUs held an effective 600 MHz from the
+    // first second through 99 C and into the wedge -- no DVFS step, throughput
+    // flat to +/-0.2% for 309 s. `mx_bench` on the SAME card, SDK and
+    // temperature stepped to ~533 MHz (1596.78 fps) at 100 C and COMPLETED
+    // 200k frames. The card's thermal backoff works; it never engages for us.
+    //
+    // Kernel signature differs by driver version and is probably the same
+    // event: `admin timeout device status 1 subop N chip 0` on EPYC (module
+    // 1.3.13.1), `fops_write: wait timeout 1(s), retrying again` on Strix Halo
+    // (module 1.3.13).
     //
     // What it is NOT: not thermal (died at 72 C, while depth 4 ran to 86 C and
     // survived 244 s); not a fixed duration (33 s vs 80 s); not a frame count
     // (~143 k at depth 8, against ~269 k at depth 4 with no trouble); and not
     // the mxa-manager daemon (run 3 was local mode, which the daemon never saw).
+    // Nor is it the SDK version, the PCIe width or cooling: the Strix Halo
+    // machine runs the unchanged 2.2.2/2.2.1 stack that produced MemryX's own
+    // published 200 k-frame run, at x2 like EPYC, idling 20 C cooler — and
+    // wedges regardless. Nor, on that machine, is it the kernel: measured
+    // 2026-09-14, `mx_bench -f 200000` completed 3/3 there at 1796.51 fps and
+    // 99 C on the very kernel our app wedges under at 67 C. mx_bench holds
+    // ~5.9 frames in flight (1796.51 fps x 3.27 ms) to reach the throughput
+    // this depth-8 permit count needs 8 for — which is the current lead, and
+    // why depth 6 wants a soak. See docs/memryx-mx3-wedge.md.
     // The only invariant is depth 8 at ~1796 fps, and the collapse is abrupt —
-    // full rate one second, chip 0 unresponsive the next, no throttle or decay.
+    // full rate one second, the chip unresponsive the next, no throttle or
+    // decay.
     //
     // Depth 6 (1597 fps) is untested for stability and may well be fine; it
     // needs a soak before it can be a default. Until then this stays at 4,
