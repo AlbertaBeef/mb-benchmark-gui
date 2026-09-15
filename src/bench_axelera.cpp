@@ -82,6 +82,13 @@ public:
         // Experimental: the old behaviour, N independent batch-1 connections.
         // See the note on multi_instance_ for why it is no longer the default.
         multi_instance_ = env_flag("MB_AXELERA_MULTI_INSTANCE");
+        // Concurrent submission into the single batched instance. CLAMPED TO
+        // 1 -- i.e. the environment variable cannot currently turn it on, and
+        // raising this ceiling is a deliberate source edit, not a runtime
+        // choice. It is worth a real gain and is still not safe; the note at
+        // the clone loop has the measurements. Re-enable by raising the 1
+        // below, and read that note first.
+        submit_threads_ = std::clamp(env_int("MB_AXELERA_SUBMIT_THREADS", 1), 1, 1);
     }
 
     void load(const std::vector<BenchMember>& members) override {
@@ -299,6 +306,92 @@ public:
                 }
                 st->insts.push_back(std::move(inst));
             }
+
+            // ---- concurrent submission into ONE instance -------------------
+            // MEASURED 2026-09-14, libaxruntime 1.7.0: this does not work, and
+            // the knob is kept only so a future runtime can be re-checked in
+            // one environment variable rather than by rebuilding the argument.
+            //
+            // The reasoning that led here is still right. Little's law says
+            // frames_in_flight = throughput x latency; the batch-4 artifact
+            // blocks 2.50 ms and retires 4 frames, pinning one submitting
+            // thread at exactly 4 frames resident (1598.5 fps) where the vendor
+            // pipeline holds 21. A second INSTANCE cannot buy that -- the
+            // artifact is 28.34 MB of the part's ~32.47 MB of L2 and a second
+            // axr_load_model_instance fails outright -- but extra *submitting
+            // threads* need no L2, only their own buffers, which Inst has.
+            //
+            // It half-works, and that is worse than either extreme. Measured:
+            //
+            //   1 thread   1598.0 / 1598.7 / 1601.3 / 1621.0 / 1625.6  (tight)
+            //   2 threads  BIMODAL: 1565 .. 1643 most of the time,
+            //                   or  2037.3 / 2046.3 / 2051.7 / 2058.3
+            //   4 threads  run fails:
+            //     [ERROR][axeCommandQueueExecuteCommandLists]: All command
+            //       lists must be closed before execution. Close command
+            //       list 0 first.
+            //     AXR_ERROR_RUNTIME_ERROR
+            //
+            // The fast mode is REAL WORK, not phantom completions -- checked
+            // against the INA228 because a shared command list could plausibly
+            // return success without running, and the frame counter cannot tell
+            // on its own. Idle is 2.34 W; subtracting it, fps per dynamic watt
+            // is 696 (1 thread), 720 (2 fast), 683 and 693 (2 slow) -- constant
+            // within 5%. Fabricated frames cost no silicon, so the fast run's
+            // efficiency would be ~25% high. It is not. 2037 fps is also the
+            // vendor's own published 2054, which suggests Voyager submits
+            // concurrently too, with synchronisation we do not have.
+            //
+            // But it is a RACE. axr_run_model_instance() is not safe to call
+            // concurrently on one instance: the instance owns a single Level
+            // Zero command list, and a second thread entering before the first
+            // closes it corrupts the queue. The fast mode appears maybe a third
+            // of the time and vanishes entirely under extra system load
+            // (running an INA228 sampler alongside was enough to suppress it).
+            // WHY two threads sometimes interleave cleanly is UNKNOWN. The
+            // obvious theory -- double buffering supplying a second command
+            // list, since the runtime's own log calls double_buffer "depth=2"
+            // -- was tested and is WRONG: five interleaved on/off pairs, and
+            // the one fast run (2051.7 fps) came with double buffering OFF.
+            // Don't re-run that experiment; it is settled.
+            //
+            //   double buffer ON   1586.3 1600.3 1736.0 1567.3 1568.3
+            //   double buffer OFF  1566.0 1565.0 1598.3 1598.7 2051.7
+            //
+            // And the reason this is clamped to 1 rather than 2: EVERY 2-thread
+            // run logs `Failed to wait for MSI` at teardown -- 10 of 10, both
+            // db settings -- while 1 thread logs none. That message is this
+            // card's documented precursor to a PCIe link drop and a power
+            // cycle (see Known issues). No run has actually dropped the link
+            // yet, but shipping a path that trips the precursor every time to
+            // chase a gain we cannot explain or reproduce on demand is a bad
+            // trade.
+            //
+            // So ~1600 fps is NOT the ceiling -- the card demonstrably does
+            // ~2050, which is the vendor's own published 2054 -- but
+            // single-threaded submission is the only SAFE way we have to
+            // drive it today.
+            if (submit_threads_ > 1 && instances_ == 1 && !st->insts.empty()) {
+                const Inst& proto = *st->insts.front();
+                for (int t = 1; t < submit_threads_; ++t) {
+                    auto clone = std::make_unique<Inst>();
+                    clone->instance = proto.instance;   // borrowed
+                    clone->owns_instance = false;
+                    clone->in_bufs = proto.in_bufs;     // deep copy: distinct
+                    clone->out_bufs = proto.out_bufs;   // memory per thread
+                    clone->in_args.resize(clone->in_bufs.size());
+                    for (size_t i = 0; i < clone->in_bufs.size(); ++i) {
+                        clone->in_args[i] = axrArgument{clone->in_bufs[i].data(), 0, 0,
+                                                        clone->in_bufs[i].size()};
+                    }
+                    clone->out_args.resize(clone->out_bufs.size());
+                    for (size_t i = 0; i < clone->out_bufs.size(); ++i) {
+                        clone->out_args[i] = axrArgument{clone->out_bufs[i].data(), 0, 0,
+                                                         clone->out_bufs[i].size()};
+                    }
+                    st->insts.push_back(std::move(clone));
+                }
+            }
         }
 
         // ---- status line ---------------------------------------------------
@@ -321,6 +414,13 @@ public:
                         std::to_string(instances_) +
                         (instances_ == 1 ? " instance" : " instances");
             describe_ += depth_ > 1 ? " · double buffer" : " · no double buffer";
+            // Never let a run claim a configuration it did not get: a second
+            // submitting thread changes nothing about throughput but it IS a
+            // different run, and axelera_cfg is where that has to show.
+            if (submit_threads_ > 1) {
+                describe_ += " · " + std::to_string(submit_threads_) +
+                             " submit threads";
+            }
             if (!ddr_note_.empty()) describe_ += " · " + ddr_note_;
             if (!artifact_note_.empty()) describe_ += " · " + artifact_note_;
             if (!sizing_note_.empty()) describe_ += " · " + sizing_note_;
@@ -329,15 +429,16 @@ public:
         // >1 instance: free-running threads, one per instance. The batched path
         // is always a single instance and stays inline — no threads, no
         // synchronisation.
-        if (instances_ > 1) {
-            for (int s = 0; s < instances_; ++s)
+        streams_ = instances_ > 1 ? instances_ : submit_threads_;
+        if (streams_ > 1) {
+            for (int s = 0; s < streams_; ++s)
                 threads_.emplace_back([this, s] { stream_loop(s); });
         }
     }
 
     // Returns the number of frames retired: `batch_` per successful invocation.
     unsigned run_frame() override {
-        if (instances_ == 1) {
+        if (streams_ <= 1) {
             run_one(0);
             return static_cast<unsigned>(batch_);
         }
@@ -360,6 +461,9 @@ private:
         // fall back to its own — safe by then, since the firmware is loaded.
         axrConnection* conn = nullptr;
         axrModelInstance* instance = nullptr;
+        // False on a submit-thread clone, which BORROWS insts[0]'s instance.
+        // Teardown destroys the instance once, from its owner only.
+        bool owns_instance = true;
         std::vector<std::vector<std::uint8_t>> in_bufs, out_bufs;
         std::vector<axrArgument> in_args, out_args;
     };
@@ -428,7 +532,8 @@ private:
         // still inside axr_run_model_instance would otherwise use freed state.
         for (auto& st : stages_) {
             for (auto& inst : st->insts) {
-                if (inst->instance) axr_destroy(AXR_OBJECT(inst->instance));
+                if (inst->instance && inst->owns_instance)
+                    axr_destroy(AXR_OBJECT(inst->instance));
                 // Only a fallback stream owns a connection; the usual case is
                 // null and the shared Stage::conn is released just below.
                 if (inst->conn) axr_destroy(AXR_OBJECT(inst->conn));
@@ -515,6 +620,16 @@ private:
             fp.ok = true;
         }
         return fp;
+    }
+
+    // Plain count from the environment -- NOT env_bytes(), which scales by MB.
+    static int env_int(const char* name, int fallback) {
+        const char* e = std::getenv(name);
+        if (!e || !*e) return fallback;
+        char* end = nullptr;
+        const long v = std::strtol(e, &end, 10);
+        if (end == e || v <= 0 || v > 1024) return fallback;
+        return static_cast<int>(v);
     }
 
     static size_t env_bytes(const char* name, size_t fallback_mb) {
@@ -608,6 +723,10 @@ private:
     int depth_ = 2;                  // double_buffer on by default
     int cores_ = 4;
     int instances_ = 1;
+    // Host threads submitting into the ONE instance. 1 = today's behaviour.
+    // $MB_AXELERA_SUBMIT_THREADS while this is being measured.
+    int submit_threads_ = 1;
+    int streams_ = 1;   // threads actually spawned: instances_ or submit_threads_
     int batch_ = 1;            // frames retired per successful invocation
     bool multi_instance_ = false;  // $MB_AXELERA_MULTI_INSTANCE, experimental
     std::string artifact_note_;    // why the requested -Ncore build was not used

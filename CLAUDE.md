@@ -917,8 +917,13 @@ which does have one and will not warn.
   oneAPI Level Zero loader — headers, pkg-config and CMake are all shipped, but it
   is model-agnostic, so driving inference through it means reimplementing
   `axr_load_model` against internal types. "Async" there sets the runtime's own
-  `double_buffer=1` property, worth ~7-18%. **Don't "improve" this by fanning out
-  host threads** — that would fabricate a number the API does not offer.
+  `double_buffer=1` property, worth ~7-18%. **Don't label host-thread fan-out
+  as "Async"** — the API has no async mode and the run column would claim one.
+  That is a *naming* rule. It was once mis-applied here as a ban on ever using
+  threads for throughput, and it is not one: Qualcomm does exactly that fan-out
+  on a sync-only API and this file calls it honest. On Axelera it is a
+  thread-safety problem, not a naming one — see **concurrent submission** below,
+  where it is measured.
 - **Qualcomm's "none exists" could not be re-verified here.** It was checked on
   the aarch64 IQ-9075; the QNN headers are absent on x86_64, where the backend is
   not even compiled. The shim contains no `executeAsync` reference anywhere,
@@ -1076,6 +1081,88 @@ which does have one and will not warn.
   so stop looking for a property we are failing to set. (There are 40 `axr_*`
   symbols and one undocumented export, `axr_run_graph_model_instance`; it is not
   an async entry point.)
+
+  **Concurrent submission into one instance: it works intermittently, and
+  ~1600 fps is NOT the ceiling.** Little's law points at host threads — more
+  callers, more frames resident — and extra submitting threads need **no L2 at
+  all**, unlike a second instance. Measured on libaxruntime 1.7.0 via
+  `$MB_AXELERA_SUBMIT_THREADS` (`bench_axelera.cpp`), ResNet-50 batch-4:
+
+  | submit threads | fps |
+  | --- | --- |
+  | 1 | 1598.0, 1598.7, 1601.3, 1621.0, 1625.6 — tight |
+  | 2 | **bimodal**: 1565–1643 most of the time — or **2037.3 / 2046.3 / 2051.7 / 2058.3** |
+  | 4 | **run fails** |
+
+  ```
+  [ERROR][axeCommandQueueExecuteCommandLists]: All command lists must be
+          closed before execution. Close command list 0 first.
+          AXR_ERROR_RUNTIME_ERROR
+  ```
+
+  **The fast mode is real work, confirmed against the INA228** — this was
+  checked precisely because a shared command list could plausibly return success
+  without running, and the frame counter alone cannot tell. Idle is 2.34 W;
+  subtract it and efficiency is constant across every run:
+
+  | threads | fps | rail | dynamic | fps per dynamic W |
+  | --- | ---: | ---: | ---: | ---: |
+  | 1 | 1621.0 | 4.67 W | 2.33 W | 696 |
+  | 2 (fast) | **2037.3** | **5.17 W** | **2.83 W** | **720** |
+  | 2 (slow) | 1599.3 | 4.68 W | 2.34 W | 683 |
+  | 2 (slow) | 1643.0 | 4.71 W | 2.37 W | 693 |
+
+  683-720 across the board, within 5%. Fabricated completions cost no silicon,
+  so the fast run's fps/W would be ~25% high; it is not. The card really did
+  retire 2037 fps and drew 21% more dynamic power to do it. **That lands on the
+  vendor's own 2054 fps**, which suggests the Voyager pipeline submits
+  concurrently too, with whatever synchronisation makes it safe.
+
+  **But it is a race, and the knob is clamped to 1 — off.** Two threads win
+  maybe a third of the time, and the fast mode **disappears under any
+  observation**: running the INA228 sampler alongside suppressed it, and so did
+  a `npu-status.sh` call between runs.
+
+  **Why two threads sometimes interleave cleanly is unknown, and the obvious
+  theory is disproved.** `double_buffer` supplying a second command list was the
+  candidate — the runtime's own log calls it "depth=2" — so it was tested with
+  five interleaved on/off pairs. The single fast run came with double buffering
+  **OFF**. Don't re-run this; it is settled:
+
+  | | 2 submit threads, 5 runs each |
+  | --- | --- |
+  | double buffer ON | 1586.3 · 1600.3 · 1736.0 · 1567.3 · 1568.3 |
+  | double buffer OFF | 1566.0 · 1565.0 · 1598.3 · 1598.7 · **2051.7** |
+
+  **What decided the clamp is not throughput, it is `Failed to wait for MSI`.**
+  Every 2-thread run logs one at teardown — 10 of 10, both `double_buffer`
+  settings — and a 1-thread run logs **none**:
+
+  | | fps | MSI timeouts |
+  | --- | ---: | :---: |
+  | 1 submit thread | 1599.3, 1600.0 | **0** |
+  | 2 submit threads | all 10 runs | **1, every time** |
+
+  That message is this card's documented precursor to a PCIe link drop and a
+  power-cycle recovery (see **Known issues**). No run has actually dropped the
+  link — 0 DMA errors throughout, card healthy after every sweep — but shipping
+  a path that trips the precursor on every single run, to chase a gain that
+  cannot be explained or reproduced on demand, is a bad trade. `4` threads fail
+  outright with the command-list error above, which is the safe failure.
+
+  So `MB_AXELERA_SUBMIT_THREADS` is clamped to 1 and cannot turn this on;
+  raising it is a deliberate source edit next to the evidence.
+  `describe()` still reports `· N submit threads` if it is ever raised, so a run
+  cannot claim a configuration it did not get.
+
+  **The finding that matters: ~1600 fps is not the card's ceiling.** It does
+  ~2050 — the vendor's own published figure is 2054 — and single-threaded
+  submission is simply the only *safe* way we currently have to drive it.
+
+  For context on why more *instances* is not the answer: they fit only by
+  dropping to smaller builds, and the batched builds are superlinear —
+  1 x batch-4 (28.3 MB L2) measures 1602 fps against 4 x batch-1 (30.4 MB)
+  at 695.
 
   The cold-card race is handled by *ordering*, not by avoiding connections: the
   **first** connect is made alone and allowed to complete (it is the one that
