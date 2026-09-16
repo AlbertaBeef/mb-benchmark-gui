@@ -1,5 +1,12 @@
 #include "ControlPanel.h"
 
+// See bench_memryx.cpp: -DMB_MEMRYX_CLOCK_SET=0 removes the Core frequency
+// combo from the MemryX tab and makes memryx_freq_mhz() always report
+// "leave the clock alone".
+#ifndef MB_MEMRYX_CLOCK_SET
+#define MB_MEMRYX_CLOCK_SET 1
+#endif
+
 #include <gtkmm/adjustment.h>
 #include <gtkmm/frame.h>
 #include <gtkmm/grid.h>
@@ -418,7 +425,7 @@ ControlPanel::ControlPanel(const Catalog& catalog)
             }
 
             // Per-card controls, beyond the API and Depth rows every tab has.
-            if (a == Accel::MemryX) {
+            if (a == Accel::MemryX && MB_MEMRYX_CLOCK_SET) {
                 auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
                 auto* lbl = Gtk::make_managed<Gtk::Label>("Core frequency");
                 lbl->set_xalign(0.0);
@@ -803,8 +810,12 @@ void ControlPanel::refresh_depth_sensitivity() {
 }
 
 int ControlPanel::memryx_freq_mhz() const {
+#if !MB_MEMRYX_CLOCK_SET
+    return 0;   // control compiled out: always "leave the clock alone"
+#else
     const std::string s = memryx_freq_.get_active_text();
     try { return std::stoi(s); } catch (...) { return 0; }  // 0 = leave alone
+#endif
 }
 
 int ControlPanel::qualcomm_nsps() const {

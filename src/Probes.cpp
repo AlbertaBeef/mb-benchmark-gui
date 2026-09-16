@@ -1,5 +1,11 @@
 #include "Probes.h"
 
+// Compile-time removal of the MemryX Python telemetry helper. See the note at
+// start_power_helper()'s call site.
+#ifndef MB_MEMRYX_TELEMETRY
+#define MB_MEMRYX_TELEMETRY 1
+#endif
+
 #include <fcntl.h>
 #include <glob.h>
 #include <signal.h>
@@ -340,7 +346,17 @@ public:
         // Python import is ~4 s, so a per-tick shell-out is impossible; instead
         // run a persistent helper that connects once to the mxa-manager daemon
         // (multi-process-safe) and streams power once per second.
-        if (start_power_helper()) {
+        // -DMB_MEMRYX_TELEMETRY=0 removes this helper entirely: no second mxa
+        // client on the card, no get_power()/get_frequency_effective() I2C
+        // traffic during a run. That is the configuration `mx_bench` runs in,
+        // and it is the ONLY remaining difference between our depth-8 path and
+        // the vendor tool's after the clock-write hypothesis was disproved
+        // (2026-09-15, wedged at t=14 and t=10 with the setter already inert).
+        //
+        // Cost while it is off: MemryX loses its POW reading, so fps/W and
+        // mJ/frame are NaN for that card, and the Frequency graph is empty.
+        // Deliberate -- "never estimate watts" still applies.
+        if (MB_MEMRYX_TELEMETRY && start_power_helper()) {
             power_metrics_.push_back({"MemryX POW", "W"});
             power_values_.assign(1, kNaN);
             // Same helper, same stream — the clocks ride along for free. One

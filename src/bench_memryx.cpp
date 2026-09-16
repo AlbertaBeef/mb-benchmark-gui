@@ -62,7 +62,25 @@ std::string find_memryx_python() {
 // than an API call. ~4 s of Python startup, once per run, alongside model
 // loading; never in the timed loop. Shared by both runners: the clock is a
 // property of the card, nothing to do with which API drives it.
+// Compile-time removal of the MPU clock WRITE. Set -DMB_MEMRYX_CLOCK_SET=0
+// to take the set_mpu_frequency() path out of the binary entirely.
+//
+// Note what this does NOT test. Measured twice on 2026-09-15, depth 8 with
+// freq_mhz = 0 -- i.e. this function already returning before any Python call
+// -- the card still wedged, at t=14 and t=10. So removing the setter alone
+// reproduces a test already run. The half that was still live in both of those
+// runs is the READER: Probes' MemryX helper polling get_power() and
+// get_frequency_effective() over I2C once a second as a SECOND mxa client,
+// which mx_bench does not have. That is MB_MEMRYX_TELEMETRY in Probes.cpp.
+#ifndef MB_MEMRYX_CLOCK_SET
+#define MB_MEMRYX_CLOCK_SET 1
+#endif
+
 void apply_mpu_clock(int freq_mhz) {
+#if !MB_MEMRYX_CLOCK_SET
+    (void)freq_mhz;   // compiled out
+    return;
+#else
     if (freq_mhz <= 0) return;
     const std::string py = find_memryx_python();
     if (py.empty()) return;
@@ -77,6 +95,7 @@ void apply_mpu_clock(int freq_mhz) {
     if (std::system(cmd.c_str()) != 0) { /* best effort — the clock stays where
         it was, and the Frequency graph shows that plainly rather than us
         pretending it changed */ }
+#endif
 }
 
 // Device access mode: local (direct) vs shared (through the mxa-manager daemon).
