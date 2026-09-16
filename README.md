@@ -38,7 +38,7 @@ Twelve stacked graphs, each a scrolling 10-minute window:
 | **Accelerator Current (A)** | Rail current per shunt. Paired with the voltage above it. |
 | **Accelerator Power (W)** | Live draw per card — on-die sensors and external INA228 shunts. |
 | **Accumulated Energy (J)** | Joules since launch per rail, from the INA228 hardware accumulators — integrated at the ADC rate, not sampled. |
-| **Temperature (°C)** | Per-sensor die temperatures. |
+| **Temperature (°C)** | Per-sensor die temperatures. The legend's per-device summary is the **max** across that card's sensors, not the mean — the hottest die is what throttles, and averaging four buries one running well above its neighbours. |
 | **Frequency (MHz)** | Core clock per NPU. Sits right below temperature because a clock sagging while a die heats *is* thermal throttling. Collapsed by default. |
 | **Frame Rate (fps)** | Achieved rate per card. An idle card sits at 0. |
 | **Efficiency (fps/W)** | *Instantaneous*: this second's frame rate divided by this second's watts. |

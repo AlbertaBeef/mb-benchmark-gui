@@ -168,7 +168,7 @@ private:
 
     GraphArea* temp_graph_ = nullptr;
     std::vector<Gtk::Label*> temp_values_;
-    std::vector<AggEntry> temp_avg_labels_;
+    std::vector<AggEntry> temp_agg_labels_;
     std::vector<LegendRow> temp_rows_;
 
     GraphArea* freq_graph_ = nullptr;

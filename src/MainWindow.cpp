@@ -411,7 +411,7 @@ MainWindow::MainWindow(AutomationPlan plan)
                              colors_for(probes_.temp_metrics()),
                              /*fixed_temp_axis=*/true, fmt_temp, temp_graph_,
                              temp_values_, "No temperature sensors detected.",
-                             &temp_avg_labels_, &temp_rows_)));
+                             &temp_agg_labels_, &temp_rows_)));
 
     // Clock, right after temperature because the two are read together: a
     // frequency that sags while a die heats is thermal throttling, and seeing
@@ -1143,14 +1143,22 @@ bool MainWindow::on_tick() {
         temp_graph_->push(tv);
         for (size_t i = 0; i < temp_values_.size() && i < tv.size(); ++i)
             temp_values_[i]->set_text(fmt_temp(tv[i]));
-        for (const auto& a : temp_avg_labels_) {
-            double sum = 0.0;
+        for (const auto& a : temp_agg_labels_) {
+            // MAX, not mean: a card's sensors sit on different dies and the
+            // hottest one is what throttles or trips. Averaging four sensors
+            // buries a single die running 20 C above its neighbours, which is
+            // exactly the case the row exists to surface. Power's row already
+            // uses max for the same reason.
+            double hottest = 0.0;
             int cnt = 0;
             for (int k = a.start;
                  k < a.start + a.count && k < static_cast<int>(tv.size()); ++k) {
-                if (!std::isnan(tv[k])) { sum += tv[k]; ++cnt; }
+                if (!std::isnan(tv[k])) {
+                    if (!cnt || tv[k] > hottest) hottest = tv[k];
+                    ++cnt;
+                }
             }
-            a.label->set_text(cnt ? "avg " + fmt_temp(sum / cnt) : "avg —");
+            a.label->set_text(cnt ? "max " + fmt_temp(hottest) : "max —");
         }
     }
 

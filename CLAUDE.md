@@ -23,7 +23,7 @@ matters when porting:
   change; a `cp` in either direction is the correct way to port. Everything
   added here (`RangeMode`, per-series visibility, the adaptive time-label step)
   went into both, even where only one app exposes a control for it.
-- **`Probes.{h,cpp}` has diverged** — 1724 lines here against 1502 there. Four
+- **`Probes.{h,cpp}` has diverged** — 1740 lines here against 1619 there. Four
   deliberate edits, none of them portable as a whole file: the INA228
   config-path search (see **Config**); `Probes::power_for_device()`, which needs
   `Catalog.h` and **cannot compile** in the sibling; the whole frequency family;
@@ -587,6 +587,17 @@ Three layers, cleanly separated. Keep it that way.
   *and* binds it to the property signal. Both halves matter: seeding alone was
   the original bug (a section that started collapsed could never grow), and
   binding alone would start a collapsed section claiming space it isn't using.
+- **Per-device legend aggregates: `max` for temperature and power, `avg` for
+  frequency.** Temperature averaged its sensors until 2026-09-15 and now takes
+  the max, for the reason power always did: a card's sensors sit on different
+  dies and the **hottest** one is what throttles or trips, so a mean buries a
+  single die running 20 °C above its neighbours — exactly the case the row
+  exists to surface. Frequency keeps the mean deliberately: throttling moves a
+  card's chips together, so the average reads as "the card's clock". NaN
+  readings are skipped in all three, and a device with no valid reading shows
+  `max —` rather than a fabricated 0. **Both apps must agree** — the same
+  change is in `mb-powermon-gui`, and the member is `temp_agg_labels_` (renamed
+  from `temp_avg_labels_`, which said "avg" while displaying max).
 - **The three benchmark legends are one row of the cards this build has**
   (`col % kAccelCount, col / kAccelCount`, where `col` counts *visible* cards so
   a hidden one leaves no gap — see `accel_present()` above) and carry no
@@ -823,13 +834,30 @@ That is the only real wattage available on the IQ-9075, and it is genuinely
 useful — but it is not per-accelerator power, and the probe is named so that it
 can never become a card's `power_for_device()` value.
 
-**`Probes.{h,cpp}` is shared with `mb-powermon-gui`** — the frequency family is
-still **not** ported there (the sibling has no `freq_metrics_` at all), and
-neither is `PowerZProbe`'s system V/I/W triplet. Everything INA228 **has** been:
-energy/charge and the die-temperature fold (2026-09-03), then `VBUS`, `CURRENT`
-with the per-rail `invert` flag, the latched undervoltage check and
-`plausible_power()` (2026-09-07 … 09-12). Current line counts are 1724 here
-against 1502 there.
+**`Probes.{h,cpp}` is shared with `mb-powermon-gui`** and the two are now close.
+The **frequency family was ported there 2026-09-15** — all four clock sources,
+plus the Frequency graph — so the sibling has `freq_metrics_` and a
+`Frequency (MHz)` section of its own. `PowerZProbe`'s system V/I/W triplet is
+still **not** ported. Everything INA228 **has** been: energy/charge and the
+die-temperature fold (2026-09-03), then `VBUS`, `CURRENT` with the per-rail
+`invert` flag, the latched undervoltage check and `plausible_power()`
+(2026-09-07 … 09-12). Current line counts are **1740 here against 1619 there**.
+
+**Three divergences bit during the frequency port, and each would have silently
+no-op'd a `str.replace`** — they are the concrete form of "port hunk by hunk":
+- the sibling's `Probes` class declares members **combined**
+  (`std::vector<MetricInfo> temp_metrics_, power_metrics_;`) where this one has
+  them on separate lines;
+- its DeepX probe returned `std::vector<double>` from `read_temps()`, where this
+  one parses temps *and* clocks from the same `dxrt-cli -s` line via a `Reading`
+  struct — a rewrite, not a copy;
+- its MemryX drain used `std::stod(line)`, which silently takes the watts and
+  drops every clock now on that line. It needs the `istringstream` parse.
+
+Frequency is also the one family that does **not** go through `emit()`/`fill()`:
+it uses plain discovery order, because a clock always belongs to the card
+reporting it and there is nothing to fold. That sidesteps the documented
+signature difference (the sibling's helpers take no `order` argument).
 
 **`ina228.conf` is not shared and the search orders differ.** Ours is
 `$MB_INA228_CONFIG` → repo `config/` → `~/.config/mb-benchmark-gui/`; the
