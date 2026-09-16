@@ -1445,30 +1445,40 @@ which does have one and will not warn.
   and there is nothing for a 6.17.0-29 rollback to fix. That also kills thermal
   outright: the surviving case is 30 °C **hotter** than the failing one.
 
-  **What is left here is the difference between our runner and `mx_bench`,
-  and as of 2026-09-14 that difference is the clock.** On SDK 2.2.5 our run
-  held **600 MHz on all four MPUs from t=1 through 99 °C and into the wedge** —
-  no DVFS step, throughput flat to ±0.2% for 309 s, then one partial second and
-  gone. `mx_bench` on the same card, same SDK, same temperature stepped down to
-  ~533 MHz (1596.78 fps, 88.9% of 1796.51) at 100 °C and **completed**. So the
-  card's thermal backoff works on this stack; it just never engages for us.
-  That also retires "it does not throttle, it stops answering" as evidence of a
-  driver regression — it throttles fine for the vendor tool.
+  **The clock lead is dead, and so is the degradation reading — superseded
+  2026-09-15.** On that date `mb-benchmark-gui` ran **all four cards at depth 8**
+  on this EPYC host, after the MX3 had been left alone for a while, and the
+  MemryX **completed**: 1812.5 fps peak, 358 s, no wedge. A depth-4 session ran
+  464 s the same evening. It also throttled exactly as the vendor documents —
+  600 → **300 MHz** at ~97 °C (per-chip, binary, 50 %), fps 1800 → 1020, power
+  12.07 → 7.74 W — and then ran another 200 s at 100 °C.
 
-  The older Little's-law lead still stands and points the same way: `mx_bench`
-  runs at 3.27 ms / 1796.51 fps = **5.87 frames in flight**, reaching the
-  throughput our depth-8 permit count needs 8 for. Depth 8 is the invariant
-  across all eight wedges.
+  That kills two arguments this file used to make:
+  - **Not thermal, and the clock was never the discriminator.** Every wedge
+    happened at **55–77 °C**, i.e. 20–40 °C *below* the trip point. "We hold
+    600 MHz into the wedge" is not suppressed backoff; 600 MHz is simply correct
+    at 60 °C. There was nothing to suppress.
+  - **Not a degrading module.** The same card that had wedged ten times then ran
+    depth 8 to thermal limits. The "monotonically worse" trend (80 → 11 s, then
+    14/10/15 s, `mx_bench` failing at `-f 10000`, depth 4 dying at 160 s) came
+    entirely from runs taken minutes after a previous wedge.
 
-  Two tests separate the remaining hypotheses, and they imply different fixes:
-  **depth 6** (1597 fps — almost exactly the rate the card throttles itself to)
-  soaked past 400 s, and **depth 8 capped to ~1600 fps** via `FramePacer`. The
-  first asks whether 8 permits is the trigger, the second whether 1796 fps is.
-  Watch `_C0.._C3` in the CSV on both — the clock is the discriminator now, not
-  the frame rate. EPYC is a separate question: its `mx_bench` fails too, and
-  adopting its SDK here did **not** reproduce that, so this machine's answer
-  does not transfer. `bench_memryx.cpp` carries the same log beside
-  `kAsyncDepth`.
+  **The best-supported explanation is now recovery time: a card that has
+  recently wedged fails fast and cold, and a rested one runs to its thermal
+  limit.** A power cycle alone is evidently not enough. What the recovery
+  actually is — thermal mass, firmware state, driver state, the `mxa-manager`
+  session — and how long it takes is unmeasured.
+
+  **Consequence for anyone testing this: never draw a trend from back-to-back
+  runs.** Each wedge contaminates the next measurement; that invalidated most of
+  a day's work. Rest the card, then measure.
+
+  `kAsyncDepth` stays at **4** regardless — one good session is not a soak
+  record. Raising it needs a rested card and repetition. The depth-6 and
+  paced-depth-8 tests are still the right experiments, but they must be run on a
+  rested card or they will measure recovery debt instead of permits or rate.
+  `docs/memryx-mx3-wedge.md` has the full evidence; `bench_memryx.cpp` carries
+  the wedge log beside `kAsyncDepth`.
 
   `describe()` reports it as `· depth N` on the four cards that have a depth.
   It used to say `· N in flight`; that is gone. **Axelera says

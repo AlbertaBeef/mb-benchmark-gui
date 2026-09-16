@@ -1,14 +1,113 @@
-# MemryX MX3: the card wedges at ~1796 fps on **both** hosts
+# MemryX MX3: the depth-8 wedge, and why most of this file was wrong
 
-**Status: open. The Strix Halo capture is in (2026-09-14) and it overturns the
-premise this file was written on.** The wedge is not EPYC-specific — the Strix
-Halo machine reproduces it too, and does so on the **unchanged May software
-stack** that produced the published 200 000-frame runs. Two of the four
-suspects are dead, one is promoted, and the decisive experiment has moved to
-the Strix Halo machine.
+**Status (2026-09-15): the failure is real and reproducible, but almost every
+explanation below it was eliminated. The best-supported one now is that a card
+which has recently wedged needs TIME TO RECOVER, and that every "it got worse"
+measurement in this file was taken on a card that had not had it.**
 
-Read **What the Strix Halo machine measures** before acting on anything in the
-EPYC sections — several of their conclusions are superseded.
+Read this section before anything further down. The material after it is kept
+because the eliminations are worth having, but its conclusions are superseded.
+
+## The result that reframes everything
+
+`mb-benchmark-gui`, 2026-09-15 20:46–21:12, ResNet-50, **all four cards at once**,
+after the card had been left alone:
+
+| session | MemryX cfg | peak fps | ran for | outcome |
+| --- | --- | ---: | ---: | --- |
+| `…working-01` | depth 4 | 1802.4 | 464 s | completed |
+| `…working-02` | **depth 8** | **1812.5** | 358 s | **completed** |
+
+Depth 8 hit the published figure and **survived**, on the same EPYC host and the
+same module that had wedged ten times. Hailo, DeepX and Axelera ran depth 8
+alongside it without trouble.
+
+And the card throttled itself exactly as the vendor documents:
+
+```
+ 140   1800.8 fps   97 93 90 87 °C   600 600 600 600 MHz   12.07 W
+ 160   1020.2 fps   96 93 90 87 °C   300 300 300 300 MHz    7.74 W   <- throttle
+ 357   1019.8 fps  100 99 96 94 °C   300 300 300 300 MHz    7.94 W   <- still running
+```
+
+A clean halving at ~97 °C, then 200 s of stable running at 100 °C. That matches
+the vendor spec recorded in the `mb-memryx` skill — **per-chip, binary, 50 %
+clock, tripping at 100 °C** — so this is the card behaving correctly, not a
+lucky run.
+
+## Why that kills the thermal and clock stories
+
+Put the successful run beside the ten wedges:
+
+| | successful depth-8 run | every wedge |
+| --- | --- | --- |
+| died at | didn't | **55–77 °C** |
+| elapsed | 358 s | 10–80 s |
+| clock | stepped 600 → 300 at ~97 °C | **never moved from 600** |
+
+**Every wedge happened 20–40 °C BELOW the throttle point.** So "we hold 600 MHz
+into the wedge" was never evidence that backoff was suppressed — 600 MHz is
+simply the correct clock at 60 °C. There was nothing to suppress. The failures
+occur long before thermal management would ever engage, which also retires
+"it does not throttle, it stops answering" as evidence of anything.
+
+## The confound that produced the false trend
+
+This file previously argued the module was degrading, from a monotonic decline:
+
+| | earlier | later that day |
+| --- | --- | --- |
+| our app, depth 8 | 80, 80, 57, 33, 11 s | 14, 10, 15 s |
+| `mx_bench -f 200000` | completed, then ~57 s | failed at **`-f 10000`** (5.6 s), twice |
+| our app, **depth 4** | 244 s to 86 °C | **160 s to 77 °C** |
+
+Every one of those later runs followed a wedge by minutes, often with only a
+power cycle in between. Under the recovery theory the whole trend is recovery
+debt, not decay — and the depth-4 "control" that looked decisive is the clearest
+case, since it failed cold at 77 °C on a card wedged shortly before.
+
+**The reasoning error is worth naming**: a clean physical story (unchanged power,
+no thermal equilibrium, rising failure rate) was accepted without testing the
+obvious alternative — *leave the card alone, then run it*. Every data point
+shared the same confound.
+
+## What is eliminated, and by what
+
+| suspect | how it died |
+| --- | --- |
+| thermal | survives 100 °C; wedges at 55–77 °C |
+| the clock write (`set_mpu_frequency`) | wedged at t=14 and t=10 with the call never made; it is a no-op anyway, writing 600 over a configured 600 |
+| our SDK telemetry helper | wedged at t=15 with `MB_MEMRYX_TELEMETRY=0`, i.e. compiled out |
+| our harness generally | `mx_bench` failed at `-f 10000` twice from clean boots, none of our code in the process |
+| SDK version | 2.2.5 *lengthened* survival (64–79 s → 309 s on Strix Halo); rolling back would be worse |
+| kernel | the machine that survives runs the **newer** kernel (7.0.0 vs 6.17.0) |
+| PCIe width | `x2` is `max_link_width` on both hosts — the module's native width |
+| cooling | Strix Halo idles 20 °C cooler and wedges anyway |
+| card degradation | this card subsequently ran depth 8 for 358 s to 100 °C |
+
+## What to do about it
+
+1. **Give the card time after a wedge.** This is the untested variable that now
+   carries the explanation. A power cycle alone is evidently not enough.
+2. **Never draw a trend from back-to-back runs.** Each wedge contaminates the
+   next measurement. That invalidated most of a day's work here.
+3. **Watch the Frequency graph.** It is the instrument that made this legible,
+   and it only works in the GUI — `import memryx` takes over a minute on this
+   host, so the helper never came live in a 180 s headless probe. A clock that
+   steps to 300 means the card is healthy and protecting itself; a card dying at
+   600 MHz and 60 °C is the failure mode.
+4. **`kAsyncDepth` stays at 4** until depth 8 has a soak record on a rested card.
+   One good session is not a default.
+
+The open question is what the recovery actually is — thermal mass, firmware
+state, driver state, or the `mxa-manager` session — and how long it takes.
+Nobody has measured it.
+
+---
+
+*Everything below predates 2026-09-15 and is kept for the eliminations it
+records. Its conclusions — the clock lead, the degradation reading, and the
+"ranked suspects" — are superseded by the section above.*
 
 ## The question
 
