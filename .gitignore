@@ -20,6 +20,8 @@ logs/
 # log files and html reports
 *.log
 *.html
+*.csv
+*.png
 
 # Python bytecode from tools/.
 __pycache__/
