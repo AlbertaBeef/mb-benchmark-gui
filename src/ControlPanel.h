@@ -11,12 +11,14 @@
 #include <gtkmm/button.h>
 #include <gtkmm/checkbutton.h>
 #include <gtkmm/comboboxtext.h>
+#include <gtkmm/grid.h>
 #include <gtkmm/label.h>
 #include <gtkmm/listbox.h>
 #include <gtkmm/notebook.h>
 #include <gtkmm/spinbutton.h>
 
 #include <string>
+#include <map>
 #include <vector>
 
 #include "Automation.h"
@@ -63,18 +65,52 @@ public:
     // How every graph's axis top should respond to its data.
     GraphArea::RangeMode range_mode() const;
 
-    // Which cards' traces to draw — any subset, all ticked by default.
-    // Bit i (in Accel order) set means that card is shown. Filters the *graphs*
-    // only: the legends keep reading live, and the Inference/Accelerators
-    // checkboxes still decide what actually runs.
+    // Which cards' traces to draw — any subset, all ticked by default. Bit i
+    // (in Accel order) set means that card is shown. This is the SAME switch
+    // that decides what a run targets: the Accelerators section's Enabled, one
+    // control for both. There used to be a second row of checkboxes under
+    // Graphs; it was removed 2026-09-18 because two per-card checkbox sets, both
+    // under a heading reading "Accelerators", could not be told apart.
     unsigned graph_accel_mask() const;
-    // Fired when the Range radios change, so the graphs re-scale immediately
-    // rather than at the next tick.
+    // Fired when the Values Range radios change, so the graphs re-scale
+    // immediately rather than at the next tick.
     sigc::signal<void()>& signal_range_mode_changed() { return sig_range_mode_; }
+    // How much wall-clock time the graphs show. Auto means "whatever has been
+    // collected", which is what makes a young session visible at all: a fixed
+    // window anchors the newest sample at the right edge, so a minute of data
+    // in a ten-minute window is a stub in the last tenth of the plot.
+    bool time_range_auto() const { return time_auto_.get_active(); }
+    int time_range_minutes() const { return time_minutes_.get_value_as_int(); }
+    sigc::signal<void()>& signal_time_range_changed() { return sig_time_range_; }
     // Fired when the graph accelerator filter changes.
     sigc::signal<void()>& signal_graph_filter_changed() { return sig_graph_filter_; }
+    // Legends ("palettes") shown under each graph. Purely a display toggle:
+    // values keep updating and nothing is dropped from the axis.
+    bool legends_shown() const { return show_legends_.get_active(); }
+    sigc::signal<void()>& signal_legends_changed() { return sig_legends_; }
+    // PMD2 per-measurement filter. The names come from Probes after
+    // discover() — ControlPanel has no way to know them itself, and a host
+    // with no PMD2 gets no row at all.
+    //
+    // Three tiers, laid out one per line so the row reads as the hierarchy it
+    // is: `Enable` and the board total, then the group subtotals, then the
+    // individual rails wrapped at kMaxPmd2PerRow. MainWindow derives the split
+    // from the metrics; see its comment for how.
+    void set_pmd2_measurements(const std::vector<std::string>& total,
+                               const std::vector<std::string>& groups,
+                               const std::vector<std::string>& rails);
+    bool pmd2_shown(const std::string& measurement) const;
 
-    // Per-accelerator settings from the card tabs.
+    // The other two instruments in the Telemetry section. Each is a master
+    // switch only — they publish a handful of series apiece, where the PMD2
+    // publishes 34 and earns per-measurement boxes. A row appears only where
+    // the instrument was actually found, so no control sits dead.
+    void set_ina228_present(bool present);
+    void set_powerz_present(bool present);
+    bool ina228_shown() const { return ina228_enabled_.get_active(); }
+    bool powerz_shown() const { return powerz_enabled_.get_active(); }
+
+    // Per-accelerator settings from the Accelerators section's rows.
     int memryx_freq_mhz() const;   // MPU clock to request before a run
     bool axelera_double_buffer() const;  // Axelera: the double_buffer property
     int axelera_cores() const;     // AIPU cores to claim on the Metis
@@ -116,19 +152,19 @@ private:
 
     Gtk::CheckButton max_speed_{"Max"};
     Gtk::SpinButton fps_spin_;
-    Gtk::SpinButton* depth_spin_[kAccelCount] = {};  // one per tab
+    Gtk::SpinButton* depth_spin_[kAccelCount] = {};  // one per card row
 
-    // Graphs / Range. Max is the default: it is the behaviour the graphs have
-    // had since the headroom rule landed, and the one that never clips.
+    // Graphs / Values Range. Max is the default: it is the behaviour the graphs
+    // have had since the headroom rule landed, and the one that never clips.
     Gtk::CheckButton range_fixed_{"Fixed"};
     Gtk::CheckButton range_max_{"Max"};
     Gtk::CheckButton range_dynamic_{"Dynamic"};
 
-    // Graphs / Accelerators: one independent checkbox per card, in Accel order.
-    // Independent, not a radio group — the point is comparing several cards on
-    // one plot, so any subset has to be selectable.
-    Gtk::CheckButton* graph_accel_[kAccelCount] = {nullptr, nullptr, nullptr,
-                                                   nullptr, nullptr};
+    // Graphs / Time Range: Auto, or a fixed 1-30 minute window. The spin is
+    // insensitive while Auto is ticked rather than hidden, so the value it
+    // would take is visible before switching to it.
+    Gtk::CheckButton time_auto_{"Auto"};
+    Gtk::SpinButton time_minutes_;
 
     // Per-card API radios, in Accel order. Only populated for cards where the
     // vendor ships both a blocking and an async inference API
@@ -137,13 +173,14 @@ private:
     Gtk::CheckButton* api_sync_[kAccelCount] = {};
     Gtk::CheckButton* api_async_[kAccelCount] = {};
 
-    // Per-accelerator controls, one tab each. Empty scaffolding for now — the
-    // enable/disable checkboxes live in the Inference frame, since they choose
-    // what a run targets rather than configuring a card.
-    Gtk::Notebook accel_notebook_;
-    Gtk::ComboBoxText memryx_freq_;   // MemryX tab: MPU clock
-    Gtk::SpinButton axelera_cores_;   // Axelera tab: AIPU cores (1-4)
-    // Axelera tab: double buffering, as radios rather than a Depth spin.
+    // Per-accelerator controls, one ROW each in the Accelerators section,
+    // following that card's Enabled checkbox. They used to be a Gtk::Notebook of
+    // one tab per card, which showed only the selected card's settings — two
+    // cards' configurations could never be compared, and a run could start with
+    // a card set up in a way nobody had looked at.
+    Gtk::ComboBoxText memryx_freq_;   // MemryX row: MPU clock
+    Gtk::SpinButton axelera_cores_;   // Axelera row: AIPU cores (1-4)
+    // Axelera row: double buffering, as radios rather than a Depth spin.
     // The Metis has no depth to set — `depth` is not one of the runtime's eight
     // instance properties, and the library clamps internally ("overriding to
     // depth=2 for double buffering"). All we can send is the boolean
@@ -151,9 +188,9 @@ private:
     // BenchItem::depth is still the transport (1 = off, 2 = on) so nothing
     // downstream of ControlPanel changes.
     Gtk::CheckButton axelera_dbuf_on_{"On"}, axelera_dbuf_off_{"Off"};
-    Gtk::SpinButton qualcomm_nsps_;      // Qualcomm tab: Hexagon NSPs (1-2)
-    Gtk::ComboBoxText qualcomm_perf_;    // Qualcomm tab: HTP DCVS mode
-    Gtk::ComboBoxText qualcomm_backend_; // Qualcomm tab: HTP / GPU / CPU
+    Gtk::SpinButton qualcomm_nsps_;      // Qualcomm row: Hexagon NSPs (1-2)
+    Gtk::ComboBoxText qualcomm_perf_;    // Qualcomm row: HTP DCVS mode
+    Gtk::ComboBoxText qualcomm_backend_; // Qualcomm row: HTP / GPU / CPU
 
     Gtk::CheckButton* accel_check_[kAccelCount] = {nullptr, nullptr, nullptr,
                                                    nullptr, nullptr};
@@ -178,7 +215,24 @@ private:
 
     sigc::signal<void()> sig_start_stop_;
     sigc::signal<void()> sig_range_mode_;
+    sigc::signal<void()> sig_time_range_;
     sigc::signal<void()> sig_graph_filter_;
+    sigc::signal<void()> sig_legends_;
+    Gtk::CheckButton show_legends_{"Enabled"};
+    Gtk::Box* pmd2_row_ = nullptr;          // the whole labelled row, hidden when absent
+    Gtk::Grid* pmd2_grid_ = nullptr;
+    // Master switch for the whole meter. Unticking greys the per-measurement
+    // boxes rather than clearing them, so a chosen subset survives being
+    // switched off and back on.
+    Gtk::CheckButton pmd2_enable_{"Enabled"};
+
+    // INA228 shunts and the POWER-Z meter: one switch each, rows hidden until
+    // MainWindow says the instrument is present.
+    Gtk::Box* ina228_row_ = nullptr;
+    Gtk::CheckButton ina228_enabled_{"Enabled"};
+    Gtk::Box* powerz_row_ = nullptr;
+    Gtk::CheckButton powerz_enabled_{"Enabled"};
+    std::map<std::string, Gtk::CheckButton*> pmd2_boxes_;
     bool running_ = false;
     bool busy_ = false;   // workers from a previous run still shutting down
 

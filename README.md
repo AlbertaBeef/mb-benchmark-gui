@@ -47,25 +47,57 @@ Twelve stacked graphs, each a scrolling 10-minute window:
 The six telemetry graphs come first because they are live whether or not a
 benchmark is running; the three below them only mean anything during a run.
 
-**Graphs → Range** decides how every axis responds to its data. All twelve graphs
-share the setting:
+The **toggle at the left of the header bar** (or **Ctrl+B**) collapses the
+control panel and gives its width to the graphs. Nothing is reset by hiding it —
+every control keeps its state and the graphs keep their history. It is
+per-session: the panel is visible on every launch.
 
-| Range | Behaviour |
+**Graphs → Values Range** decides how every axis responds to its data. All
+twelve graphs share the setting:
+
+| Values Range | Behaviour |
 | ----- | --------- |
 | **Fixed** | Leave each axis at its resting top — 100 °C for temperature, a small floor elsewhere. Readings above it clip and draw flat along the top edge. |
 | **Max** *(default)* | Start at the resting top, grow to **10 % above the highest reading** once the data reaches it, and never shrink back — so successive runs stay on one comparable scale. |
 | **Dynamic** | Track the data at **both ends** — the axis runs from just below the lowest reading to just above the highest, with 10 % of the span as margin. Four dies sitting between 37 °C and 42 °C fill the plot instead of occupying five pixels of a 0–100 axis. The scale moves as the data does, so runs are not comparable by eye. |
 
-**Graphs → Accelerators** picks which cards the graphs show — one checkbox per
-card, all ticked by default, any subset selectable. Unticking a card hides both
-its **traces and its legend entry**, on all twelve graphs, so the section shows only
-the cards you are looking at.
+**Graphs → Time Range** decides how much wall-clock time is on screen. The
+graphs keep 30 minutes either way; this only chooses what is drawn, so moving
+the window never throws samples away.
 
-It is a view filter, not a run filter: every card keeps running and keeps
-producing numbers. Two things follow from hiding rather than discarding: the
-change applies to the history already on screen, and unticked cards drop out of
-the axis calculation, so the ones you kept fill the plot. To choose what actually
-*runs*, use the Accelerators checkboxes in the Inference section.
+| Time Range | Behaviour |
+| ---------- | --------- |
+| **1–30 min** *(default 5)* | A fixed window, newest sample at the right edge. A history shorter than the window scrolls in from the right, so successive runs line up on one time scale. |
+| **Auto** | Show exactly what has been collected. The traces fill the plot from the first sample and the axis widens as the session runs, up to 30 minutes. |
+
+**Telemetry** picks which *instruments* are drawn, one row per meter, and a row
+appears only where that meter was found:
+
+| Telemetry | What it does |
+| --------- | ------------ |
+| **POWER-Z** | `Enabled` — draw the ChargerLAB POWER-Z KM003C on the System graphs. |
+| **PMD2** | One checkbox per ElmorLabs PMD2 measurement *point*, so ticking `ATX12V` governs its watts, volts and amps together. Laid out in the meter's own tiers: **Enabled** alone, then the board **TOTAL** with the three group subtotals (EPS / PCIE / MB), then the ten individual rails. **Enabled** is a master switch and greys the rest rather than clearing them, so a chosen subset comes back when you tick it again. |
+| **INA228** | `Enabled` — draw the four INA228 shunts on the Accelerator graphs: power, voltage, current, energy and the monitor's own die temperature. |
+
+Everything is measured and **every individual value is logged** regardless of
+what is on screen.
+
+**Accelerators → Enabled** picks which cards the graphs show, as well as which
+ones a run targets — one switch per card, all ticked by default, any subset
+selectable. Unticking a card hides both its **traces and its legend entry**, on
+all twelve graphs, so you see only the cards you are looking at. (There was a
+separate trace filter under `Graphs` until 2026-09-18; one switch does both
+jobs now.)
+
+Two things follow from hiding rather than discarding: the change applies to the
+history already on screen, and unticked cards drop out of the axis calculation,
+so the ones you kept fill the plot. Nothing stops being *measured* — the legend
+values keep updating and the CSV keeps every column.
+
+**Picking a model a card cannot run does not hide that card.** Its checkbox
+greys out, because there is nothing for it to run, but its temperature and power
+traces stay on the graphs: the card is idle, not absent, and that is usually
+exactly when you want to watch it.
 
 A reading outside **-40…150 °C** is treated as "no reading" and drawn as a gap
 rather than plotted. Drivers publish sentinels when a chip stops answering — a
@@ -97,7 +129,7 @@ sit flat however hot the part got.
 The Axelera trace also exposes something the frame-rate graph cannot: at one
 core **only `C0` ramps to 800 MHz while `C1`–`C3` stay at 50 MHz**, i.e. three
 of the four AI cores are idle — that is the batch-1 build. Raising **AIPU cores**
-in the Axelera tab selects the fixed-batch build for that count, which lights all
+on the Axelera row selects the fixed-batch build for that count, which lights all
 of them — see [Per-accelerator controls](#per-accelerator-controls).
 
 **The graphs are never cleared.** Starting or stopping a run does not wipe the
@@ -151,7 +183,7 @@ runs on **aarch64** as well as x86_64.
 
 Each backend is **optional and auto-detected at build time**, and the window
 adapts to what the build found: a card whose SDK is absent is **not shown at
-all** — no checkbox, no settings tab, no legend swatch and no trace — so on a
+all** — no Accelerators row, no Graphs checkbox, no legend swatch and no trace — so on a
 host with two backends you get a two-card UI rather than three greyed-out
 placeholders. Its telemetry still graphs if the hardware is there, since that
 comes from sysfs rather than the SDK. The build works on any host.
@@ -193,7 +225,7 @@ overlay is the way to get real watts here.
 
 ## Sync API vs Async API
 
-Each card chooses its own API mode, in **its own tab** — there is no run-wide
+Each card chooses its own API mode, **on its own row** — there is no run-wide
 setting. This is the single biggest lever on the numbers, far bigger than the
 model choice, so it is worth understanding what each mode actually drives.
 
@@ -241,7 +273,7 @@ concurrency knob, Axelera with **Double buffering**.
 
 ### Depth
 
-**Depth** is per card, in that card's tab — how many frames it keeps in flight.
+**Depth** is per card, on that card's row — how many frames it keeps in flight.
 Every backend has some form of it, but the mechanism differs and so does the
 useful range:
 
@@ -276,7 +308,7 @@ this card is frames in flight, not CPU.
 Axelera has no depth control at all any more, because the runtime has no such
 property: it logs *"overriding to depth=2 for double buffering"*, an explicit
 `depth=4` is rejected with `Unknown property key: depth`, and `double_buffer=4`
-measures the same as `double_buffer=1`. The tab shows what the API actually
+measures the same as `double_buffer=1`. The row shows what the API actually
 offers — double buffering off or on.
 
 On a card that offers both API modes, depth greys out in **Sync** — one frame at
@@ -318,8 +350,10 @@ answers to different questions.
 
 ## Per-accelerator controls
 
-Below the `Inference` frame is a tab per card. Every tab leads with the two
-controls each card has, then whatever else that device exposes:
+Below the `Inference` frame is an **Accelerators** section, one row per card:
+the card's name, an **Enabled** checkbox — which decides whether a run targets
+it — and then that card's own controls, on the same row. Every row leads with
+the two controls each card has, then whatever else that device exposes:
 
 - **API** — `Sync` / `Async` radios where the vendor ships both, a static line
   naming the only mode where it does not. See

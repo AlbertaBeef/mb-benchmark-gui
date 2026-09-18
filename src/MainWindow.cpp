@@ -16,18 +16,53 @@
 #include <gtkmm/paned.h>
 #include <pangomm/layout.h>
 #include <gtkmm/scrolledwindow.h>
+#include <gtkmm/shortcut.h>
+#include <gtkmm/shortcutaction.h>   // Gtk::CallbackAction lives here
+#include <gtkmm/shortcutcontroller.h>
+#include <gtkmm/shortcuttrigger.h>
 #include <gtkmm/stylecontext.h>
+#include <gtkmm/togglebutton.h>
 
+#include <gdk/gdkkeysyms.h>
+
+#include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <cstdio>
 
 #include "util.h"
 
 namespace {
+
+// Legend cells drop the family suffix: on the Power graph every cell is watts,
+// so "ATX12V POWER" says it twice and costs ~45 px of row width doing it.
+// Each family has its own graph, so the suffix is redundant *by construction*
+// and cannot make two cells ambiguous — within one graph the remaining names
+// stay distinct (PMD2's syspower row trims to TOTAL · EPS · MB · ATX12V …).
+//
+// DISPLAY ONLY. The CSV keeps the full label: its columns share one namespace
+// across all families, so `<bdf>_ATX12V` would be the same column for the
+// watts, the volts and the amps. That collision is exactly what the suffixes
+// were added to prevent, and the Logger's column builder is a separate path
+// that still uses MetricInfo::label whole.
+static std::string legend_short(std::string lbl) {
+    for (const char* fam : {" POWER", " VBUS", " CURRENT", " ENERGY",
+                            " CHARGE", " TEMP"}) {
+        const size_t n = std::strlen(fam);
+        if (lbl.size() > n && lbl.compare(lbl.size() - n, n, fam) == 0)
+            return lbl.substr(0, lbl.size() - n);
+    }
+    return lbl;
+}
 constexpr int kIntervalMs = 1000;
-constexpr int kSpanSeconds = 600;  // 10 min of history on every graph
-constexpr int kHistory = kSpanSeconds + 1;
+// The graphs *keep* 30 minutes — the top of the Time Range control — and draw
+// whichever window that control asks for, 5 minutes by default. Buffering the
+// maximum is what lets the window be widened again without a gap: narrowing it
+// then discards nothing.
+constexpr int kSpanSeconds = 300;       // default window drawn, 5 min
+constexpr int kMaxSpanSeconds = 1800;   // Time Range maximum, 30 min
+constexpr int kHistory = kMaxSpanSeconds + 1;
 constexpr double kTempAxisMax = 100.0;  // °C
 
 const char* kTitle = "NPU Benchmarking GUI";
@@ -114,6 +149,24 @@ MainWindow::MainWindow(AutomationPlan plan)
     auto* title = Gtk::make_managed<Gtk::Label>(kTitle);
     title->add_css_class("title");
     header->set_title_widget(*title);
+
+    // Collapse the control pane and give its width to the graphs. The panel is
+    // set-and-forget, so it is ~40 % of the window spent on controls nobody is
+    // touching once a run is configured.
+    //
+    // ONE icon, on a ToggleButton, rather than swapping show/hide icons:
+    // `sidebar-show-symbolic` is in both Yaru (the active theme) and Adwaita
+    // (the fallback), while `sidebar-hide-symbolic` is **Yaru-only** and would
+    // render blank for anyone on stock Adwaita. A ToggleButton draws its own
+    // checked state, so there is nothing to swap.
+    panel_toggle_ = Gtk::make_managed<Gtk::ToggleButton>();
+    panel_toggle_->set_icon_name("sidebar-show-symbolic");
+    panel_toggle_->set_tooltip_text("Show the control panel (Ctrl+B)");
+    panel_toggle_->add_css_class("flat");
+    panel_toggle_->set_active(true);   // the panel starts visible
+    panel_toggle_->signal_toggled().connect(
+        [this] { set_panel_visible(panel_toggle_->get_active()); });
+    header->pack_start(*panel_toggle_);
 
     auto* about_btn = Gtk::make_managed<Gtk::Button>();
     about_btn->set_icon_name("help-about-symbolic");
@@ -259,8 +312,15 @@ MainWindow::MainWindow(AutomationPlan plan)
         sigc::mem_fun(*this, &MainWindow::on_start_stop));
     controls_->signal_range_mode_changed().connect(
         sigc::mem_fun(*this, &MainWindow::apply_range_mode));
+    controls_->signal_time_range_changed().connect(
+        sigc::mem_fun(*this, &MainWindow::apply_time_range));
     controls_->signal_graph_filter_changed().connect(
         sigc::mem_fun(*this, &MainWindow::apply_graph_filter));
+    controls_->signal_legends_changed().connect([this] {
+        const bool vis = controls_->legends_shown();
+        for (Gtk::Widget* g : legend_grids_)
+            if (g) g->set_visible(vis);
+    });
     paned->set_start_child(*controls_);
     paned->set_resize_start_child(false);
     // Never allocate the controls less than their minimum: GTK4's default
@@ -268,6 +328,29 @@ MainWindow::MainWindow(AutomationPlan plan)
     // request, and a widget rendered under its minimum anchors its contents
     // unpredictably instead of staying flush left.
     paned->set_shrink_start_child(false);
+
+    // Ctrl+B, the keyboard equivalent of the header toggle. This is the FIRST
+    // and only keyboard shortcut in either app, and it is a ShortcutController
+    // on the window rather than an action + set_accels_for_action() because
+    // nothing here holds the Gtk::Application — main() uses
+    // make_window_and_run(), which keeps it to itself.
+    //
+    // It flips the BUTTON rather than calling set_panel_visible() directly, so
+    // there is one code path and the button can never disagree with the pane.
+    {
+        auto sc = Gtk::ShortcutController::create();
+        // MANAGED, not LOCAL: the shortcut must fire wherever focus happens to
+        // sit — a spin button in the panel, a graph, the window background.
+        sc->set_scope(Gtk::ShortcutScope::MANAGED);
+        sc->add_shortcut(Gtk::Shortcut::create(
+            Gtk::KeyvalTrigger::create(GDK_KEY_b, Gdk::ModifierType::CONTROL_MASK),
+            Gtk::CallbackAction::create(
+                [this](Gtk::Widget&, const Glib::VariantBase&) {
+                    panel_toggle_->set_active(!panel_toggle_->get_active());
+                    return true;
+                })));
+        add_controller(sc);
+    }
 
     auto* graphs = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 6);
     graphs->set_margin(12);
@@ -444,7 +527,71 @@ MainWindow::MainWindow(AutomationPlan plan)
 
     // Seed every graph from the Range radios. They agree with GraphArea's own
     // default today, but binding it here means the two cannot drift apart.
+    // Tell the panel which PMD2 measurement points exist, so it can build one
+    // checkbox each, in three tiers — the board total, the group subtotals,
+    // the individual rails.
+    //
+    // The tiers are DERIVED from the metrics, not listed here, so a firmware
+    // that renames or adds a rail needs no change at this end. Two structural
+    // facts do the work, both visible in PMD2Probe::discover():
+    //   - the TOTAL is the one power metric with no family suffix, so
+    //     legend_short() leaves it untouched where it trims every other;
+    //   - a RAIL is a point that also carries a voltage and a current, because
+    //     only the rails are measured; a group is a POWER-only subtotal.
+    // Order follows discovery within each tier, and duplicates are dropped
+    // since each point appears once per family.
+    {
+        auto key = [](const MetricInfo& m) {
+            std::string k = m.label;
+            if (k.rfind(m.device_name + " ", 0) == 0)
+                k = k.substr(m.device_name.size() + 1);
+            return k;
+        };
+        std::vector<std::string> measured;   // points with a V reading = rails
+        for (const auto& m : probes_.sysvoltage_metrics())
+            if (m.device_name == "PMD2") measured.push_back(legend_short(key(m)));
+
+        std::vector<std::string> total, groups, rails;
+        for (const auto& m : probes_.syspower_metrics()) {
+            if (m.device_name != "PMD2") continue;
+            const std::string raw = key(m);
+            const std::string k = legend_short(raw);
+            std::vector<std::string>& bucket =
+                (k == raw) ? total
+                : (std::find(measured.begin(), measured.end(), k) != measured.end())
+                      ? rails
+                      : groups;
+            if (std::find(bucket.begin(), bucket.end(), k) == bucket.end())
+                bucket.push_back(k);
+        }
+        controls_->set_pmd2_measurements(total, groups, rails);
+
+        // The other two instruments get a switch each, and only if they are
+        // here. INA228 is recognised by LABEL, not by device name: a mapped
+        // shunt is folded onto its card, so its device_name is "Hailo" and only
+        // the label still says INA228 (`<Card> INA228 POWER`). An unmapped one
+        // keeps `INA228#<n>`, which the same test catches.
+        bool ina228 = false, powerz = false;
+        auto scan = [&](const std::vector<MetricInfo>& ms) {
+            for (const auto& m : ms) {
+                if (m.label.find("INA228") != std::string::npos) ina228 = true;
+                if (m.device_name == "POWER-Z") powerz = true;
+            }
+        };
+        scan(probes_.power_metrics());
+        scan(probes_.voltage_metrics());
+        scan(probes_.current_metrics());
+        scan(probes_.energy_metrics());
+        scan(probes_.temp_metrics());
+        scan(probes_.syspower_metrics());
+        scan(probes_.sysvoltage_metrics());
+        scan(probes_.syscurrent_metrics());
+        controls_->set_ina228_present(ina228);
+        controls_->set_powerz_present(powerz);
+    }
+
     apply_range_mode();
+    apply_time_range();
     apply_graph_filter();
 
     // Pull anything the catalog knows a source for but that isn't on disk yet.
@@ -608,6 +755,23 @@ MainWindow::AccelSection MainWindow::build_accel_section(
     return sec;
 }
 
+// Most legend cells on one line before wrapping to the next.
+//
+// 5, measured rather than estimated. A cell is a 16 px swatch plus a 4-char
+// name and a 6-char value -- ~125 px with spacing -- and the device-name
+// column carries its BDF too ("usb 1-1.4.4  PMD2"), another ~150 px. The
+// graphs column is the window minus the control panel, so ~850 px of a 1200 px
+// window: 8 cells needed ~1150 px and still overflowed, 5 needs ~775 px and
+// fits. It matches what the benchmark legends already use (kAccelCount).
+//
+// Why overflow hides the traces rather than just scrolling: the grid sets the
+// section's natural width, the GraphArea inherits it, and GraphArea anchors
+// the trace NEWEST-AT-THE-RIGHT-EDGE. A plot wider than the viewport therefore
+// draws its newest samples off to the right, and a young history is *entirely*
+// off-screen -- the graph reads as empty rather than as clipped.
+static constexpr int kMaxLegendCellsPerRow = 5;
+
+
 Gtk::Widget& MainWindow::build_metric_section(
     const std::vector<MetricInfo>& metrics, const std::vector<Gdk::RGBA>& colors,
     bool temp_axis, std::function<std::string(double)> value_fmt,
@@ -665,7 +829,7 @@ Gtk::Widget& MainWindow::build_metric_section(
         grid->attach(*dn, 0, row, 1, 1);
         LegendRow lr;
         lr.device = dname;
-        lr.widgets.push_back(dn);
+        lr.head.push_back(dn);
 
         int col = 1;
         const int agg_start = i;
@@ -676,11 +840,27 @@ Gtk::Widget& MainWindow::build_metric_section(
             agg_label->set_margin_end(6);
             agg_label->add_css_class("dim-label");
             grid->attach(*agg_label, col, row, 1, 1);
-            lr.widgets.push_back(agg_label);
+            lr.head.push_back(agg_label);
             ++col;
         }
 
+        // Wrap a device's cells rather than letting one row grow without
+        // limit. A device with many metrics -- the PMD2 publishes 14 power
+        // readings alone -- otherwise makes the grid ~1700 px wide, which
+        // widens the whole section past the window. The graph inherits that
+        // width and GraphArea anchors its trace NEWEST-AT-THE-RIGHT-EDGE
+        // (px + pw - (m-1-j)*step), so early in a run the line sits in the
+        // last few pixels of a plot that is mostly off-screen and the graph
+        // reads as empty. The benchmark legends already wrap, at kAccelCount.
+        const int first_cell_col = col;
+        int cells_in_row = 0;
+
         while (i < n && metrics[i].device == dev) {
+            if (cells_in_row == kMaxLegendCellsPerRow) {
+                ++row;                     // continuation line for this device
+                col = first_cell_col;      // aligned under the first row's cells
+                cells_in_row = 0;          // column 0 stays empty: one name per device
+            }
             auto* cell = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
 
             Gdk::RGBA c = colors[i];
@@ -703,7 +883,7 @@ Gtk::Widget& MainWindow::build_metric_section(
 
             std::string lbl = metrics[i].label;
             if (lbl.rfind(dname + " ", 0) == 0) lbl = lbl.substr(dname.size() + 1);
-            auto* name = Gtk::make_managed<Gtk::Label>(lbl);
+            auto* name = Gtk::make_managed<Gtk::Label>(legend_short(lbl));
             name->set_xalign(0.0);
             name->set_width_chars(4);
             cell->append(*name);
@@ -715,14 +895,20 @@ Gtk::Widget& MainWindow::build_metric_section(
             cell->append(*val);
 
             grid->attach(*cell, col, row, 1, 1);
-            lr.widgets.push_back(cell);
+            // Every wrapped cell joins the SAME LegendRow, and carries the
+            // index of the metric it draws so it can be hidden on its own —
+            // which is what a Telemetry switch needs, since that hides part of
+            // a row rather than all of it.
+            lr.cells.push_back({cell, i});
             ++col;
+            ++cells_in_row;
             ++i;
         }
         if (agg_out) agg_out->push_back({agg_label, agg_start, i - agg_start});
         if (rows_out) rows_out->push_back(std::move(lr));
         ++row;
     }
+    legend_grids_.push_back(grid);
     box->append(*grid);
     return *box;
 }
@@ -1005,19 +1191,51 @@ void MainWindow::apply_graph_filter() {
         return true;
     };
 
+    // A PMD2 metric carries its measurement point in the label
+    // ("PMD2 ATX12V POWER"); strip the device prefix and the family suffix and
+    // what is left is the key the checkboxes are built from. Anything that is
+    // not the PMD2 has no checkbox and stays visible.
+    auto metric_shown = [&](const MetricInfo& mi) {
+        if (!device_shown(mi.device_name)) return false;
+        // Instrument switches, from the Telemetry section. INA228 is matched on
+        // the label because a mapped shunt carries its CARD's device name; the
+        // card filter above has already had its say, so this is an additional
+        // gate rather than an alternative one.
+        if (mi.label.find("INA228") != std::string::npos)
+            return controls_->ina228_shown();
+        if (mi.device_name == "POWER-Z") return controls_->powerz_shown();
+        if (mi.device_name != "PMD2") return true;
+        std::string k = mi.label;
+        if (k.rfind(mi.device_name + " ", 0) == 0)
+            k = k.substr(mi.device_name.size() + 1);
+        return controls_->pmd2_shown(legend_short(k));
+    };
+
     // Telemetry graphs: one series per metric, matched on the owning device,
     // and the legend row for that device hidden with it.
     auto by_device = [&](GraphArea* g, const std::vector<MetricInfo>& m,
                          const std::vector<LegendRow>& rows) {
         if (g) {
             for (size_t i = 0; i < m.size(); ++i)
-                g->set_series_visible(static_cast<int>(i),
-                                      device_shown(m[i].device_name));
+                g->set_series_visible(static_cast<int>(i), metric_shown(m[i]));
         }
+        // The legend follows the traces cell by cell, not row by row. A
+        // Telemetry switch hides PART of a row — turning INA228 off takes the
+        // shunt cell off a card that keeps its own sensors — so hiding whole
+        // rows would either leave a cell describing a trace that is gone, or
+        // take away sensors that are still drawn. The head (device name +
+        // aggregate) follows the last surviving cell: a name and a "max —"
+        // with no entries beside them reads as a fault rather than a filter.
         for (const auto& r : rows) {
-            const bool vis = device_shown(r.device);
-            for (Gtk::Widget* w : r.widgets)
-                if (w) w->set_visible(vis);
+            bool any = false;
+            for (const auto& c : r.cells) {
+                const bool vis =
+                    c.metric < static_cast<int>(m.size()) && metric_shown(m[c.metric]);
+                if (c.widget) c.widget->set_visible(vis);
+                any = any || vis;
+            }
+            for (Gtk::Widget* w : r.head)
+                if (w) w->set_visible(any);
         }
     };
     by_device(power_graph_, probes_.power_metrics(), power_rows_);
@@ -1045,13 +1263,43 @@ void MainWindow::apply_graph_filter() {
     }
 }
 
-// Every graph shares one Range setting: mixing modes between graphs would make
-// the six plots answer different questions at the same moment.
+// In section order. A graph absent from this list silently keeps whatever the
+// controls last left it at, which is how the three System plots went on
+// ignoring the Range radios after the POWER-Z and PMD2 sections were added.
+std::vector<GraphArea*> MainWindow::all_graphs() {
+    std::vector<GraphArea*> v;
+    for (GraphArea* g : {sysvbus_graph_, syscurr_graph_, syspower_graph_,
+                         vbus_graph_, curr_graph_, power_graph_, accum_graph_,
+                         temp_graph_, freq_graph_,
+                         fps_.graph, eff_.graph, energy_.graph}) {
+        if (g) v.push_back(g);
+    }
+    return v;
+}
+
+// Hiding the Paned's start child is enough: GtkPaned gives the whole area to
+// the remaining child and drops the handle. Detaching the child instead would
+// re-parent live widgets and reset set_position(). Here the start child IS the
+// panel; the sibling wraps it in a Box and hides that (see its side_).
+void MainWindow::set_panel_visible(bool on) {
+    if (controls_) controls_->set_visible(on);
+}
+
+// Every graph shares one Values Range setting: mixing modes between graphs
+// would make the plots answer different questions at the same moment.
 void MainWindow::apply_range_mode() {
     const auto m = controls_->range_mode();
-    for (GraphArea* g : {power_graph_, accum_graph_, vbus_graph_, curr_graph_, temp_graph_, freq_graph_,
-                         fps_.graph, eff_.graph, energy_.graph}) {
-        if (g) g->set_range_mode(m);
+    for (GraphArea* g : all_graphs()) g->set_range_mode(m);
+}
+
+// Likewise one Time Range for all of them — two plots on different time scales
+// cannot be read against each other, which is the whole point of stacking them.
+void MainWindow::apply_time_range() {
+    const bool automatic = controls_->time_range_auto();
+    const int span = std::min(controls_->time_range_minutes() * 60, kMaxSpanSeconds);
+    for (GraphArea* g : all_graphs()) {
+        if (automatic) g->set_auto_time_span(true);
+        else           g->set_time_span(span);
     }
 }
 
@@ -1062,6 +1310,16 @@ bool MainWindow::on_tick() {
 
     poll_downloads();
     probes_.poll();
+
+    // A hidden trace must not reach a legend aggregate. The Graphs and
+    // Telemetry filters both hide series, so without this a row could report
+    // "max 3.5 W" from a shunt whose cell and trace are both off screen. The
+    // graph's own visibility is the single source of truth, so this answers for
+    // every filter at once; a null graph (a section not built on this host)
+    // counts everything.
+    auto counted = [](GraphArea* g, int k) {
+        return !g || g->series_visible(k);
+    };
 
     // Watts per accelerator, for the efficiency figures. NaN = no sensor.
     double watts[kAccelCount];
@@ -1153,6 +1411,7 @@ bool MainWindow::on_tick() {
             int cnt = 0;
             for (int k = a.start;
                  k < a.start + a.count && k < static_cast<int>(tv.size()); ++k) {
+                if (!counted(temp_graph_, k)) continue;
                 if (!std::isnan(tv[k])) {
                     if (!cnt || tv[k] > hottest) hottest = tv[k];
                     ++cnt;
@@ -1172,6 +1431,7 @@ bool MainWindow::on_tick() {
             int cnt = 0;
             for (int k = a.start;
                  k < a.start + a.count && k < static_cast<int>(fv.size()); ++k) {
+                if (!counted(freq_graph_, k)) continue;
                 if (!std::isnan(fv[k])) { sum += fv[k]; ++cnt; }
             }
             a.label->set_text(cnt ? "avg " + fmt_freq(sum / cnt) : "avg —");
@@ -1187,6 +1447,7 @@ bool MainWindow::on_tick() {
             double best = std::nan("");
             for (int k = a.start;
                  k < a.start + a.count && k < static_cast<int>(pv.size()); ++k) {
+                if (!counted(power_graph_, k)) continue;
                 if (!std::isnan(pv[k]) && (std::isnan(best) || pv[k] > best))
                     best = pv[k];
             }
@@ -1208,6 +1469,7 @@ bool MainWindow::on_tick() {
             int cnt = 0;
             for (int k = a.start;
                  k < a.start + a.count && k < static_cast<int>(jvv.size()); ++k) {
+                if (!counted(accum_graph_, k)) continue;
                 if (!std::isnan(jvv[k])) { sum += jvv[k]; ++cnt; }
             }
             a.label->set_text(cnt ? "total " + fmt_joules(sum) : "total —");
@@ -1262,6 +1524,9 @@ bool MainWindow::on_tick() {
             double hi = -std::numeric_limits<double>::infinity();
             for (int k = a.start;
                  k < a.start + a.count && k < static_cast<int>(spv.size()); ++k) {
+                if (!counted(syspower_graph_, k)) continue;
+                if (!counted(syscurr_graph_, k)) continue;
+                if (!counted(sysvbus_graph_, k)) continue;
                 if (!std::isnan(spv[k]) && spv[k] > hi) hi = spv[k];
             }
             a.label->set_text(std::isinf(hi) ? "max —" : "max " + fmt_power(hi));
@@ -1281,6 +1546,7 @@ bool MainWindow::on_tick() {
             double lo = std::numeric_limits<double>::infinity();
             for (int k = a.start;
                  k < a.start + a.count && k < static_cast<int>(uvv.size()); ++k) {
+                if (!counted(vbus_graph_, k)) continue;
                 if (!std::isnan(uvv[k]) && uvv[k] < lo) lo = uvv[k];
             }
             a.label->set_text(std::isinf(lo) ? "min —" : "min " + fmt_volts(lo));
@@ -1301,6 +1567,7 @@ bool MainWindow::on_tick() {
             bool any = false;
             for (int k = a.start;
                  k < a.start + a.count && k < static_cast<int>(avv.size()); ++k) {
+                if (!counted(curr_graph_, k)) continue;
                 if (std::isnan(avv[k])) continue;
                 if (!any || std::fabs(avv[k]) > std::fabs(peak)) peak = avv[k];
                 any = true;

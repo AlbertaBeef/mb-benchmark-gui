@@ -1,13 +1,14 @@
 #include "ControlPanel.h"
 
 // See bench_memryx.cpp: -DMB_MEMRYX_CLOCK_SET=0 removes the Core frequency
-// combo from the MemryX tab and makes memryx_freq_mhz() always report
+// combo from the MemryX row and makes memryx_freq_mhz() always report
 // "leave the clock alone".
 #ifndef MB_MEMRYX_CLOCK_SET
 #define MB_MEMRYX_CLOCK_SET 1
 #endif
 
 #include <gtkmm/adjustment.h>
+#include <gtkmm/flowbox.h>
 #include <gtkmm/frame.h>
 #include <gtkmm/grid.h>
 #include <gtkmm/scrolledwindow.h>
@@ -178,7 +179,7 @@ ControlPanel::ControlPanel(const Catalog& catalog)
         auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 6);
         box->set_margin(8);
 
-        // Matching label widths so the two rows' controls line up.
+        // Same label width the other sections use, so every row lines up.
         constexpr int kLabelChars = 12;
         auto row_label = [](const char* text) {
             auto* l = Gtk::make_managed<Gtk::Label>(text);
@@ -212,123 +213,83 @@ ControlPanel::ControlPanel(const Catalog& catalog)
             [this] { fps_spin_.set_sensitive(!max_speed_.get_active()); });
         box->append(*rate_row);
 
-        // --- which cards to run on ---
-        // A Grid, not a Box: wraps past four, same rule as the graph legends.
-        auto* accel_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
-        accel_row->append(*row_label("Accelerators"));
-        auto* accel_grid = Gtk::make_managed<Gtk::Grid>();
-        accel_grid->set_column_spacing(16);
-        accel_grid->set_row_spacing(2);
-        // Absent cards get no checkbox at all, so `col` tracks the visible ones
-        // rather than the enum index — otherwise hiding a card would leave a
-        // hole in the row.
-        int col = 0;
+        frame->set_child(*box);
+        append(*frame);
+    }
+
+    // ---- Accelerators ----
+    // One row per card: its name, an Enabled switch, then that card's own
+    // controls. This replaced a Gtk::Notebook of one tab per card, where a
+    // card's settings were only visible while its tab was selected — so two
+    // cards' configurations could never be read against each other, and a run
+    // could be started with a card set up in a way nobody had looked at.
+    //
+    // Enabled is the RUN target — it moved here from the Inference frame, and
+    // it is what `selection()` reads. It is NOT the graph filter: Graphs ->
+    // Accelerators still decides which traces are drawn, deliberately
+    // independently, so a card can be benchmarked while its traces are off
+    // screen, or watched while it sits idle.
+    {
+        auto* frame = Gtk::make_managed<Gtk::Frame>("Accelerators");
+        auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 6);
+        box->set_margin(8);
+        auto* grid = Gtk::make_managed<Gtk::Grid>();
+        grid->set_row_spacing(6);
+        grid->set_column_spacing(12);
+
+        int grid_row = 0;
         for (int i = 0; i < kAccelCount; ++i) {
             const Accel a = accel_at(i);
+            // No row at all for a card this build has no backend for — the same
+            // rule every other UI site follows (see accel_present()).
             if (!accel_present(a)) {
+                depth_spin_[i] = nullptr;
                 accel_check_[i] = nullptr;
                 accel_wanted_[i] = false;
                 continue;
             }
-            auto* cb = Gtk::make_managed<Gtk::CheckButton>(accel_name(a));
+
+            // Name and Enabled keep their own grid columns so they line up down
+            // the section; both align to the TOP, so they stay put when a wide
+            // card's controls wrap onto a second line.
+            auto* name = Gtk::make_managed<Gtk::Label>(accel_name(a));
+            name->set_xalign(0.0);
+            name->set_width_chars(12);   // the width every other row's label uses
+            name->set_valign(Gtk::Align::START);
+            grid->attach(*name, 0, grid_row, 1, 1);
+
+            auto* cb = Gtk::make_managed<Gtk::CheckButton>("Enabled");
             accel_wanted_[i] = true;
             cb->set_active(true);
+            cb->set_valign(Gtk::Align::START);
+            cb->set_tooltip_text(
+                "Include this card in a run, and draw it on the graphs — one "
+                "switch for both. Unticking takes its traces off every plot, "
+                "including the history already on screen, and drops it from the "
+                "axis so the remaining cards fill it. Its telemetry is still "
+                "read; the legend value keeps updating.");
             cb->signal_toggled().connect([this, cb, i] {
-                if (!syncing_accels_) accel_wanted_[i] = cb->get_active();
+                // Only a click changes intent. refresh_accel_sensitivity()
+                // also drives this widget (see accel_wanted_), and that must
+                // not be mistaken for the user hiding a card.
+                if (syncing_accels_) return;
+                accel_wanted_[i] = cb->get_active();
+                sig_graph_filter_.emit();
             });
             accel_check_[i] = cb;
-            accel_grid->attach(*cb, col % kAccelCount, col / kAccelCount, 1, 1);
-            ++col;
-        }
-        accel_row->append(*accel_grid);
-        box->append(*accel_row);
+            grid->attach(*cb, 1, grid_row, 1, 1);
 
-        frame->set_child(*box);
-        append(*frame);
-    }
-
-    // ---- Graphs ----
-    {
-        auto* frame = Gtk::make_managed<Gtk::Frame>("Graphs");
-        auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 6);
-        box->set_margin(8);
-
-        auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
-        auto* lbl = Gtk::make_managed<Gtk::Label>("Range");
-        lbl->set_xalign(0.0);
-        lbl->set_width_chars(12);   // same as the Inference rows, so they align
-        row->append(*lbl);
-
-        range_max_.set_group(range_fixed_);
-        range_dynamic_.set_group(range_fixed_);
-        range_max_.set_active(true);   // current behaviour is the default
-
-        range_fixed_.set_tooltip_text(
-            "Leave every axis at its resting top — 100 °C for temperature, the "
-            "per-graph floor elsewhere. Readings above it are clipped and draw "
-            "flat along the top edge. This is what the graphs did originally.");
-        range_max_.set_tooltip_text(
-            "Start at the resting top and grow to 10 % above the highest "
-            "reading once the data reaches it. The axis never shrinks back, so "
-            "successive runs stay comparable on one scale.");
-        range_dynamic_.set_tooltip_text(
-            "Scale to the data in both directions — always 10 % above the "
-            "highest reading in the window, however small. Fills the plot, but "
-            "the scale moves as the data does, so two runs are not directly "
-            "comparable by eye.");
-
-        row->append(range_fixed_);
-        row->append(range_max_);
-        row->append(range_dynamic_);
-        box->append(*row);
-
-        for (auto* b : {&range_fixed_, &range_max_, &range_dynamic_}) {
-            conns_.push_back(b->signal_toggled().connect([this, b] {
-                if (b->get_active()) sig_range_mode_.emit();
-            }));
-        }
-
-        // --- which cards' traces to draw ---
-        // Independent checkboxes: any subset. Untick a card to take it out of
-        // the plots (and out of the axis calculation) without stopping it.
-        auto* filt = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
-        auto* flbl = Gtk::make_managed<Gtk::Label>("Accelerators");
-        flbl->set_xalign(0.0);
-        flbl->set_width_chars(12);
-        filt->append(*flbl);
-        for (int i = 0; i < kAccelCount; ++i) {
-            const Accel a = accel_at(i);
-            if (!accel_present(a)) { graph_accel_[i] = nullptr; continue; }
-            auto* b = Gtk::make_managed<Gtk::CheckButton>(accel_name(a));
-            b->set_active(true);   // everything shown by default
-            b->set_tooltip_text(
-                std::string("Draw ") + accel_name(a) +
-                " on the graphs. Unticking hides its traces — including the "
-                "history already on screen — and drops it from the axis "
-                "calculation, so the remaining cards fill the plot. The card "
-                "keeps running either way; its legend value keeps updating.");
-            filt->append(*b);
-            graph_accel_[i] = b;
-            conns_.push_back(b->signal_toggled().connect(
-                [this] { sig_graph_filter_.emit(); }));
-        }
-        box->append(*filt);
-
-        frame->set_child(*box);
-        append(*frame);
-    }
-
-    // ---- per-accelerator controls, one tab each ----
-    // No enclosing Frame: the tab strip already delimits it, and the checkboxes
-    // that used to need the "Accelerators" heading now live under Inference.
-    {
-        for (int i = 0; i < kAccelCount; ++i) {
-            const Accel a = accel_at(i);
-            // No tab for a card this build has no backend for.
-            if (!accel_present(a)) { depth_spin_[i] = nullptr; continue; }
-            auto* page = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 4);
-            page->set_margin(8);
-            // API mode, first row of every tab. Radios where the vendor ships
+            // The card's controls. A FlowBox, not a Box: Qualcomm carries six
+            // controls including two combos and does not fit the panel on one
+            // line, and hard-coding which of them wrap would break the moment a
+            // knob is added. The FlowBox reflows to whatever width the pane has.
+            auto* page = Gtk::make_managed<Gtk::FlowBox>();
+            page->set_selection_mode(Gtk::SelectionMode::NONE);
+            page->set_row_spacing(2);
+            page->set_column_spacing(16);
+            page->set_max_children_per_line(6);
+            page->set_hexpand(true);
+            // API mode, first control on every card's row. Radios where the vendor ships
             // both a blocking and an async inference API; a plain label where it
             // ships only one, so the UI never offers a mode that does not exist.
             {
@@ -396,7 +357,7 @@ ControlPanel::ControlPanel(const Catalog& catalog)
                 axelera_dbuf_off_.set_tooltip_text(tip);
                 row->append(axelera_dbuf_off_);
                 row->append(axelera_dbuf_on_);
-                depth_spin_[i] = nullptr;            // no spin on this tab
+                depth_spin_[i] = nullptr;            // no spin on this card
                 page->append(*row);
             } else {
                 auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
@@ -424,7 +385,7 @@ ControlPanel::ControlPanel(const Catalog& catalog)
                 page->append(*row);
             }
 
-            // Per-card controls, beyond the API and Depth rows every tab has.
+            // Controls beyond the API and Depth ones every card's row carries.
             if (a == Accel::MemryX && MB_MEMRYX_CLOCK_SET) {
                 auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
                 auto* lbl = Gtk::make_managed<Gtk::Label>("Core frequency");
@@ -539,9 +500,180 @@ ControlPanel::ControlPanel(const Catalog& catalog)
                 page->append(*brow);
             }
 
-            accel_notebook_.append_page(*page, accel_name(a));
+            grid->attach(*page, 2, grid_row, 1, 1);
+            ++grid_row;
         }
-        append(accel_notebook_);
+        box->append(*grid);
+        frame->set_child(*box);
+        append(*frame);
+    }
+
+    // ---- Graphs ----
+    {
+        auto* frame = Gtk::make_managed<Gtk::Frame>("Graphs");
+        auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 6);
+        box->set_margin(8);
+
+        // --- legends on/off ---
+        // Display only: the traces, the axis and the CSV are untouched. Worth
+        // having because a device with many metrics (the PMD2 publishes 34)
+        // makes the legend taller than the plot it describes.
+        auto* legrow = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
+        auto* leglbl = Gtk::make_managed<Gtk::Label>("Legends");
+        leglbl->set_xalign(0.0);
+        leglbl->set_width_chars(12);
+        legrow->append(*leglbl);
+        show_legends_.set_active(true);
+        show_legends_.set_tooltip_text(
+            "Show the per-device legend under each graph. Hiding it frees the "
+            "vertical space for the plots; the traces, the axis and the CSV "
+            "are unaffected.");
+        legrow->append(show_legends_);
+        conns_.push_back(show_legends_.signal_toggled().connect(
+            [this] { sig_legends_.emit(); }));
+        box->append(*legrow);
+
+        auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
+        auto* lbl = Gtk::make_managed<Gtk::Label>("Values Range");
+        lbl->set_xalign(0.0);
+        lbl->set_width_chars(12);   // same as the Inference rows, so they align
+        row->append(*lbl);
+
+        range_max_.set_group(range_fixed_);
+        range_dynamic_.set_group(range_fixed_);
+        range_max_.set_active(true);   // current behaviour is the default
+
+        range_fixed_.set_tooltip_text(
+            "Leave every axis at its resting top — 100 °C for temperature, the "
+            "per-graph floor elsewhere. Readings above it are clipped and draw "
+            "flat along the top edge. This is what the graphs did originally.");
+        range_max_.set_tooltip_text(
+            "Start at the resting top and grow to 10 % above the highest "
+            "reading once the data reaches it. The axis never shrinks back, so "
+            "successive runs stay comparable on one scale.");
+        range_dynamic_.set_tooltip_text(
+            "Scale to the data in both directions — always 10 % above the "
+            "highest reading in the window, however small. Fills the plot, but "
+            "the scale moves as the data does, so two runs are not directly "
+            "comparable by eye.");
+
+        row->append(range_fixed_);
+        row->append(range_max_);
+        row->append(range_dynamic_);
+        box->append(*row);
+
+        for (auto* b : {&range_fixed_, &range_max_, &range_dynamic_}) {
+            conns_.push_back(b->signal_toggled().connect([this, b] {
+                if (b->get_active()) sig_range_mode_.emit();
+            }));
+        }
+
+        // --- how much wall-clock time is on screen ---
+        auto* trow = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
+        auto* tlbl = Gtk::make_managed<Gtk::Label>("Time Range");
+        tlbl->set_xalign(0.0);
+        tlbl->set_width_chars(12);
+        trow->append(*tlbl);
+
+        // Off by default: a fixed window is what makes two runs comparable,
+        // and Auto's axis moves under you while you read it.
+        time_auto_.set_active(false);
+        time_auto_.set_tooltip_text(
+            "Show exactly the time that has been collected: the traces fill the "
+            "plot from the first sample and the axis widens as the session runs, "
+            "up to the 30 minutes the graphs keep.");
+        // 1..30 min. The buffer is sized for the top of this range, so moving
+        // the window never throws samples away.
+        time_minutes_.set_adjustment(Gtk::Adjustment::create(5, 1, 30, 1, 5));
+        time_minutes_.set_numeric(true);
+        time_minutes_.set_width_chars(3);
+        time_minutes_.set_sensitive(true);    // Auto is off, so this is live
+        time_minutes_.set_tooltip_text(
+            "A fixed window, in minutes. The newest sample stays at the right "
+            "edge, so successive runs line up on the same time scale.");
+        auto* tunit = Gtk::make_managed<Gtk::Label>("min");
+        tunit->set_xalign(0.0);
+
+        trow->append(time_auto_);
+        trow->append(time_minutes_);
+        trow->append(*tunit);
+        box->append(*trow);
+
+        conns_.push_back(time_auto_.signal_toggled().connect([this] {
+            time_minutes_.set_sensitive(!time_auto_.get_active());
+            sig_time_range_.emit();
+        }));
+        conns_.push_back(time_minutes_.signal_value_changed().connect([this] {
+            if (!time_auto_.get_active()) sig_time_range_.emit();
+        }));
+
+        frame->set_child(*box);
+        append(*frame);
+    }
+
+    // ---- Telemetry ----
+    // Which *instruments* to draw, as opposed to Graphs, which is about which
+    // cards and how the axes behave. One row per meter, in discover() order —
+    // the board-level meters first, then the per-rail shunts — which is also
+    // the order their graphs appear in. A row is built only where the
+    // instrument was found, so no control sits dead on a host without it.
+    {
+        auto* frame = Gtk::make_managed<Gtk::Frame>("Telemetry");
+        auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 6);
+        box->set_margin(8);
+
+        auto instrument_row = [&](const char* title, Gtk::CheckButton& sw,
+                                  const char* tip) {
+            auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
+            auto* lbl = Gtk::make_managed<Gtk::Label>(title);
+            lbl->set_xalign(0.0);
+            lbl->set_width_chars(12);
+            row->append(*lbl);
+            sw.set_active(true);
+            sw.set_tooltip_text(tip);
+            row->append(sw);
+            row->set_visible(false);   // until MainWindow finds the instrument
+            conns_.push_back(sw.signal_toggled().connect(
+                [this] { sig_graph_filter_.emit(); }));
+            box->append(*row);
+            return row;
+        };
+
+        powerz_row_ = instrument_row(
+            "POWER-Z", powerz_enabled_,
+            "Draw the POWER-Z KM003C on the System graphs. Unticking hides its "
+            "traces, including the history already on screen, and drops them "
+            "from the axis. The meter is read and logged either way.");
+
+        // --- PMD2 per-measurement filter ---
+        // Populated from Probes after discover(); stays hidden on a host with
+        // no PMD2. One checkbox per measurement POINT, not per series: ticking
+        // ATX12V governs its watts, volts and amps together, since they are
+        // three views of one rail.
+        pmd2_row_ = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
+        auto* plbl = Gtk::make_managed<Gtk::Label>("PMD2");
+        plbl->set_xalign(0.0);
+        plbl->set_width_chars(12);
+        plbl->set_valign(Gtk::Align::START);
+        pmd2_row_->append(*plbl);
+        pmd2_grid_ = Gtk::make_managed<Gtk::Grid>();
+        pmd2_grid_->set_column_spacing(12);
+        pmd2_grid_->set_row_spacing(2);
+        pmd2_row_->append(*pmd2_grid_);
+        pmd2_row_->set_visible(false);
+        box->append(*pmd2_row_);
+
+
+        ina228_row_ = instrument_row(
+            "INA228", ina228_enabled_,
+            "Draw the INA228 shunts on the Accelerator graphs. Unticking hides "
+            "every shunt trace — power, voltage, current, energy and the "
+            "monitor's own die temperature — including the history already on "
+            "screen, and drops them from the axis. They are read and logged "
+            "either way.");
+
+        frame->set_child(*box);
+        append(*frame);
     }
 
     // ---- run ----
@@ -809,6 +941,81 @@ void ControlPanel::refresh_depth_sensitivity() {
     }
 }
 
+void ControlPanel::set_pmd2_measurements(const std::vector<std::string>& total,
+                                         const std::vector<std::string>& groups,
+                                         const std::vector<std::string>& rails) {
+    if (!pmd2_grid_) return;
+    if (total.empty() && groups.empty() && rails.empty()) return;
+    // Same wrap rule as the graph legends: past ~5 the row runs wider than the
+    // panel. kMaxPmd2PerRow is local because ControlPanel has no business
+    // knowing MainWindow's legend constant, but the number is chosen to match.
+    constexpr int kMaxPmd2PerRow = 5;
+
+    auto add = [&](const std::string& n, int col, int row) {
+        auto* b = Gtk::make_managed<Gtk::CheckButton>(n);
+        b->set_active(true);
+        b->set_tooltip_text(
+            "Draw the PMD2's " + n + " on the System graphs — its watts, volts "
+            "and amps together. Unticking hides those traces, including the "
+            "history already on screen, and drops them from the axis. It is "
+            "always measured and always logged either way.");
+        pmd2_grid_->attach(*b, col, row, 1, 1);
+        pmd2_boxes_[n] = b;
+        conns_.push_back(
+            b->signal_toggled().connect([this] { sig_graph_filter_.emit(); }));
+    };
+
+    // Row 0: the master switch, alone — it governs everything below it, and a
+    // reading on the same line would look like one more peer of the rails.
+    int row = 0, col = 0;
+    pmd2_enable_.set_active(true);
+    pmd2_enable_.set_tooltip_text(
+        "Draw the PMD2 at all. Unticking takes every one of its traces off the "
+        "System graphs in one go and greys the boxes below — which keep their "
+        "state, so a chosen subset comes back when you tick this again. The "
+        "meter is read and logged regardless.");
+    pmd2_grid_->attach(pmd2_enable_, col, row, 1, 1);
+    conns_.push_back(pmd2_enable_.signal_toggled().connect([this] {
+        const bool on = pmd2_enable_.get_active();
+        for (auto& kv : pmd2_boxes_) kv.second->set_sensitive(on);
+        sig_graph_filter_.emit();
+    }));
+    // Row 1: the board total and the group subtotals — the summary tier, read
+    // as TOTAL and the three groups it splits into.
+    if (!total.empty() || !groups.empty()) {
+        ++row;
+        col = 0;
+        for (const auto& n : total) add(n, col++, row);
+        for (const auto& n : groups) add(n, col++, row);
+    }
+
+    // Rows 2+: the individual rails, wrapped.
+    if (!rails.empty()) {
+        ++row;
+        col = 0;
+        for (const auto& n : rails) {
+            if (col == kMaxPmd2PerRow) { col = 0; ++row; }
+            add(n, col++, row);
+        }
+    }
+    pmd2_row_->set_visible(true);
+}
+void ControlPanel::set_ina228_present(bool present) {
+    if (ina228_row_) ina228_row_->set_visible(present);
+}
+void ControlPanel::set_powerz_present(bool present) {
+    if (powerz_row_) powerz_row_->set_visible(present);
+}
+
+bool ControlPanel::pmd2_shown(const std::string& measurement) const {
+    // Only ever asked about a PMD2 metric, so Enable can answer for all of
+    // them. An unknown name stays visible — a measurement with no checkbox has
+    // no bit to consult.
+    if (!pmd2_enable_.get_active()) return false;
+    const auto it = pmd2_boxes_.find(measurement);
+    return it == pmd2_boxes_.end() ? true : it->second->get_active();
+}
+
 int ControlPanel::memryx_freq_mhz() const {
 #if !MB_MEMRYX_CLOCK_SET
     return 0;   // control compiled out: always "leave the clock alone"
@@ -845,15 +1052,24 @@ GraphArea::RangeMode ControlPanel::range_mode() const {
     return GraphArea::RangeMode::Max;
 }
 
+// The Accelerators section's Enabled switch drives the graphs as well as the
+// run — there is no separate trace filter any more.
+//
+// It reads `accel_wanted_`, the user's INTENT, and deliberately not the
+// checkbox's live state. refresh_accel_sensitivity() unticks a card whenever
+// the selected model has no artifact for it, so reading the widget would blank
+// four cards' temperature and power traces — and the history already on screen,
+// since the filter is retroactive — merely because someone picked a
+// Hailo-only model. A card with no build for this model is idle, not absent,
+// and its telemetry is exactly what you would want to keep watching.
 unsigned ControlPanel::graph_accel_mask() const {
     unsigned m = 0;
     for (int i = 0; i < kAccelCount; ++i) {
-        // Two distinct reasons the pointer can be null, and they mean opposite
-        // things: a hidden card never gets a checkbox and must stay out of the
-        // plots, while a present card is briefly null during construction and
-        // should default to visible.
+        // A card absent from the build has no row and must stay out of the
+        // plots; accel_wanted_ is false for one, but test presence explicitly
+        // so the two reasons cannot be confused.
         if (!accel_present(accel_at(i))) continue;
-        if (!graph_accel_[i] || graph_accel_[i]->get_active()) m |= 1u << i;
+        if (accel_wanted_[i]) m |= 1u << i;
     }
     return m;
 }

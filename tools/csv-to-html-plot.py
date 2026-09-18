@@ -144,10 +144,21 @@ _SHADE_STEPS = [1.0, 1.30, 0.72, 1.55, 0.88, 1.15, 0.60]
 # "TEMP" and invents a phantom device that no card can be matched to.
 # The bare ENERGY/CHARGE forms are what an *unfolded* shunt produces (one that
 # is not mapped to a PCIe card), where the device is the bridge itself.
+# ElmorLabs PMD2 rails and group aggregates. Each is suffixed with its family
+# (_POWER/_VBUS/_CURRENT) by PMD2Probe, because all three families share this
+# one CSV namespace -- an unsuffixed "ATX12V" would be the same column in all
+# three. Listed longest-first and BEFORE the bare alternatives below for the
+# documented reason: the device capture is non-greedy, so the parser prefers a
+# longer device name with a shorter metric, which is how `_INA228_TEMP` once
+# split as device `<bdf>_INA228` and invented a phantom card.
+_PMD2_RAILS = (r"ATX12V|ATX5VSB|ATX5V|ATX3\.3V|HPWR1|EPS1|EPS2"
+               r"|PCIE1|PCIE2|PCIE3|EPS|PCIE|MB")
+
 _METRIC_RE = re.compile(
     r"^(.+?)_(INA228_POWER|INA228_TEMP|INA228_ENERGY|INA228_CHARGE|INA228_VBUS"
     r"|INA228_CURRENT"
     r"|SYS_VBUS|SYS_CURRENT|SYS_POWER"
+    r"|(?:" + _PMD2_RAILS + r")_(?:POWER|VBUS|CURRENT)"
     r"|POW|TEMP|TS\d+|T\d+|N\d+-\d+|SYS|AI\d+|PCIE\d+|TOTAL|INA228"
     r"|ENERGY|CHARGE|VBUS|CURRENT|CLK|C\d+)$"
 )
@@ -168,10 +179,27 @@ def _classify_metric(met):
     # Bare "ina228" is the pre-2026-09-03 spelling of the folded shunt power
     # column, before the family suffixes were made uniform. Kept so logs
     # already on disk still plot.
-    if met in ("pow", "total", "ina228", "ina228_power"):
+    if met in ("pow", "ina228", "ina228_power"):
         return "power"
+    # --- ElmorLabs PMD2: a SYSTEM meter, so every one of its readings goes to
+    # the sys* charts, never the accelerator ones. Board watts are ~10x a
+    # card's, so sharing the Power axis would flatten every card trace -- the
+    # same reasoning that keeps the POWER-Z's sys_power separate.
+    #
+    # `total` and a bare `pcie<N>` used to classify as "power" here. Both are
+    # PMD2's and nothing else ever emitted them, so they move to syspower;
+    # leaving them on the card chart put board-level watts on a card axis.
+    if met == "total":
+        return "syspower"
+    if re.fullmatch(r"(?:" + _PMD2_RAILS.lower() + r")_power", met):
+        return "syspower"
+    if re.fullmatch(r"(?:" + _PMD2_RAILS.lower() + r")_vbus", met):
+        return "sysvoltage"
+    if re.fullmatch(r"(?:" + _PMD2_RAILS.lower() + r")_current", met):
+        return "syscurrent"
+    # Pre-PMD2-suffix logs: a bare PCIE<n> column was this meter's rail power.
     if re.match(r"^pcie\d+$", met):
-        return "power"
+        return "syspower"
     if met in ("temp", "sys", "ina228_temp"):
         return "temp"
     if re.match(r"^(ts|t|ai)\d+$", met):

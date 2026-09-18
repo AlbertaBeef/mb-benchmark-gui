@@ -26,6 +26,8 @@
 #include "Catalog.h"
 #include "ControlPanel.h"
 #include "Fetcher.h"
+#include <gtkmm/togglebutton.h>
+
 #include "GraphArea.h"
 #include "Probes.h"
 
@@ -61,7 +63,20 @@ private:
     // and what a folded INA228 inherits.
     struct LegendRow {
         std::string device;
-        std::vector<Gtk::Widget*> widgets;
+        // The device name label and its aggregate label. Shown whenever any of
+        // the row's cells is, hidden with the last of them — a name and a
+        // "max —" floating with no entries beside them reads as a fault.
+        std::vector<Gtk::Widget*> head;
+        // One per metric cell, carrying the index of the metric it draws, so a
+        // cell can be hidden on its own. Needed because the Telemetry switches
+        // hide PART of a row: turning INA228 off takes the shunt cell off a
+        // card that keeps its own sensors. The whole-row case (the accelerator filter)
+        // still works — every cell simply resolves to hidden.
+        struct Cell {
+            Gtk::Widget* widget;
+            int metric;
+        };
+        std::vector<Cell> cells;
     };
 
     struct AggEntry {
@@ -92,8 +107,16 @@ private:
         Gtk::Widget* cell[kAccelCount] = {};
     };
 
-    // Push the control panel's Range choice onto every graph.
+    // Every graph in the window, in the order the sections appear. Two
+    // controls drive all of them at once and neither may miss one, which a
+    // hand-written list in each has already managed.
+    std::vector<GraphArea*> all_graphs();
+    // Push the control panel's Values Range choice onto every graph.
     void apply_range_mode();
+    // Push the Time Range choice — Auto, or a fixed window in minutes — onto
+    // every graph. The sample buffers are sized for the top of that range, so
+    // this only changes what is drawn.
+    void apply_time_range();
     // Show the cards ticked in Graphs / Accelerators by hiding the rest on
     // every graph. Retroactive, and it re-scales the axes.
     void apply_graph_filter();
@@ -110,6 +133,12 @@ private:
     Fetcher fetcher_;
     BenchEngine engine_;
     ControlPanel* controls_ = nullptr;
+    // Header-bar toggle for the control pane, and the one place the pane is
+    // hidden. Purely chrome: nothing in the panel is rebuilt or reset, so every
+    // control keeps its state and the graphs keep their history across a
+    // hide/show. Per session only — see the note in CLAUDE.md.
+    Gtk::ToggleButton* panel_toggle_ = nullptr;
+    void set_panel_visible(bool on);
 
     std::vector<Gdk::RGBA> device_palette_;
     Gdk::RGBA accel_color_[kAccelCount];
@@ -169,6 +198,9 @@ private:
     GraphArea* temp_graph_ = nullptr;
     std::vector<Gtk::Label*> temp_values_;
     std::vector<AggEntry> temp_agg_labels_;
+    // Every telemetry legend grid, so the Graphs -> Legends toggle can hide
+    // them all at once. Collected in build_metric_section().
+    std::vector<Gtk::Widget*> legend_grids_;
     std::vector<LegendRow> temp_rows_;
 
     GraphArea* freq_graph_ = nullptr;

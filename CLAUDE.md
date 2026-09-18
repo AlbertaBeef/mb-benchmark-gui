@@ -131,7 +131,7 @@ Three layers, cleanly separated. Keep it that way.
   CMake needs only headers and `libdl`.
 - **A card the build has no backend for is hidden completely.** `accel_present()`
   in `Catalog.h` is the single question every UI site asks: no Inference
-  checkbox, no settings tab, no Graphs filter checkbox, no legend entry, no
+  checkbox, no Accelerators row, no legend entry, no
   trace, and no mention on the model rows' card line.
 
   **This reverses the original design**, which showed every card greyed out with
@@ -206,9 +206,42 @@ Three layers, cleanly separated. Keep it that way.
   `Probes::discover()` and writes one row at the end of every tick. Schema and
   the rules that make the file useful are under **Invariants**.
 - **`ControlPanel.{h,cpp}`** — the left panel: a `Gtk::Notebook` of two
-  single-selection `Gtk::ListBox`es (Models / Pipelines), the frame-rate controls,
-  the per-accelerator checkboxes, Start/Stop, status. `selection()` turns the
-  current row plus the ticked cards into `std::vector<BenchItem>`.
+  single-selection `Gtk::ListBox`es (Models / Pipelines), then four frames —
+  **Inference** (frame rate), **Accelerators**, **Graphs**, **Telemetry** — and
+  Start/Stop with the status line. `selection()` turns the current row plus the
+  ticked cards into `std::vector<BenchItem>`.
+
+  **Accelerators is one row per card: name, `Enabled`, then that card's own
+  controls** (API mode, depth, and whatever else that vendor exposes).
+  **This replaced a `Gtk::Notebook` of one tab per card** (2026-09-18). The tabs
+  showed only the selected card's settings, so two cards' configurations could
+  never be read against each other and a run could start with a card set up in a
+  way nobody had looked at. Don't reintroduce them.
+
+  Three things about that section are deliberate:
+  - **`Enabled` is ONE switch for two jobs**: it is what `selection()` targets
+    for a run *and* what `graph_accel_mask()` draws. There were two per-card
+    checkbox sets until 2026-09-18 — this one under Inference and a trace filter
+    under Graphs — and with both headed "Accelerators" they could not be told
+    apart. The Graphs row is gone. **What that cost is deliberate and should not
+    be rebuilt casually**: a card can no longer be benchmarked with its traces
+    hidden, which was useful when one card's watts dwarfed another's on a shared
+    axis.
+  - **`graph_accel_mask()` reads `accel_wanted_`, the user's INTENT, not the
+    checkbox's live state**, and that distinction is load-bearing.
+    `refresh_accel_sensitivity()` unticks a card whenever the selected model has
+    no artifact for it, so reading the widget would blank four cards'
+    temperature and power traces — and the history already on screen, the filter
+    being retroactive — merely because someone picked a Hailo-only model. A card
+    with no build for this model is *idle*, not absent, and its telemetry is
+    exactly what you would want to keep watching. The toggle handler therefore
+    returns early while `syncing_accels_` is set: only a click is intent.
+  - **A card's controls sit in a `Gtk::FlowBox`, not a Box.** Qualcomm carries
+    six controls including two combos and does not fit the 680 px panel on one
+    line; the FlowBox reflows to whatever width the pane has. Hard-coding which
+    controls wrap would break the moment a knob is added.
+  - **The name and `Enabled` are `valign = START`**, so they stay put when a
+    wide card's controls wrap onto a second line.
 - **`Automation.{h,cpp}`** — unattended schedules, `--automation <file>`. Pure
   data, no GTK, like `Catalog`/`Probes`/`Logger`, and it deliberately does **not**
   resolve ids against the catalog — that is `MainWindow`'s job, and keeping it
@@ -342,7 +375,7 @@ Three layers, cleanly separated. Keep it that way.
   unmatched falls back to the cycling palette. No ad-hoc RGB.
 - **Two orderings must agree, and they are separate.** `enum class Accel`
   (`Hailo, MemryX, DeepX, Axelera, Qualcomm`) fixes the series order on the three
-  benchmark graphs, the checkbox row and the card tabs. The **Power /
+  benchmark graphs and the Accelerators rows. The **Power /
   Temperature / Frequency** legends instead follow `Probes::discover()`'s call
   order. Change one without the other and the two halves of the UI disagree.
 - **Efficiency needs real watts.** `Probes::power_for_device()` returns NaN for a
@@ -365,19 +398,44 @@ Three layers, cleanly separated. Keep it that way.
   the engine in SI and do the unit choice at the display edge. It is also the
   **only lower-is-better series** on screen — don't fold it into a shared
   "higher is better" assumption if summary/sorting is ever added.
-- **Graph span is 10 minutes** (`kSpanSeconds = 600` → `kHistory = 601` samples
-  at 1 Hz). `GraphArea` derives its time-label step from the span — the largest
-  of {10,15,30,60,120,300,600} s that still leaves ~5+ divisions — so a 60 s
+- **The graphs keep 30 minutes and draw a window of it.** `kHistory` is
+  `kMaxSpanSeconds + 1` = 1801 samples at 1 Hz — the top of the **Graphs → Time
+  Range** control — while `kSpanSeconds` (300) is only the window drawn by
+  default, matching the control's own 5-minute default. **Buffering the maximum rather than the window is the point**:
+  narrowing the window discards nothing, so widening it again brings the older
+  samples straight back instead of leaving a gap that has to refill in real
+  time. `GraphArea::view_window()` is the one place the two are reconciled, and
+  **both `axis_range()` and `draw()` must use it** — scaling the axis over the
+  whole buffer would let a peak from twenty minutes ago flatten a one-minute
+  window.
+
+  **`Auto` draws everything collected**, so the traces fill the plot from the
+  first sample and the axis widens as the session runs. **It is off by
+  default** — a fixed window is what makes two runs comparable, and Auto's axis
+  moves while you read it. That it exists at all is not cosmetic:
+  with a fixed window the newest sample is anchored at the right edge, so a
+  young history is a stub in the last few percent of the plot — with 34 PMD2
+  series and a wide legend it was off screen entirely, which is what this
+  control was added for.
+
+  `GraphArea` derives its time-label step from the span in view — the largest of
+  {1,2,5,10,15,30,60,120,300,600} s that still leaves ~5+ divisions — so a 60 s
   window keeps 10 s marks while 600 s gets 2 min marks instead of sixty
-  gridlines. Deriving it from the span rather than hardcoding it is what keeps
-  `GraphArea.cpp` byte-identical to `mb-powermon-gui`'s copy — both apps now pass
-  600, but the widget doesn't care. Beware: `draw()` already has a `step` for the
-  trace x-spacing, hence `label_step`.
+  gridlines. **The list starts at 1 s because of `Auto`**: a few seconds after a
+  reset there is no 10 s mark to draw, and the old list left the plot with no
+  vertical gridlines at all. Deriving the step from the span rather than
+  hardcoding it is what keeps `GraphArea.cpp` byte-identical to
+  `mb-powermon-gui`'s copy — the sibling still constructs with 601/600 and has no
+  control for any of this, but the widget doesn't care. Beware: `draw()` already
+  has a `step` for the trace x-spacing, hence `label_step`.
 - **The axis top is a baseline plus a policy.** Percent, `fixed_max` (the 100 °C
   temperature axis) and auto-with-a-`min_axis_max`-floor each supply a *baseline*
   top; `GraphArea::RangeMode` decides what the data does to it, and the **Graphs
-  → Range** control drives all six graphs at once (mixing modes between graphs
-  would have them answering different questions simultaneously):
+  → Values Range** control drives every graph at once (mixing modes between
+  graphs would have them answering different questions simultaneously). It was
+  called just **Range** until the Time Range row landed beside it; the label is
+  12 characters because that is the width the Inference rows align to, which is
+  also why it is not "Readings Range":
   - `Fixed` — baseline only, data above it clips. The original behaviour.
   - `Max` (**default**) — baseline until a reading reaches it, then
     `kHeadroom` (1.10) × peak; never shrinks back, so runs stay comparable.
@@ -393,6 +451,12 @@ Three layers, cleanly separated. Keep it that way.
       rests on the floor instead of floating above -137.
     - all-zero data rests at the baseline rather than on a 1e-9 axis whose
       gridlines would every one format as "0".
+
+  **`MainWindow::all_graphs()` is the single list both controls walk.** There
+  were two hand-written lists before, and the three System graphs were missing
+  from the Range one — added after the POWER-Z and PMD2 sections and never
+  appended to it, so they silently ignored the control. Add a new graph there,
+  not at the call sites.
 
   `draw()` maps values through both ends (`(v - lo) / (hi - lo)`), so the bottom
   gridline is `lo`, not 0 — that is why the axis helper is `axis_range(lo, hi)`
@@ -485,7 +549,7 @@ Three layers, cleanly separated. Keep it that way.
   (`w = _w/1000.0 if 0 <= _w < 1e6 else nan`) so the sentinel never crosses the
   pipe in the first place. Both projects have it. **A card with no power sensor
   must read NaN, never a number** — the same rule as "never estimate watts".
-- **The Graphs / Accelerators filter hides series and legend entries; it does
+- **The Accelerators `Enabled` filter hides series and legend entries; it does
   not drop samples.** Unticking a card calls `GraphArea::set_series_visible()`
   on every graph and hides that card's legend widgets;
   `push()` still receives every reading. That matters twice over: the filter is
@@ -497,8 +561,9 @@ Three layers, cleanly separated. Keep it that way.
 
   The control is **independent checkboxes, one per card — not a radio group**:
   the point is comparing a chosen subset on one plot, so "Hailo and Axelera, not
-  the other two" has to be expressible. `graph_accel_mask()` returns a bit per
-  card in `Accel` order. Unticking everything legitimately blanks the graphs;
+  the other two" has to be expressible. It lives on each card's row in the
+  **Accelerators** section and is the same switch that decides what a run
+  targets; `graph_accel_mask()` returns a bit per card in `Accel` order. Unticking everything legitimately blanks the graphs;
   that is left alone rather than silently re-showing all, which would make the
   control lie about its own state.
 
@@ -509,17 +574,71 @@ Three layers, cleanly separated. Keep it that way.
   belonging to no card at all — an unmapped INA228, the board ambient sensor —
   has no bit to consult and stays visible.
 
-  **The legend entry is hidden with the trace**, not left running. The handles
-  for that are collected at build time — `AccelSection::cell[]` for the
-  benchmark graphs, `LegendRow{device, widgets}` for the telemetry ones, where a
-  row is the device-name label plus its aggregate label plus its per-metric
-  cells. They have to be captured during construction because the telemetry
-  legend is a `Gtk::Grid` laid out by device, with nothing to walk back to
-  afterwards.
+  **The Telemetry section is a second filter, on the same signal, and it
+  selects *instruments* where Accelerators selects cards.** One row per meter, in
+  `discover()` order — **POWER-Z**, **PMD2**, **INA228** — which is also the
+  order their graphs appear in. POWER-Z and INA228 get a bare `Enabled` switch
+  each; they publish a handful of series apiece where the PMD2 publishes 34 and
+  earns per-measurement boxes. **A row is built only where the instrument was
+  found**, so nothing sits dead: on the x86_64 host INA228 and PMD2 show and
+  POWER-Z does not; on the IQ-9075 it is the other way round.
+
+  **INA228 is matched on the LABEL, not the device name, and that is
+  load-bearing.** A mapped shunt is *folded* onto its card, so its `device_name`
+  is `"Hailo"` and only the label still says so (`Hailo INA228 POWER`) — a
+  device-name test would match none of the 20 shunt metrics on this host.
+  Unmapped rails keep `INA228#<n>`, which the same substring test catches. The
+  card filter has already had its say by then, so an instrument switch is an
+  *additional* gate, not an alternative one: a shunt disappears when either its
+  card or its instrument is unticked.
+
+  **Telemetry → PMD2 is per measurement *point* rather than per series.** Ticking `ATX12V` governs its
+  watts, volts and amps together, because they are three views of one rail;
+  `metric_shown()` in `apply_graph_filter()` composes it with the device check.
+  The row is laid out in the meter's own tiers so it reads as the hierarchy it
+  is: `Enable` **alone** on the first line — it governs everything below it, and
+  a reading beside it would read as one more peer of the rails — then the
+  summary tier (**TOTAL** and the three group subtotals), then the ten rails
+  wrapped at five. `Enabled` is a master switch that **greys** the rest rather
+  than clearing them, so a chosen subset survives being switched off and back
+  on. All three instrument switches are spelled `Enabled`, the same word, so the
+  section reads as one kind of control.
+
+  **The tiers are derived, not listed**, so a firmware that renames or adds a
+  rail needs no UI change. `MainWindow` reads them off two structural facts of
+  `PMD2Probe::discover()`: the TOTAL is the one power metric with **no family
+  suffix** (so `legend_short()` leaves it untouched where it trims every
+  other), and a **rail** is a point that also carries a voltage and a current —
+  only rails are measured, a group is a POWER-only subtotal. Matching is on the
+  exact trimmed name, which is what keeps the `EPS` group apart from the `EPS1`
+  / `EPS2` rails, and `PCIE` from `PCIE1..3`. A host with no PMD2 gets no row.
+
+  **Every one of these filters hides the legend entry with the trace**, and
+  since 2026-09-18 that is per *cell*, not per row. It used to be per row —
+  `LegendRow` held one flat widget list — which was enough while only the card
+  filter existed, because that hides a device whole. A Telemetry switch hides
+  **part** of a row: turning INA228 off takes the shunt cell off a card that
+  keeps its own sensors. So `LegendRow` now carries `head` (the device name and
+  its aggregate) and `cells`, each cell knowing **the index of the metric it
+  draws**. A cell follows `metric_shown()`; the head follows the last surviving
+  cell, because a device name and a "max —" with nothing beside them read as a
+  fault rather than as a filter.
+
+  **A hidden trace must not reach the aggregate either.** All nine per-device
+  aggregates in `on_tick` skip invisible series through one
+  `counted(graph, k)` helper, which asks `GraphArea::series_visible()` — the
+  graph's own state, so it answers for every filter at once. Without it a row
+  reports "max 3.5 W" from a shunt whose cell and trace are both gone.
+
+  The handles for all of this are collected at build time —
+  `AccelSection::cell[]` for the benchmark graphs, `LegendRow{device, head,
+  cells}` for the telemetry ones. They have to be captured during construction
+  because the telemetry legend is a `Gtk::Grid` laid out by device, with nothing
+  to walk back to afterwards.
 
   **Qualcomm is deliberately one of those unmatched metrics, and this is the one
   place a fifth card is not seamless.** `accel_name(Accel::Qualcomm)` is the
-  stable string `"Qualcomm"` — it labels a checkbox, a settings tab and a graph
+  stable string `"Qualcomm"` — it labels a checkbox, an Accelerators row and a graph
   series, so it cannot vary by board — while `QualcommIQProbe` names its thermal
   rows after the device tree (`IQ9075 N0-0` …), because a temperature row wants
   to say *which board*. They therefore never string-match, so unticking Qualcomm
@@ -577,6 +696,34 @@ Three layers, cleanly separated. Keep it that way.
   *Accumulated Energy* is joules read from the INA228 hardware accumulators, one
   series per rail, always live. *Energy* is mJ/frame derived from the benchmark,
   one series per card. Don't merge them.
+- **The header bar carries the panel toggle at its start, the About button at
+  its end.** The toggle collapses the control pane and gives its width to the
+  graphs — the panel is set-and-forget, so once a run is configured it is ~40 %
+  of the window spent on controls nobody is touching. `set_panel_visible()` is
+  the single place it happens, and it **hides the Paned's start child**: GtkPaned
+  gives the whole area to the remaining child and drops the handle. Detaching the
+  child instead would re-parent live widgets and reset `set_position()`.
+  Nothing is rebuilt, so every control keeps its state and the graphs keep their
+  history across a hide/show.
+
+  **One icon on a `Gtk::ToggleButton`, deliberately not two swapped.**
+  `sidebar-show-symbolic` is in both Yaru (the active theme) and Adwaita (the
+  fallback); **`sidebar-hide-symbolic` is Yaru-only** and would render blank for
+  anyone on stock Adwaita. A ToggleButton draws its own checked state, so there
+  is nothing to swap.
+
+  **Ctrl+B is the first and only keyboard shortcut in either app.** It is a
+  `Gtk::ShortcutController` on the window, scope **MANAGED** so it fires wherever
+  focus sits, rather than an action plus `set_accels_for_action()` — nothing here
+  holds the `Gtk::Application`, since `main()` uses `make_window_and_run()`. It
+  flips the *button*, not the pane, so there is one code path and the button
+  cannot disagree with what is on screen. Note `Gtk::CallbackAction` is declared
+  in `<gtkmm/shortcutaction.h>`, not a header of its own.
+
+  **The toggle is per-session.** Neither app has GSettings, a KeyFile or any
+  window-state save — the only file either writes is a CSV log — so the panel is
+  visible on every launch. Persisting it means inventing the first preference
+  store in the project; do that deliberately, not as a side effect.
 - **Window chrome.** Bottom corners are rounded to 12px to match GNOME's own
   windows; plain GTK4's Adwaita rounds only the top two on a CSD window. The
   radius goes on the `decoration` node (that is what shapes a CSD window), and
@@ -837,11 +984,18 @@ can never become a card's `power_for_device()` value.
 **`Probes.{h,cpp}` is shared with `mb-powermon-gui`** and the two are now close.
 The **frequency family was ported there 2026-09-15** — all four clock sources,
 plus the Frequency graph — so the sibling has `freq_metrics_` and a
-`Frequency (MHz)` section of its own. `PowerZProbe`'s system V/I/W triplet is
-still **not** ported. Everything INA228 **has** been: energy/charge and the
+`Frequency (MHz)` section of its own. **`PMD2Probe` was ported there
+2026-09-18** — the whole class, its two static name tables, the `<termios.h>`
+include and the `discover()` registration in PowerZ's slot — so the sibling now
+has the System Voltage/Current/Power sections populated on this host, which had
+no POWER-Z. Its one edit was the header comment: that comment names
+`power_for_device()`, which **cannot exist there** (it needs `Catalog.h`), so it
+was reworded rather than carried over. `PowerZProbe`'s system V/I/W triplet is
+ported too — an earlier version of this paragraph said it was not, and that was
+already stale. Everything INA228 **has** been: energy/charge and the
 die-temperature fold (2026-09-03), then `VBUS`, `CURRENT` with the per-rail
 `invert` flag, the latched undervoltage check and `plausible_power()`
-(2026-09-07 … 09-12). Current line counts are **1740 here against 1619 there**.
+(2026-09-07 … 09-12). Current line counts are **1950 here against 1831 there**.
 
 **Three divergences bit during the frequency port, and each would have silently
 no-op'd a `str.replace`** — they are the concrete form of "port hunk by hunk":
@@ -867,7 +1021,7 @@ never consulted. Don't add one back.
 
 ## API modes (Sync / Async)
 
-**The mode is per card, chosen in that card's tab — not once for the whole run.**
+**The mode is per card, chosen on that card's row — not once for the whole run.**
 `BenchItem::api_mode` carries it (`enum class ApiMode` lives in `Catalog.h`, not
 `Bench.h`, precisely so `BenchItem` can hold it); `BenchEngine::start()` takes no
 mode argument and each `Worker` uses its own item's. A run may therefore mix
@@ -972,9 +1126,13 @@ which does have one and will not warn.
   runtime reload the card's firmware (`fwtrace: detached for firmware reload` in
   dmesg), so a 4-stream run fired three or four reloads in seconds; on a card
   still in bootloader that raced the 3.8 MB firmware ELF upload and took the
-  PCIe link down. The control is now **AIPU cores (1-4, default 2)** — an honest
-  name for what it delivers — and the ordering of the connects is what was
-  actually wrong, not their number. Teardown must stop *and join* any instance
+  PCIe link down. The control is now **AIPU cores (1-4)** — an honest name for
+  what it delivers — and the ordering of the connects is what was actually
+  wrong, not their number. **It defaulted to 2 while this paragraph was
+  written, one step below the cliff; the fixed-batch path (2026-09-03) raised
+  the default to 4**, which is what `ControlPanel.cpp` sets
+  (`Adjustment::create(4, 1, 4, 1, 1)`) and what the invariant above states.
+  Automation's `axelera.cores = 4` is therefore both legal and the default. Teardown must stop *and join* any instance
   threads before destroying an instance, and release `Stage::conn` only after
   every instance on it is gone.
 
@@ -1216,7 +1374,8 @@ which does have one and will not warn.
 
   So NSPs are the large knob and async depth a smaller host-side overlap win that
   stacks on top of it. Two consequences for the design: the **`NSPs` control
-  defaults to 2** (unlike Axelera's cores there is no cliff — nothing wedges), and
+  defaults to 2** (unlike Axelera's cores under the *old* multi-connection path
+  there is no cliff here — nothing wedges), and
   **Async is honest here even though QNN has no async API** — it is extra engines
   in flight per NSP on host threads, and `api_mode_note()` says exactly that.
   Depth 8 regressing is why the shared default of 4 is right for this card too.
@@ -1253,7 +1412,7 @@ which does have one and will not warn.
 - **`run_frame()` must retire exactly one frame in both modes.** An async runner
   tops its pipeline up and *then* blocks for one completion, so the engine's
   frame counter needs no special case. Keep that contract.
-- **Depth is per card, in that card's tab** (`BenchItem::depth`, was a single
+- **Depth is per card, on that card's row** (`BenchItem::depth`, was a single
   global "Threads" control). Every backend has some form of frames-in-flight, but
   the mechanism and the useful range differ, so the range is per card:
 
@@ -1326,7 +1485,7 @@ which does have one and will not warn.
   **DeepX's pool is untested**, and testing it needs no code at all, only the
   two env vars plus the same per-thread CPU check.
 
-  **Axelera's depth spin button is gone — the tab carries an Off/On
+  **Axelera's depth spin button is gone — its row carries an Off/On
   double-buffering radio pair instead** (`axelera_dbuf_off_` /
   `axelera_dbuf_on_` in `ControlPanel.cpp`, **Off listed first**, On still the
   default; `depth(Accel)` maps them to 1 and 2 for `BenchItem`). Automation
@@ -1358,7 +1517,7 @@ which does have one and will not warn.
   "Async" would leave it permanently at 1 and silently drop the concurrency each
   one *does* have — Axelera's double buffering and Qualcomm's measured ~1.45x
   host pipelining. Both regressed exactly that way when the mode control first
-  moved into the tabs; depth is now independent for them.
+  moved out of the panel-wide row; depth is now independent for them.
 
   A card with both modes reports depth 1 in Sync regardless of where its spin
   button sits, because that is what Sync *is*, and its spin button greys out.
