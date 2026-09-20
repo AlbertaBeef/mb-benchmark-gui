@@ -59,6 +59,15 @@ if(NOT DEFINED AXELERA_DIR)
 endif()
 set(MB_HAVE_AXELERA OFF)
 if(DEFINED AXELERA_DIR AND EXISTS "${AXELERA_DIR}/include/axruntime/axruntime.h")
+  # find_library CACHES its result, and the cache outlives an SDK upgrade: with
+  # runtime-1.8.0-1 installed beside 1.7.0-1 the glob above correctly picks 1.8,
+  # while a cached AXR_LIB kept pointing at 1.7 and the build went on linking
+  # the OLD runtime with no warning. Drop the cache entry whenever it no longer
+  # lives under the directory we just chose.
+  if(DEFINED AXR_LIB AND NOT AXR_LIB MATCHES "^${AXELERA_DIR}/")
+    message(STATUS "Axelera: dropping stale AXR_LIB cache (${AXR_LIB})")
+    unset(AXR_LIB CACHE)
+  endif()
   find_library(AXR_LIB axruntime PATHS "${AXELERA_DIR}/lib" NO_DEFAULT_PATH)
   if(AXR_LIB)
     set(MB_HAVE_AXELERA ON)

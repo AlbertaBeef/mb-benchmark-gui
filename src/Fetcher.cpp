@@ -49,12 +49,17 @@ bool have_tool(const char* name) {
     return run_cmd({name, "--version"}, /*silence_stderr=*/true) != -1;
 }
 
-// Expand the zip `strip` pattern: %m -> artifact name.
-std::string expand(const std::string& pattern, const std::string& artifact) {
+// Expand the zip `strip` pattern: %m -> artifact name, %c -> core-build number.
+std::string expand(const std::string& pattern, const std::string& artifact,
+                   int cores = 1) {
     std::string out;
     for (size_t i = 0; i < pattern.size(); ++i) {
         if (pattern[i] == '%' && i + 1 < pattern.size() && pattern[i + 1] == 'm') {
             out += artifact;
+            ++i;
+        } else if (pattern[i] == '%' && i + 1 < pattern.size() &&
+                   pattern[i + 1] == 'c') {
+            out += std::to_string(cores);
             ++i;
         } else {
             out += pattern[i];
@@ -198,22 +203,49 @@ std::string Fetcher::fetch_one(const Artifact& a, const VendorSource& v) {
             fs::remove(zip, ec);
             return "download failed (" + url + ")";
         }
-        fs::create_directories(staging, ec);
-        const std::string pattern = expand(v.strip, a.name) + "/*";
-        const int rc = run_cmd({"unzip", "-q", "-o", "-j", zip.string(), pattern,
-                                "-d", staging.string()});
+        // Voyager ships EVERY core build in this one archive, so extract them
+        // all rather than downloading it once per variant: 1/ becomes the
+        // artifact itself and 2/ 3/ 4/ become <artifact>-<N>core, which is
+        // where bench_axelera.cpp looks. The zip is removed only after the
+        // last one — deleting it after the first extraction is what forced the
+        // -Ncore builds to be produced by hand.
+        std::vector<int> builds = v.core_builds;
+        if (builds.empty()) builds.push_back(1);   // old single-subtree config
+
+        std::string err;
+        for (size_t bi = 0; bi < builds.size() && err.empty(); ++bi) {
+            const int n = builds[bi];
+            // The first entry is the plain artifact; the rest are siblings.
+            const fs::path out = bi == 0
+                                     ? dest
+                                     : fs::path(dest.string() + "-" +
+                                                std::to_string(n) + "core");
+            const fs::path stage = out.string() + ".part";
+            fs::remove_all(stage, ec);
+            fs::create_directories(stage, ec);
+            const std::string pattern = expand(v.strip, a.name, n) + "/*";
+            const int rc = run_cmd({"unzip", "-q", "-o", "-j", zip.string(),
+                                    pattern, "-d", stage.string()});
+            if (rc != 0 || fs::is_empty(stage, ec)) {
+                fs::remove_all(stage, ec);
+                // A missing -Ncore subtree is not fatal: not every model is
+                // compiled for every core count, and the runner already falls
+                // back to batch 1 and says so. A missing PRIMARY subtree is.
+                if (bi == 0)
+                    err = rc != 0 ? ("unzip failed (pattern " + pattern + ")")
+                                  : ("archive had nothing under " + pattern);
+                continue;
+            }
+            fs::remove_all(out, ec);
+            fs::rename(stage, out, ec);
+            if (ec && bi == 0) err = "could not place " + out.string();
+        }
         fs::remove(zip, ec);
-        if (rc != 0) {
+        if (!err.empty()) {
             fs::remove_all(staging, ec);
-            return "unzip failed (pattern " + pattern + ")";
+            return err;
         }
-        if (fs::is_empty(staging, ec)) {
-            fs::remove_all(staging, ec);
-            return "archive had nothing under " + pattern;
-        }
-        fs::remove_all(dest, ec);
-        fs::rename(staging, dest, ec);
-        return ec ? ("could not place " + dest.string()) : std::string();
+        return std::string();
     }
 
     return "no source configured";

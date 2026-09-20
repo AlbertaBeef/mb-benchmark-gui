@@ -73,7 +73,15 @@ struct VendorSource {
     std::string accelerator;  // "hailo-8" — the models/<vendor>/<here>/ segment
     std::string url;          // base URL, artifact name appended
     Fetch fetch = Fetch::None;
-    std::string strip;        // Zip only; %m expands to the artifact name
+    std::string strip;        // Zip only; %m -> artifact name, %c -> core build
+    // Zip only. Which per-core-count subtrees to pull out of the ONE archive.
+    // Voyager ships every core build in a single zip (1/ 2/ 3/ 4/ quantized/),
+    // and bench_axelera.cpp looks for them on disk as <artifact>-<N>core — so
+    // without this they had to be extracted by hand and a fresh checkout fell
+    // back to batch 1 on every model. The first entry lands in <artifact>
+    // itself; the rest in <artifact>-<N>core. Empty means {1}, i.e. the old
+    // single-subtree behaviour.
+    std::vector<int> core_builds;
     std::string dir;          // resolved models/<vendor>/<accelerator>
 };
 

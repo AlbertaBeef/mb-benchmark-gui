@@ -66,6 +66,9 @@ bool api_mode_is_native(Accel a, ApiMode m) {
         case Accel::DeepX:
         case Accel::MemryX:
             return true;  // both modes native
+        // Axelera's async entry point is real but INTERNAL and, as of 1.8.0,
+        // unimplemented — so the mode exists without being native in the sense
+        // this predicate means: "the vendor supports it".
         case Accel::Axelera:
         case Accel::Qualcomm:
             return m == ApiMode::Sync;
@@ -82,7 +85,14 @@ bool accel_has_both_api_modes(Accel a) {
         case Accel::DeepX:
         case Accel::MemryX:
             return true;
+        // Axelera joined this list with Voyager 1.8, which added
+        // axr_run_async_model_instance(). The mode is OFFERED even though the
+        // call currently returns AXR_ERROR_NOT_IMPLEMENTED — same principle as
+        // the Qualcomm Backend control: the entry point genuinely exists, the
+        // failure is loud and names its own cause, and hiding it would mean the
+        // UI disagreeing with the SDK. See api_mode_note().
         case Accel::Axelera:
+            return true;
         case Accel::Qualcomm:
             return false;
     }
@@ -96,7 +106,7 @@ const char* accel_sole_api_mode_note(Accel a) {
         case Accel::MemryX:
             return "";
         case Accel::Axelera:
-            return "Sync only \u2014 libaxruntime has no async inference API";
+            return "";   // both modes offered since 1.8; see api_mode_note()
         case Accel::Qualcomm:
             return "Sync only \u2014 QNN has no async graph-execute";
     }
@@ -105,7 +115,9 @@ const char* accel_sole_api_mode_note(Accel a) {
 
 const char* api_mode_note(Accel a, ApiMode m) {
     if (api_mode_is_native(a, m)) return "";
-    if (a == Accel::Axelera) return "double-buffered · no async API";
+    if (a == Accel::Axelera) {
+        return "1.8 API exists but returns NOT_IMPLEMENTED · expect failure";
+    }
     // Unlike Axelera's, this one is a measured ~1.45x at depth 4 — but it is
     // host-side pipelining, not a vendor async API, and must not read as one.
     if (a == Accel::Qualcomm) return "host threads · no async API";

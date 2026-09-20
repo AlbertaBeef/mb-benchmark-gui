@@ -334,7 +334,40 @@ ControlPanel::ControlPanel(const Catalog& catalog)
             // blocking API it is that card's *only* concurrency knob and stays
             // live (Axelera's double_buffer, Qualcomm's engines per NSP).
             if (a == Accel::Axelera) {
-                // Not a Depth spin: the Metis has no depth to set. `depth` is
+                // Depth first, so this card's row reads API -> Depth -> extras
+                // like every other card's, even though only one of its two
+                // buffering controls is live at a time.
+                //
+                // Frames in flight, for ASYNC. It and the Double buffering
+                // radios below are ALTERNATIVES, not layers: double buffering
+                // is the Lockstep executor's one boolean, while async
+                // submission keeps N frames outstanding through a completion
+                // callback. Only one can mean anything at a time, so
+                // refresh_depth_sensitivity() greys whichever the current API
+                // mode does not use. Both are shown rather than swapped, so a
+                // glance says what the card can do in either mode.
+                auto* arow = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+                auto* albl = Gtk::make_managed<Gtk::Label>("Depth");
+                albl->set_xalign(0.0);
+                arow->append(*albl);
+                auto* asp = Gtk::make_managed<Gtk::SpinButton>();
+                asp->set_adjustment(Gtk::Adjustment::create(4, 1, 8, 1, 1));
+                asp->set_numeric(true);
+                asp->set_tooltip_text(
+                    "Frames the async path keeps in flight, through "
+                    "axr_run_async_model_instance(). Only meaningful in Async, "
+                    "so it greys out in Sync — where the Metis's one buffering "
+                    "knob is the Double buffering radio beside it.\n\n"
+                    "Voyager 1.8.0 returns AXR_ERROR_NOT_IMPLEMENTED from that "
+                    "call, so an Async run fails immediately and says so. The "
+                    "control is offered because the entry point is real and the "
+                    "failure is loud.");
+                arow->append(*asp);
+                depth_spin_[i] = asp;
+                page->append(*arow);
+
+                // The SYNC path's buffering knob. It is a boolean, not a
+                // count: `depth` is
                 // not among the runtime's eight documented instance properties,
                 // and the library clamps internally — its own log string is
                 // ", overriding to depth=2 for double buffering." next to
@@ -357,7 +390,6 @@ ControlPanel::ControlPanel(const Catalog& catalog)
                 axelera_dbuf_off_.set_tooltip_text(tip);
                 row->append(axelera_dbuf_off_);
                 row->append(axelera_dbuf_on_);
-                depth_spin_[i] = nullptr;            // no spin on this card
                 page->append(*row);
             } else {
                 auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
@@ -928,8 +960,11 @@ void ControlPanel::refresh_depth_sensitivity() {
     // radios to follow -- libaxruntime has no async path -- so it is live
     // whenever a run is not in progress.
     if (accel_present(Accel::Axelera)) {
-        axelera_dbuf_on_.set_sensitive(!running_);
-        axelera_dbuf_off_.set_sensitive(!running_);
+        // Double buffering belongs to the Sync path only — async submission
+        // replaces it rather than stacking on it.
+        const bool sync = api_mode(Accel::Axelera) == ApiMode::Sync;
+        axelera_dbuf_on_.set_sensitive(!running_ && sync);
+        axelera_dbuf_off_.set_sensitive(!running_ && sync);
     }
     for (int i = 0; i < kAccelCount; ++i) {
         if (!depth_spin_[i]) continue;
@@ -1079,7 +1114,14 @@ int ControlPanel::depth(Accel a) const {
     // Axelera has no spin button: its control is the double-buffering radio,
     // which still reports as 1 or 2 so callers and the CSV read the same as
     // every other card.
-    if (a == Accel::Axelera) return axelera_double_buffer() ? 2 : 1;
+    // Axelera has two buffering controls and the API mode picks which one is
+    // the "depth": the async spin in Async, the double-buffer boolean in Sync
+    // (still reported as 1 or 2 so the CSV reads like every other card).
+    if (a == Accel::Axelera) {
+        if (api_mode(a) == ApiMode::Async && depth_spin_[accel_index(a)])
+            return static_cast<int>(depth_spin_[accel_index(a)]->get_value());
+        return axelera_double_buffer() ? 2 : 1;
+    }
     if (i < 0 || i >= kAccelCount || !depth_spin_[i]) return 1;
     // Sync means exactly one frame outstanding — that is what Sync *is* — so a
     // dual-mode card reports 1 regardless of where its spin button sits.

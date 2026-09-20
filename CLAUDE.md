@@ -648,6 +648,57 @@ Three layers, cleanly separated. Keep it that way.
   the shared `mb-powermon-gui` shows on this board) or making `accel_name()`
   read the device tree. `power_for_device("Qualcomm")` returning NaN is likewise
   *correct*, not a bug — this board has no power sensor at all.
+- **Voyager 1.8 is performance-neutral on the sync path, and fixes nothing
+  about the YOLOv8s wedge.** Measured 2026-09-20 on driver 1.6.2 + runtime
+  1.8.0 + firmware 1.8.0, AxModel v5 artifacts, headless:
+  - **ResNet-50, 4 cores, sync: 1621–1636 fps** — indistinguishable from 1.7's
+    1598–1625. The SDK jump costs nothing and buys nothing here.
+  - **YOLOv8s, 4 cores: still wedges the card**, first run, with the documented
+    signature (`Failed to wait for MSI 0` → `ZE_RESULT_ERROR_DEVICE_LOST` →
+    `Link down` → bootloader + 1 DMA error → power cycle). The v5 artifact's
+    footprint is **identical** to the v4 one — 22.97 MB DDR / 29.40 MB L2
+    against ResNet-50's 0.85 / 27.03 — so the compiler lays it out the same way
+    and the DDR discriminator still stands. **Do not run YOLOv8s at 4 cores to
+    "check whether the new SDK fixed it"; it does not, and it costs a power
+    cycle.**
+
+- **The Axelera stack is Voyager 1.8, installed beside 1.7.** Packages carry
+  their version in the name and declare no conflicts, so
+  `/opt/axelera/runtime-{1.7.0-1,1.8.0-1}` coexist and the upgrade was staged:
+  runtime first, driver later. Three consequences worth keeping:
+  - **The C API is purely additive** (3.1 → 3.2, nothing removed), so
+    `bench_axelera.cpp` compiled against 1.8 **unchanged**. What breaks is the
+    *models* and the *driver*, not the code.
+  - **AxModel format 4 → 5: every artifact had to be re-fetched.** The 1.8
+    runtime refuses a v4 model outright (`Unsupported model version: 4.0,
+    expected at least 5.0`), so `config/models.conf` points at the
+    `voyager-sdk-v1.8.0` prebuilt catalog and the old artifacts must be deleted
+    rather than kept as a fallback. A v5 artifact carries
+    `kernel_function_N.elf` beside the `.c` — that pre-compiled kernel is why
+    1.8 no longer needs the RISC-V toolchain at load, and it is the quickest
+    way to tell two model directories apart on disk.
+  - **`metis-dkms` must be ≥ 1.6.2** ("no earlier driver is accepted"). This
+    host is still on **1.5.5**, so *nothing Axelera runs on hardware right
+    now*. Note apt offers 1.7.15, newer than the 1.6.2 the 1.8.0 compatibility
+    matrix names — pin the matrix version.
+
+  **CMake trap, paid for once.** The configure globs `/opt/axelera/runtime-*`
+  and takes the newest, but `find_library` **caches** its result: with 1.8
+  installed the cached `AXR_LIB` kept pointing at 1.7 and the build went on
+  linking the old runtime **with no warning**. `CMakeLists.txt` now drops the
+  cache entry when it no longer lives under the chosen `AXELERA_DIR`. Verify
+  with `ldd build/mb-benchmark | grep axruntime`, never the configure log alone.
+
+- **One Axelera zip holds every core build, and `Fetcher` now extracts them
+  all.** The archive is `build/<m>/<m>/{1,2,3,4,quantized}/`; taking only
+  `.../1/` is what made the `-Ncore` directories a manual step and left a fresh
+  checkout running every model at batch 1. The vendor block carries
+  `strip = build/%m/%m/%c` and `cores = 1 2 3 4`: the first entry lands in
+  `<artifact>`, the rest in `<artifact>-<N>core`, which is where
+  `bench_axelera.cpp` looks. One download, four directories. A missing `-Ncore`
+  subtree is non-fatal (not every model is compiled for every count); a missing
+  primary one is. **Disk cost roughly doubles** — ~225 MB per core build.
+
 - **Axelera AIPU cores defaults to 4, and now selects the fixed-batch build.**
   The control picks the model's `<dir>-Ncore` artifact: a batch-N model on one
   connection with one instance and `aipu_cores=N`. Measured 2026-09-03 on
@@ -1036,12 +1087,21 @@ The five SDKs are not symmetric. Verified 2026-08-04 against installed headers
 | Hailo | `InferVStreams::infer()` | `ConfiguredInferModel::run_async()` + `AsyncInferJob` |
 | DeepX | `InferenceEngine::Run()` | `RunAsync()` → jobId → `Wait()` |
 | MemryX | **`MxAcclMT::run()`** | `MxAccl::connect_stream()` |
-| Axelera | `axr_run_model_instance()` | **none exists** |
+| Axelera | `axr_run_model_instance()` | **1.8 only, and internal** — `axr_run_async_model_instance()` |
 | Qualcomm | `QnnGraph_execute()` | **none exists** |
 
-`accel_has_both_api_modes()` drives the UI: Hailo, DeepX and MemryX get radios;
-Axelera and Qualcomm get a static line from `accel_sole_api_mode_note()` instead,
-so the UI never offers a mode the runtime does not have. Neither switch has a
+`accel_has_both_api_modes()` drives the UI: Hailo, DeepX, MemryX **and now
+Axelera** get radios; **Qualcomm alone** gets a static line from
+`accel_sole_api_mode_note()`.
+
+**Axelera's radios are offered even though 1.8.0's async returns
+NOT_IMPLEMENTED**, and that is deliberate — the same principle as the Qualcomm
+`Backend` control: the entry point genuinely exists in the SDK, the failure is
+loud and names its own cause, and hiding it would make the UI disagree with the
+runtime. `api_mode_note(Axelera, Async)` says
+`1.8 API exists but returns NOT_IMPLEMENTED · expect failure`, so the run column
+cannot claim a working mode. `api_mode_is_native()` still reports **Sync only**
+for it: "native" there means *the vendor supports it*, which async is not yet. Neither switch has a
 `default:`, so `-Wswitch` catches a newly added `Accel` — unlike `make_runner()`,
 which does have one and will not warn.
 
@@ -1092,7 +1152,43 @@ which does have one and will not warn.
   against it. **1796.7 is depth 8, and depth 8 is no longer the default** — it
   wedges the card (see the depth table below). The shipped default of 4
   measures ~1077 fps; quote whichever you like, but always with its depth.
-- **Axelera really has no async API.** All 40 `axr_*` symbols in libaxruntime
+- **Axelera had no async API through 1.7, and 1.8's is marked internal.**
+  **Voyager 1.8 adds `axr_run_async_model_instance()`** — a real
+  completion-callback path, the first this API has ever had
+  (`AXR_API_VERSION` 3.1 → 3.2, symbols 40 → 44; the other three are
+  `axr_{read,write,remove}_saved_config`). The header says
+  *"INTERNAL USE ONLY ... experimental and subject to change or removal without
+  notice - it is not yet part of the stable public ABI"*, and it appears in no
+  release note, no `docs/`, no `examples/` and not in the C++ wrapper. So
+  `bench_axelera.cpp` implements it behind `$MB_AXELERA_ASYNC`, **off by
+  default**, compiled out entirely below 3.2 via `MB_AXELERA_HAVE_ASYNC`.
+
+  **MEASURED 2026-09-20, and it does not work: every submission returns
+  `AXR_ERROR_NOT_IMPLEMENTED`.** Driver 1.6.2, runtime 1.8.0, firmware 1.8.0,
+  healthy card, ResNet-50 batch-4 — the call is reached and fails immediately.
+  What the library actually contains:
+  - `axr::AsyncExecutor::run_async` is a **real implementation** (`T`), but
+    `axr::Executor::run_async` is a **weak symbol** (`W`) — the base returning
+    NOT_IMPLEMENTED — and an instance from `axr_load_model_instance()` is backed
+    by the base, not by `AsyncExecutor`.
+  - **`async_mode` is a genuine property key**, new in 1.8 and absent from 1.7.
+    It is *accepted* at load (an invalid key fails with `Unknown property key`,
+    this one does not) and gated by `async_mode only supports model type
+    'default'` — our models **are** type `default`, so that gate passes. It
+    still does not switch the executor.
+  - Dropping `double_buffer` (the `LockstepExecutor`) makes no difference
+    either. That guess was tried and reverted.
+
+  So the async path is **wired, correct and unreachable**: the header, the
+  symbol and the property all exist, and the C API simply does not create an
+  `AsyncExecutor` in 1.8.0. Exactly what "INTERNAL USE ONLY ... not yet part of
+  the stable public ABI" means in practice. Our implementation fails **loudly
+  and harmlessly** — it surfaced the error, did not hang, and left the card
+  healthy — so it is worth keeping for whenever Axelera finishes wiring it up.
+  **Do not re-derive this; re-test it only after an SDK bump.**
+
+  What follows was true of 1.7 and is kept because the reasoning still applies
+  to the *stable* API: all 40 `axr_*` symbols in libaxruntime
   1.7.0 enumerated (`nm -D --defined-only`); exactly one is inference and it
   blocks. The undocumented export `axr_run_graph_model_instance` is not a second
   one — it is not asynchronous. The 233 `ze*` symbols are the statically linked
@@ -1421,7 +1517,7 @@ which does have one and will not warn.
   | Hailo | requested async queue depth, `min(requested, get_async_queue_size())` | 1-8 | yes — Sync forces 1 |
   | DeepX | outstanding `RunAsync` jobs | 1-8 | yes — Sync forces 1 |
   | MemryX | `connect_stream` permit depth | 1-8, **default 4** (was 8; see the wedge below) | yes — Sync uses `MxAcclMT::run()` |
-  | Axelera | `double_buffer` — **not a depth control any more**; an Off/On radio pair | Off / On | **no** |
+  | Axelera | **both, and the API mode picks which**: `double_buffer` (Off/On radios) in Sync, async frames-in-flight (spin) in Async | Off/On · 1-8 | **yes**, since 1.8 |
   | Qualcomm | engines in flight per NSP, **one host thread each** | 1-8 | **no** |
 
   **Depth is frames-in-flight everywhere, and threads on Qualcomm alone.**
@@ -1485,8 +1581,21 @@ which does have one and will not warn.
   **DeepX's pool is untested**, and testing it needs no code at all, only the
   two env vars plus the same per-thread CPU check.
 
-  **Axelera's depth spin button is gone — its row carries an Off/On
-  double-buffering radio pair instead** (`axelera_dbuf_off_` /
+  **Axelera carries BOTH controls since Voyager 1.8, and they are alternatives
+  rather than layers.** Double buffering is the Lockstep executor's one boolean
+  and belongs to **Sync**; the depth spin is frames in flight through
+  `axr_run_async_model_instance()` and belongs to **Async**.
+  `refresh_depth_sensitivity()` greys whichever the current mode does not use,
+  and `ControlPanel::depth()` returns the spin in Async and the boolean (as 1
+  or 2) in Sync, so `BenchItem::depth` stays one field and the CSV reads like
+  every other card. **Both are shown rather than swapped**, so the row says what
+  the card can do in either mode instead of hiding half of it behind a radio —
+  with **Depth first**, so every card's row reads `API -> Depth -> extras`
+  regardless of which buffering control is live.
+  The runner sets `depth_ = 1` when async is on, because double buffering is
+  then the other mode's knob.
+
+  Historically — **the Off/On radio pair replaced a 1-8 spin** (`axelera_dbuf_off_` /
   `axelera_dbuf_on_` in `ControlPanel.cpp`, **Off listed first**, On still the
   default; `depth(Accel)` maps them to 1 and 2 for `BenchItem`). Automation
   accepts `axelera.double_buffer` / `axelera.dbuf` as aliases for the same
@@ -1512,12 +1621,15 @@ which does have one and will not warn.
   Measured ladder, one core: no property 362.2 fps, `double_buffer=1` 379.6. At
   two cores: 573.7 → 589.6.
 
-  **The two sync-only cards deliberately ignore the API mode here.** Axelera and
-  Qualcomm show no mode radios (they have no async API), so gating depth on
-  "Async" would leave it permanently at 1 and silently drop the concurrency each
-  one *does* have — Axelera's double buffering and Qualcomm's measured ~1.45x
-  host pipelining. Both regressed exactly that way when the mode control first
-  moved out of the panel-wide row; depth is now independent for them.
+  **Qualcomm still ignores the API mode here, and that is deliberate.** It shows
+  no mode radios, so gating its depth on "Async" would leave it permanently at 1
+  and silently drop the ~1.45x host pipelining it *does* have. It regressed
+  exactly that way when the mode control first moved out of the panel-wide row.
+
+  **Axelera used to be in that sentence and no longer is.** Now that it reports
+  both modes, its two controls are *both* gated on the mode — but on opposite
+  sides, so neither is ever unreachable: Sync keeps double buffering live and
+  greys the spin, Async does the reverse.
 
   A card with both modes reports depth 1 in Sync regardless of where its spin
   button sits, because that is what Sync *is*, and its spin button greys out.

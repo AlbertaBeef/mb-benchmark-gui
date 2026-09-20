@@ -1,5 +1,7 @@
 #include "Catalog.h"
 
+#include <sstream>
+
 #include <unistd.h>
 
 #include <algorithm>
@@ -226,6 +228,14 @@ void Catalog::discover(std::vector<std::string>* notes) {
             v.url = s.value("url");
             v.fetch = parse_fetch(s.value("fetch", "none"));
             v.strip = s.value("strip");
+            // "cores = 1 2 3 4" — whitespace-separated, order fixes which
+            // subtree is the plain artifact (the first one).
+            {
+                std::istringstream cs(s.value("cores"));
+                int n = 0;
+                while (cs >> n)
+                    if (n > 0) v.core_builds.push_back(n);
+            }
             v.dir = (fs::path(models_root_) / v.vendor / v.accelerator).string();
             if (v.url.empty()) v.fetch = Fetch::None;
         }
