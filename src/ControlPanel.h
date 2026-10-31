@@ -40,6 +40,8 @@ public:
 
     // Target frame rate, or <= 0 for "max speed".
     double target_fps() const;
+    // Seconds between successive cards' starts; 0 when Stagger is off.
+    double stagger_seconds() const;
 
     // Which inference API a given card should drive. Per card: the SDKs are not
     // symmetric, so a single global choice offered modes that do not exist.
@@ -152,6 +154,10 @@ private:
 
     Gtk::CheckButton max_speed_{"Max"};
     Gtk::SpinButton fps_spin_;
+    // Inference -> Stagger: start cards one after another, `stagger_spin_`
+    // seconds apart, instead of all in the same second.
+    Gtk::CheckButton stagger_enabled_{"Enabled"};
+    Gtk::SpinButton stagger_spin_;
     Gtk::SpinButton* depth_spin_[kAccelCount] = {};  // one per card row
 
     // Graphs / Values Range. Max is the default: it is the behaviour the graphs

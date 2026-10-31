@@ -213,6 +213,33 @@ ControlPanel::ControlPanel(const Catalog& catalog)
             [this] { fps_spin_.set_sensitive(!max_speed_.get_active()); });
         box->append(*rate_row);
 
+        // --- stagger ---
+        // Off by default: every card starting in the same second is the
+        // normal, comparable arrangement. On, the k-th enabled card (in the
+        // Accelerators order) waits k x the delay before it touches its
+        // device at all — so each model load, and its inrush on the shared
+        // 3.3 V supply, happens alone.
+        auto* stagger_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
+        stagger_row->append(*row_label("Stagger"));
+        stagger_enabled_.set_active(false);
+        const char* stagger_tip =
+            "Start the enabled cards one after another instead of together. "
+            "Order is the Accelerators list, top to bottom; each card waits "
+            "this many seconds after the previous one before loading its model.";
+        stagger_enabled_.set_tooltip_text(stagger_tip);
+        stagger_row->append(stagger_enabled_);
+        stagger_spin_.set_adjustment(Gtk::Adjustment::create(5, 1, 60, 1, 5));
+        stagger_spin_.set_numeric(true);
+        stagger_spin_.set_sensitive(false);
+        stagger_spin_.set_tooltip_text(stagger_tip);
+        stagger_row->append(stagger_spin_);
+        stagger_row->append(*Gtk::make_managed<Gtk::Label>("s"));
+        // In conns_: the handler reads another widget (see ~ControlPanel).
+        conns_.push_back(stagger_enabled_.signal_toggled().connect([this] {
+            stagger_spin_.set_sensitive(!running_ && stagger_enabled_.get_active());
+        }));
+        box->append(*stagger_row);
+
         frame->set_child(*box);
         append(*frame);
     }
@@ -951,11 +978,21 @@ std::vector<BenchItem> ControlPanel::selection() const {
         }
         out.push_back(std::move(it));
     }
+    // Stagger: the k-th card in `out` (already in Accel order, enabled cards
+    // only) waits k x the delay, so the first still starts at once.
+    if (const double d = stagger_seconds(); d > 0.0) {
+        for (size_t k = 0; k < out.size(); ++k)
+            out[k].start_delay_s = static_cast<double>(k) * d;
+    }
     return out;
 }
 
 double ControlPanel::target_fps() const {
     return max_speed_.get_active() ? 0.0 : fps_spin_.get_value();
+}
+
+double ControlPanel::stagger_seconds() const {
+    return stagger_enabled_.get_active() ? stagger_spin_.get_value() : 0.0;
 }
 
 ApiMode ControlPanel::api_mode(Accel a) const {
@@ -1172,6 +1209,8 @@ void ControlPanel::set_running(bool running) {
     }
     max_speed_.set_sensitive(!running);
     fps_spin_.set_sensitive(!running && !max_speed_.get_active());
+    stagger_enabled_.set_sensitive(!running);
+    stagger_spin_.set_sensitive(!running && stagger_enabled_.get_active());
     memryx_freq_.set_sensitive(!running);
     axelera_cores_.set_sensitive(!running);
     qualcomm_nsps_.set_sensitive(!running);

@@ -170,6 +170,12 @@ struct BenchItem {
     // or the cap throttles the frame counter while the card runs flat out —
     // measured, see bench_pacer.h.
     double target_fps = 0.0;
+    // Seconds this card waits before it even creates its runner. Set by
+    // ControlPanel::selection() when Inference -> Stagger is on: the k-th
+    // enabled card, in Accel order, gets k x the delay. Exists to test
+    // whether four cards ramping on the shared 3.3 V supply in the same
+    // second is what wedges the Axelera. 0 = start at once.
+    double start_delay_s = 0.0;
     // Qualcomm: how many of the SoC's NSPs to claim. QCS9075 has 2, each with
     // its own VTCM, addressed as QNN device ids 0 and 1. Measured ~2.3x on
     // OSNet, so unlike Axelera's cores there is no reason to default below the

@@ -86,7 +86,10 @@ void prepare_backend_environment();
 
 class BenchEngine {
 public:
-    enum class State { Idle, Loading, Running, Failed, Stopped };
+    // Waiting: a staggered start has not reached this card's turn yet — no
+    // runner exists and the device has not been touched. Appended, not
+    // inserted, so the existing values keep their numbers.
+    enum class State { Idle, Loading, Running, Failed, Stopped, Waiting };
 
     // One running (or failed) benchmark: a subject on a card.
     struct Series {

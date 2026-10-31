@@ -1139,6 +1139,21 @@ void MainWindow::on_start_stop() {
 
     engine_.start(items, controls_->target_fps());
     run_items_ = items;   // the engine does not expose these afterwards
+
+    // A staggered start changes what the first seconds of the run measure, and
+    // it appears in no <vendor>_cfg column, so it has to be stated here or a
+    // finished CSV could not say whether the cards started together.
+    if (items.size() > 1 && items.back().start_delay_s > 0.0) {
+        std::string order;
+        for (const auto& it : items) {
+            if (!order.empty()) order += " -> ";
+            order += accel_name(it.accel);
+        }
+        char m[64];
+        std::snprintf(m, sizeof m, "stagger start: %.0f s apart, ",
+                      items[1].start_delay_s);
+        log_.note(std::string(m) + order);
+    }
     controls_->set_running(true);
 
     // Each card carries its own API mode now, so name them individually. A run
@@ -1353,6 +1368,9 @@ bool MainWindow::on_tick() {
             problems.push_back(std::string(accel_name(s.accel)) + ": " + s.error);
         } else if (s.state == BenchEngine::State::Loading) {
             problems.push_back(std::string(accel_name(s.accel)) + ": loading…");
+        } else if (s.state == BenchEngine::State::Waiting) {
+            problems.push_back(std::string(accel_name(s.accel)) +
+                               ": waiting for its turn (stagger)…");
         }
     }
 
@@ -1591,7 +1609,8 @@ bool MainWindow::on_tick() {
         if (engine_.active()) {
             state = "running";
             for (const auto& s2 : engine_.series())
-                if (s2.state == BenchEngine::State::Loading) { state = "starting"; break; }
+                if (s2.state == BenchEngine::State::Loading ||
+                    s2.state == BenchEngine::State::Waiting) { state = "starting"; break; }
         } else if (engine_.stopping()) {
             state = "stopping";
         } else if (!engine_.series().empty()) {

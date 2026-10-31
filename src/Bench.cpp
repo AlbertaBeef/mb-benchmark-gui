@@ -35,6 +35,21 @@ struct BenchEngine::Worker {
     }
 
     void run() {
+        // Staggered start. Wait BEFORE make_runner(): the point is that this
+        // card's device is not touched at all until its turn, so the load and
+        // its inrush happen alone. Polled rather than slept whole so Stop is
+        // honoured within 50 ms instead of after the full delay.
+        if (item.start_delay_s > 0.0) {
+            state.store(static_cast<int>(State::Waiting), std::memory_order_release);
+            const auto until = clk::now() + std::chrono::duration_cast<clk::duration>(
+                                   std::chrono::duration<double>(item.start_delay_s));
+            while (clk::now() < until) {
+                if (stop_flag.load(std::memory_order_relaxed)) return;
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            state.store(static_cast<int>(State::Loading), std::memory_order_release);
+        }
+
         std::string err;
         std::unique_ptr<BenchRunner> runner = make_runner(item.accel, mode, &err);
         if (!runner) { set_failed(err.empty() ? "backend unavailable" : err); return; }
@@ -136,7 +151,7 @@ void BenchEngine::start(const std::vector<BenchItem>& items, double target_fps) 
         Series s;
         s.label = it.label;
         s.accel = it.accel;
-        s.state = State::Loading;
+        s.state = it.start_delay_s > 0.0 ? State::Waiting : State::Loading;
         series_.push_back(std::move(s));
 
         Worker* raw = w.get();
