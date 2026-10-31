@@ -1,8 +1,16 @@
 # Capturing the host freeze (Axelera + another card)
 
-Four freezes so far, every one with the Axelera running *concurrently* with at
-least one other card, every one leaving **nothing** behind: no kernel oops, no
-systemd shutdown, no BMC event at the moment itself. The machine currently has
+Five failures so far. The trigger, as of 2026-10-31 12:13, is **a device init
+while another card is active, in either direction** — not Axelera's own load,
+and not load/power/duration: that run had Axelera at 1627 fps and 3.140 V for
+four seconds, and it died in the same second as *DeepX's* `make_runner()`. The
+outcome is sometimes a wedged card (host survives, kernel logs `Link down` +
+MSI timeout) and sometimes a dead host, which leaves **nothing** behind: no
+kernel oops, no systemd shutdown, no BMC event at the moment itself.
+
+**Step 3 below is now the highest-value test**, because the trigger being
+device *initialisation* — DMA mapping setup — is what points at the IOMMU, and
+Axelera's own init logs two `IO_PAGE_FAULT`s where one per boot is normal. The machine currently has
 no capture facility at all, so each occurrence costs a power cycle and yields
 one data point: "it stopped".
 

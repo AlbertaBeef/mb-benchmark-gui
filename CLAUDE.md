@@ -2581,12 +2581,31 @@ model at idle power, so this is not an M.2 slot power budget and not thermal
 process, which points at the separate one-session-per-power-cycle entry below
 rather than at core count alone.
 
-**The host freezes when Axelera runs CONCURRENTLY with another card — four
-times now, and the common factor is concurrency, not core count, not double
-buffering and not power.** Every occurrence leaves *nothing*: no kernel oops,
-no `Link down`, no MSI timeout, no systemd shutdown, and the journal simply
-stops mid-log. 2026-10-31 the whole PC jammed hard enough to drop the remote
-connection.
+**A DEVICE INIT WHILE ANOTHER CARD IS ACTIVE kills the Axelera — in either
+direction.** That is the sharpest statement the evidence supports, and it is
+narrower than the "concurrency" wording this entry carried until 2026-10-31
+12:13. The outcome is sometimes a wedged card and sometimes a dead host; the
+*trigger* is the same in both.
+
+**The run that pinned it down** — stagger 5 s, order **Axelera first**:
+
+```
+12:13:19  Axelera connects, loads firmware (alone)   2 x IO_PAGE_FAULT
+12:13:20-23  Axelera 1627 fps, 6.35 W, VBUS 3.140 V  healthy, full rate
+12:13:24  Link down / Link up                        <- DeepX's worker reaches
+12:13:25  Axelera 0 fps, 1.88 W; MSI timeout (12 1)     make_runner() ~12:13:24.6
+12:13:54  MSI timeout (0 30) -> bootloader + 1 DMA error, WEDGED
+```
+
+Axelera was **running at full rate**, not loading, and died in the same second
+as *DeepX's* device initialisation. The other three then ran another minute and
+the host survived. So it is **not** "Axelera cannot start while another card
+runs" — that framing was too narrow, and the reverse order disproves it.
+
+Every occurrence of the *host-death* variant leaves nothing behind: no kernel
+oops, no `Link down`, no MSI timeout, no systemd shutdown, and the journal
+simply stops mid-log. 2026-10-31 10:58 the whole PC jammed hard enough to drop
+the remote connection.
 
 | date | configuration | double buffer | outcome |
 | --- | --- | --- | --- |
@@ -2594,6 +2613,7 @@ connection.
 | 2026-09-20 | GUI, 4 cards, cores = 4 | **on** | host down |
 | 2026-10-31 10:45 | GUI, 4 cards, no stagger | **off** | Axelera never loaded — `Link down`, MSI timeout, card **wedged** |
 | 2026-10-31 10:58 | GUI, **DeepX + Axelera**, staggered 5 s | **off** | Axelera loaded (471 fps, 6.43 W), then **host froze** |
+| 2026-10-31 12:13 | GUI, **Axelera first**, staggered 5 s | **off** | Axelera **running at 1627 fps**, died at **DeepX's** init; host survived |
 
 What that table kills:
 - **Not double buffering** — off in both 10-31 failures.
@@ -2606,8 +2626,19 @@ What that table kills:
   the board's M.2 distribution (~49 mOhm, consistent with the September
   source-impedance measurement). **Stop treating this as a brown-out.**
 - **Not "Axelera cannot launch while another card runs"** — at 10:58 it
-  launched fine with DeepX already at 1072 fps. The two 10-31 failures are
-  *different*: one a card wedge at load, one a host freeze under concurrency.
+  launched fine with DeepX already at 1072 fps, and at 12:13 it was the
+  *running* card that died at someone else's init.
+- **Not load, duration or rate.** 12:13 died four seconds in, at full rate,
+  having just held 3.140 V — the same rail voltage as a healthy solo run.
+
+**The IOMMU is now the leading suspect, and it is the one test not yet run.**
+What points at it: the trigger is *device initialisation* — i.e. DMA mapping
+setup — rather than load, power, duration or core count; it fires in either
+direction; and Axelera's own init at 12:13:19 logged **two** `IO_PAGE_FAULT`s
+where exactly one per boot is the documented norm. `docs/host-freeze-capture.md`
+step 3 is `amd_iommu=off` on one boot, repeating the 12:13 case. Put the SOL
+capture (step 1) in place first, because the same event sometimes takes the
+host with it and then leaves no trace at all.
 
 **The real obstacle is that there is no evidence.** This host had **no capture
 facility at all** (checked 2026-10-31: no kdump, no `crashkernel=`, no
