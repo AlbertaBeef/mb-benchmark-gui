@@ -66,9 +66,12 @@ bool api_mode_is_native(Accel a, ApiMode m) {
         case Accel::DeepX:
         case Accel::MemryX:
             return true;  // both modes native
-        // Axelera's async entry point is real but INTERNAL and, as of 1.8.0,
-        // unimplemented — so the mode exists without being native in the sense
-        // this predicate means: "the vendor supports it".
+        // Axelera's async entry point is real and, since 2026-09-20, measured
+        // WORKING on 1.8.0 (axr::AsyncExecutor, 387.7 fps on ResNet-50 batch 1)
+        // — but the vendor still marks it INTERNAL and not part of the stable
+        // ABI, and it refuses any multi-kernel artifact, so it cannot reach the
+        // 4-core batched build that sync uses. Not "native" in the sense this
+        // predicate means: "the vendor supports it".
         case Accel::Axelera:
         case Accel::Qualcomm:
             return m == ApiMode::Sync;
@@ -116,7 +119,12 @@ const char* accel_sole_api_mode_note(Accel a) {
 const char* api_mode_note(Accel a, ApiMode m) {
     if (api_mode_is_native(a, m)) return "";
     if (a == Accel::Axelera) {
-        return "1.8 API exists but returns NOT_IMPLEMENTED · expect failure";
+        // Measured, not feared: it runs. What it cannot do is use a
+        // multi-core build — AsyncExecutor takes one kernel at stage 0 — so
+        // the runner drops to batch 1 and the card runs ~5x slower than
+        // 4-core sync. The note has to say that, or a mode that "works" reads
+        // as the faster one.
+        return "1.8 internal API · batch-1 build only · slower than sync";
     }
     // Unlike Axelera's, this one is a measured ~1.45x at depth 4 — but it is
     // host-side pipelining, not a vendor async API, and must not read as one.

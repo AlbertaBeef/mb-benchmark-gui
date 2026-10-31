@@ -86,10 +86,6 @@ public:
 
     void configure(const BenchItem& item) override {
         cores_ = std::max(1, std::min(4, item.cores));
-        // Depth is this card's only buffering knob: `double_buffer` is a boolean,
-        // so 2 is as deep as the Metis goes. It is NOT gated on the API mode —
-        // libaxruntime has no async API, so there is no mode radio here and
-        // depth would otherwise be unreachable.
         // item.depth carries whichever control the API mode made the depth:
         // the async frames-in-flight spin in Async, the double-buffer boolean
         // (1 or 2) in Sync. See ControlPanel::depth().
@@ -131,6 +127,13 @@ public:
                                     : env_int("MB_AXELERA_ASYNC_DEPTH", 4),
             1, 8);
         if (async_) depth_ = 1;   // double buffering is the OTHER mode's knob
+#if !MB_AXELERA_HAVE_ASYNC
+        // Built against 1.7, where the entry point does not exist -- but the
+        // UI offers the radio unconditionally (accel_has_both_api_modes), so
+        // an Async run would otherwise be indistinguishable from a Sync one in
+        // the CSV, with item.depth quietly reinterpreted as double buffering.
+        if (mode_ == ApiMode::Async) async_note_ = "async needs Voyager 1.8; ran sync";
+#endif
     }
 
     void load(const std::vector<BenchMember>& members) override {
@@ -156,11 +159,22 @@ public:
         // knows the model is ResNet-50. A missing sibling is reported, never
         // silently substituted: benchmarking batch 1 while the UI says "4 cores"
         // is precisely the mistake that produced the old numbers.
+        //
+        // ASYNC TAKES THE BATCH-1 BUILD, whatever the cores control says.
+        // AsyncExecutor::init() refuses anything else -- "AsyncExecutor
+        // requires exactly one kernel at stage 0", and an N-core build has N
+        // of them (resnet50-...-4core ships kernel_function_0..3.elf). Asking
+        // for both does not degrade, it fails the load outright, so the choice
+        // is made here and said out loud in describe().
         std::vector<std::string> paths;
         paths.reserve(members.size());
+        if (async_ && cores_ > 1) {
+            async_note_ = "async needs the batch-1 build; ignoring " +
+                          std::to_string(cores_) + " cores";
+        }
         for (const auto& m : members) {
             std::string chosen = m.path;
-            if (cores_ > 1) {
+            if (cores_ > 1 && !async_) {
                 const std::string sib = m.path + "-" + std::to_string(cores_) + "core";
                 std::error_code ec;
                 if (fs::exists(fs::path(sib) / "model.json", ec) ||
@@ -223,6 +237,31 @@ public:
                     "); refusing to guess the frame count");
             }
         }
+
+#if MB_AXELERA_HAVE_ASYNC
+        // ---- is async usable for THIS model? -------------------------------
+        //
+        // Decided here, before a single instance exists, because async_mode is
+        // an INSTANCE property: an instance built for the async executor and
+        // then driven with the blocking call would be a configuration nobody
+        // asked for, and one the CSV could not describe.
+        //
+        // A pipeline would need its stages chained through the completion
+        // callback; a stage with reps > 1 retires a different number of frames
+        // per submission than batch_ says; and the multi-instance path runs its
+        // own producer threads on the same borrowed instance, which is the
+        // concurrent-submission hazard this file documents at length.
+        if (async_) {
+            const char* why = nullptr;
+            if (stages_.size() != 1)        why = "async needs a single-stage model; ran sync";
+            else if (stages_.front()->reps != 1) why = "async needs reps=1; ran sync";
+            else if (multi_instance_)       why = "async is single-instance only; ran sync";
+            // Back to the sync path — with double buffering OFF, which is
+            // this card's default. Falling back INTO the faster-but-unsoaked
+            // configuration would be the opposite of what a fallback is for.
+            if (why) { async_ = false; depth_ = 1; async_note_ = why; }
+        }
+#endif
 
         // ---- how many sub-devices, and how many instances ------------------
         //
@@ -439,21 +478,14 @@ public:
 #if MB_AXELERA_HAVE_ASYNC
         // ---- async slots ---------------------------------------------------
         // One buffer set per frame in flight, borrowing stage 0's instance.
-        // Restricted to a single stage running once per frame: a pipeline would
-        // need the stages chained through the callback, and a stage with reps>1
-        // retires a different number of frames per submission than batch_ says.
-        if (async_) {
-            const bool simple = stages_.size() == 1 &&
-                                stages_.front()->reps == 1 &&
-                                !stages_.front()->insts.empty();
-            if (!simple) {
-                async_ = false;
-                async_note_ = "async needs a single-stage model; ran sync";
-            } else {
+        // Eligibility was settled above, before the instance was built.
+        if (async_ && !stages_.front()->insts.empty()) {
+            async_state_ = std::make_shared<AsyncState>();
+            {
                 const Inst& proto = *stages_.front()->insts.front();
                 for (int i = 0; i < async_depth_; ++i) {
                     auto slot = std::make_unique<AsyncSlot>();
-                    slot->self = this;
+                    slot->state = async_state_;
                     slot->inst = std::make_unique<Inst>();
                     Inst& in = *slot->inst;
                     in.instance = proto.instance;   // borrowed, never destroyed here
@@ -580,40 +612,49 @@ private:
     // Run every stage once for stream `s`. Throws on a runtime error.
 #if MB_AXELERA_HAVE_ASYNC
     // Completion callback. Runs on a libaxruntime thread, so it touches only
-    // the runner's mutex-guarded state and never the SDK.
+    // mutex-guarded state and never the SDK.
+    //
+    // It reaches that state through the slot's shared_ptr, NOT through the
+    // runner: drain_async() gives up after 10 s on a card that may never call
+    // back, and the runner is destroyed straight afterwards. Leaking the slots
+    // keeps their buffers alive, but a callback that dereferenced the runner
+    // to find the mutex would still be a use-after-free -- the same class of
+    // bug as the Hailo Stage::drain() one, a level further out.
     static void on_async_complete(void* arg, axrResult result) {
         auto* slot = static_cast<AsyncSlot*>(arg);
-        AxeleraBenchRunner* self = slot->self;
+        const std::shared_ptr<AsyncState> st = slot->state;
+        if (!st) return;
         {
-            std::lock_guard<std::mutex> lk(self->mu_);
+            std::lock_guard<std::mutex> lk(st->mu);
             slot->busy = false;
-            if (self->inflight_ > 0) --self->inflight_;
-            if (result != AXR_SUCCESS && self->error_.empty()) {
-                self->error_ = std::string("Axelera: async run failed: ") +
-                               axr_error_string(result);
+            if (st->inflight > 0) --st->inflight;
+            if (result != AXR_SUCCESS && st->error.empty()) {
+                st->error = std::string("Axelera: async run failed: ") +
+                            axr_error_string(result);
             } else if (result == AXR_SUCCESS) {
-                ++self->completed_;
+                ++st->completed;
             }
         }
         // notify_ALL, not one: at teardown drain_async() waits on this same
         // condition while a worker may still be parked in run_frame_async().
         // Waking only one of them can leave the drain asleep until its timeout
         // and turn a clean stop into a ten-second stall.
-        self->cv_.notify_all();
+        st->cv.notify_all();
     }
 
-    // Submit one frame into a free slot. Called with mu_ HELD; the SDK call
-    // itself is made with the lock dropped, because the completion callback
-    // takes the same mutex and a fast-completing frame would otherwise
-    // self-deadlock.
+    // Submit one frame into a free slot. Called with the state mutex HELD; the
+    // SDK call itself is made with the lock dropped, because the completion
+    // callback takes the same mutex and a fast-completing frame would
+    // otherwise self-deadlock.
     bool submit_async_locked(std::unique_lock<std::mutex>& lk) {
+        AsyncState& st = *async_state_;
         AsyncSlot* slot = nullptr;
         for (auto& sp : async_slots_) {
             if (!sp->busy) { slot = sp.get(); break; }
         }
         if (!slot) return false;       // pipeline already full
         slot->busy = true;
-        ++inflight_;
+        ++st.inflight;
         Inst& in = *slot->inst;
         lk.unlock();
         const axrResult res = axr_run_async_model_instance(
@@ -623,10 +664,10 @@ private:
         if (res != AXR_SUCCESS) {
             // Never queued, so no callback will ever arrive for this slot.
             slot->busy = false;
-            if (inflight_ > 0) --inflight_;
-            if (error_.empty()) {
-                error_ = std::string("Axelera: async submit failed: ") +
-                         axr_error_string(res);
+            if (st.inflight > 0) --st.inflight;
+            if (st.error.empty()) {
+                st.error = std::string("Axelera: async submit failed: ") +
+                           axr_error_string(res);
             }
             return false;
         }
@@ -637,17 +678,18 @@ private:
     // completion — the contract every async runner in this project keeps, so
     // BenchEngine's frame counter needs no special case.
     unsigned run_frame_async() {
-        std::unique_lock<std::mutex> lk(mu_);
-        while (error_.empty() && inflight_ < static_cast<size_t>(async_depth_)) {
+        AsyncState& st = *async_state_;
+        std::unique_lock<std::mutex> lk(st.mu);
+        while (st.error.empty() && st.inflight < static_cast<size_t>(async_depth_)) {
             if (!submit_async_locked(lk)) break;
         }
-        if (!error_.empty()) throw std::runtime_error(error_);
-        if (!cv_.wait_for(lk, std::chrono::seconds(10),
-                          [this] { return completed_ > 0 || !error_.empty(); })) {
+        if (!st.error.empty()) throw std::runtime_error(st.error);
+        if (!st.cv.wait_for(lk, std::chrono::seconds(10),
+                            [&st] { return st.completed > 0 || !st.error.empty(); })) {
             throw std::runtime_error("Axelera: async inference timed out");
         }
-        if (!error_.empty()) throw std::runtime_error(error_);
-        --completed_;
+        if (!st.error.empty()) throw std::runtime_error(st.error);
+        --st.completed;
         return static_cast<unsigned>(batch_);
     }
 
@@ -658,12 +700,16 @@ private:
     // Bounded, because hanging teardown is worse than leaking — a wedged card
     // may never call back at all.
     void drain_async() {
-        std::unique_lock<std::mutex> lk(mu_);
-        if (!cv_.wait_for(lk, std::chrono::seconds(10),
-                          [this] { return inflight_ == 0; })) {
+        if (!async_state_) return;
+        AsyncState& st = *async_state_;
+        std::unique_lock<std::mutex> lk(st.mu);
+        if (!st.cv.wait_for(lk, std::chrono::seconds(10),
+                            [&st] { return st.inflight == 0; })) {
             // Leak the slots deliberately: their buffers stay alive for a
-            // callback that may still arrive. One leaked allocation beats a
-            // use-after-free or a frozen Stop button.
+            // callback that may still arrive, and each one holds a shared_ptr
+            // to this state, so the mutex it locks outlives the runner too.
+            // One leaked allocation beats a use-after-free or a frozen Stop
+            // button.
             for (auto& sp : async_slots_) (void)sp.release();
         }
         async_slots_.clear();
@@ -877,39 +923,74 @@ private:
         return true;
     }
 
-    // libaxruntime has no async inference API at all; the nearest thing it
-    // offers is its own double_buffer property, which overlaps the next frame's
-    // transfer with the current run. That is what "Async" means for this card,
-    // and the status line says so rather than implying parity.
-    // Instance properties, matching the SDK's own axruntime_example.cpp:
+    // ---- instance properties -------------------------------------------
     //
-    //   input_dmabuf=0;num_sub_devices=N;aipu_cores=N
+    // ONE PROPERTY PER LINE. axr_create_properties() splits the string on
+    // '\n' and on nothing else -- axr::split(s, 0xa), verified in the
+    // disassembly of BOTH libaxruntime 1.7.0 and 1.8.0. A ';'-separated
+    // string is NOT rejected: the first key swallows the whole remainder as
+    // its value, strtoul stops at the ';', and every later property is
+    // silently dropped. This file used ';' until 2026-09-20, so aipu_cores,
+    // double_buffer and async_mode had never once reached the runtime.
     //
-    // `aipu_cores` is the one that was missing before. Without it the runtime
-    // was told how many sub-devices the *connection* reserved but never how many
-    // cores the *instance* should spread across, which is why a single instance
-    // asking for four sub-devices left aicore1..3 parked at 50 MHz. Both keys
-    // are set for batch 1 too — N is simply 1 there.
+    // Measured the day it was found, ResNet-50 batch-4, four cores, 8 s each:
+    //
+    //   ';'  (what we shipped)            1586.0 fps
+    //   '\n' with every property set      1903.2 / 1938.5 / 1961.6 fps
+    //   '\n' but no double_buffer         1618.6 fps
+    //
+    // +20%, and it is ALL double_buffer -- aipu_cores adds nothing on top of
+    // the connection's own num_sub_devices for a fixed-batch artifact. It also
+    // retires "~1600 fps is where libaxruntime tops out": 1600 was double
+    // buffering being thrown away, and ~1940 is 94% of the vendor's 2054 from
+    // a single submitting thread, with none of the MSI timeouts that the
+    // two-thread experiment tripped.
+    //
+    // A ';' is therefore a silent misconfiguration, never an error. Keep the
+    // one-per-line form, and check a new key by passing it ALONE first: an
+    // unrecognised key is reported ("Unknown property key: <k>") only when it
+    // is parsed as a key rather than swallowed as somebody's value.
     axrModelInstance* make_instance(axrConnection* conn, Stage& st, size_t sub_devices) {
-        std::string p = "input_dmabuf=0;num_sub_devices=" +
-                        std::to_string(sub_devices) + ";aipu_cores=" +
-                        std::to_string(sub_devices);
+        std::string p;
+        const auto add = [&p](const std::string& kv) {
+            if (!p.empty()) p += "\n";
+            p += kv;
+        };
+        add("input_dmabuf=0");
+        // num_sub_devices says how many the CONNECTION reserved; aipu_cores
+        // says how many this instance may spread across. Both, as the SDK's
+        // own axruntime_example.cpp does.
+        add("num_sub_devices=" + std::to_string(sub_devices));
+        add("aipu_cores=" + std::to_string(sub_devices));
         // double_buffer overlaps the next frame's transfer with the current
-        // run. It is a boolean — any truthy value just turns it on — so depth
-        // tops out at 2 on this card.
-        if (depth_ > 1) p += ";double_buffer=1";
+        // run. It is a boolean -- any truthy value just turns it on -- so
+        // depth tops out at 2 on this card.
+        if (depth_ > 1) add("double_buffer=1");
 #if MB_AXELERA_HAVE_ASYNC
-        // Selecting the async path is TWO things, not one. The call
-        // axr_run_async_model_instance() exists in 1.8 but the base
-        // Executor::run_async is a weak symbol returning
-        // AXR_ERROR_NOT_IMPLEMENTED; only axr::AsyncExecutor implements it, and
-        // this property is what makes the instance use that executor. Without
-        // it every submission fails immediately — measured 2026-09-20.
-        if (async_) p += ";async_mode=1";
+        // async_mode is what makes axr_load_model_instance() build an
+        // axr::AsyncExecutor instead of the default V1/Lockstep one; without
+        // it axr_run_async_model_instance() lands on the base Executor's weak
+        // stub and returns AXR_ERROR_NOT_IMPLEMENTED. max_inflight is the
+        // executor's lane count and max_pending its queue depth -- the same
+        // two knobs the vendor's own AxInferenceNet exposes (defaults 4 / 8).
+        if (async_) {
+            add("async_mode=1");
+            add("max_inflight=" + std::to_string(async_depth_));
+            add("max_pending=" + std::to_string(async_depth_ * 2));
+        }
 #endif
         axrProperties* props = axr_create_properties(ctx_, p.c_str());
+        // A null here would otherwise load with SDK defaults -- no cores, no
+        // double buffering, no async -- while describe() still reported the
+        // configuration that was asked for. Never let a run claim a
+        // configuration it did not get.
+        if (!props) {
+            throw std::runtime_error(
+                std::string("Axelera: could not build instance properties: ") +
+                axr_last_error_string(AXR_OBJECT(ctx_)));
+        }
         axrModelInstance* mi = axr_load_model_instance(conn, st.model, props);
-        if (props) axr_destroy(AXR_OBJECT(props));
+        axr_destroy(AXR_OBJECT(props));
         return mi;
     }
 
@@ -918,7 +999,11 @@ private:
     std::vector<std::unique_ptr<Stage>> stages_;
     std::string describe_;
     ApiMode mode_ = ApiMode::Sync;   // Async needs Voyager >= 1.8; see configure()
-    int depth_ = 2;                  // double_buffer on by default
+    // Double buffering OFF unless asked for: see ControlPanel's radio pair.
+    // This is the runner's own default, used when configure() is never called
+    // (a headless driver); it must agree with the widget or the two paths
+    // measure different configurations.
+    int depth_ = 1;
     int cores_ = 4;
     int instances_ = 1;
     // Host threads submitting into the ONE instance. 1 = today's behaviour.
@@ -945,15 +1030,26 @@ private:
     // concurrent submissions into one instance cannot share an input or output
     // buffer, the same reason the submit-thread clones deep-copy theirs.
     // `inst` borrows stage 0's instance and never owns it.
-    struct AsyncSlot {
-        AxeleraBenchRunner* self = nullptr;
-        std::unique_ptr<Inst> inst;
-        bool busy = false;
+    //
+    // The mutex, the condition and the counters live in a refcounted block
+    // rather than in the runner, so a completion arriving after a timed-out
+    // drain has somewhere valid to land. See on_async_complete().
+    struct AsyncState {
+        std::mutex mu;
+        std::condition_variable cv;
+        size_t inflight = 0;     // slots currently submitted
+        size_t completed = 0;    // completions not yet counted as frames
+        std::string error;
     };
+    struct AsyncSlot {
+        std::shared_ptr<AsyncState> state;
+        std::unique_ptr<Inst> inst;
+        bool busy = false;       // guarded by state->mu
+    };
+    std::shared_ptr<AsyncState> async_state_;
     std::vector<std::unique_ptr<AsyncSlot>> async_slots_;
     bool async_ = false;
     int async_depth_ = 4;
-    size_t inflight_ = 0;        // slots currently submitted, guarded by mu_
 };
 
 }  // namespace
