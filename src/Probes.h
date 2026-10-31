@@ -148,6 +148,20 @@ public:
     void set_note_sink(std::function<void(const std::string&)> sink) {
         note_sink_ = std::move(sink);
     }
+    // "A benchmark is running" — set by the owner from its own tick.
+    //
+    // Probes are otherwise passive readers, but ONE of them writes device
+    // state: AxeleraProbe raises the Metis log level so temperatures appear.
+    // Its trigger is "firmware is present but no core_temps", which fires the
+    // instant a benchmark's axr_device_connect() finishes uploading firmware —
+    // the single worst moment to open a second handle on that card. Measured
+    // 2026-09-20: the write landed one second after the upload, the kernel
+    // logged two firmware reloads inside that second, the PCIe link dropped
+    // and the card fell back to bootloader.
+    //
+    // Defaults to false, so a host that never sets it (mb-powermon-gui has no
+    // engine) behaves exactly as before.
+    void set_busy(bool busy);
     void poll();
 
     const std::vector<MetricInfo>& temp_metrics() const { return temp_metrics_; }

@@ -23,6 +23,7 @@
 #include <thread>
 #endif
 
+#include <atomic>
 #include <climits>
 #include <cmath>
 #include <cstdio>
@@ -528,6 +529,11 @@ private:
 //   - the collector simply isn't running (nothing is using the device),
 //   - no `triton_trace` on the host at all.
 // ---------------------------------------------------------------------------
+// Set by Probes::set_busy() from the owner's tick. Read by AxeleraProbe before
+// the one device-state write any probe makes. Atomic because poll() may run off
+// the main thread in a future caller; the cost is nothing beside a shell-out.
+std::atomic<bool> g_device_busy{false};
+
 class AxeleraProbe : public DeviceProbe {
 public:
     const char* name() const override { return "Axelera"; }
@@ -537,9 +543,13 @@ public:
         if (nodes.empty()) return false;  // genuinely no Metis on this host
         device_ = basename_of(nodes.front());  // e.g. "metis-0:c6:0"
 
+        // NEWEST runtime, not the oldest. glob() returns sorted, so .front()
+        // is runtime-1.7.0 on a host where 1.8 is installed beside it — and a
+        // 1.7 tool against 1.8 firmware is a version mismatch the card reports
+        // and we then act on. Same rule CMake already follows for AXR_LIB.
         auto bins = glob_paths("/opt/axelera/runtime-*/bin/triton_trace");
         if (!bins.empty())
-            cli_ = bins.front();
+            cli_ = bins.back();
         else if (!run_capture("command -v triton_trace 2>/dev/null").empty())
             cli_ = "triton_trace";  // on PATH
         else
@@ -563,7 +573,7 @@ public:
         // clock can be read against the AI0-AI3 temperature beside it.
         auto axcmds = glob_paths("/opt/axelera/runtime-*/bin/axcmd");
         if (!axcmds.empty()) {
-            axcmd_ = axcmds.front();
+            axcmd_ = axcmds.back();   // newest — see the triton_trace note above
             for (int i = 0; i < 4; ++i) {
                 freq_metrics_.push_back({"Axelera C" + std::to_string(i), "MHz"});
                 freq_values_.push_back(kNaN);
@@ -638,6 +648,13 @@ private:
                 // collector level lives in volatile device state and went with
                 // it, so allow one more attempt once firmware returns.
                 collector_set_ = false;
+            } else if (g_device_busy.load(std::memory_order_relaxed)) {
+                // A benchmark owns the card. Opening a second handle on it —
+                // which is what the axcmd shell-out below does — races the
+                // runtime's firmware upload and has taken the PCIe link down.
+                // The collector is a convenience; a wedged card is not. Try
+                // again when the run ends: collector_set_ stays false.
+                note_ = "collector not enabled while a benchmark is running";
             } else if (!collector_set_ && !collector_disabled()) {
                 // Firmware is fine but nothing is emitting core_temps, which
                 // means the collector is at its default `err` level. Raise it
@@ -1894,6 +1911,10 @@ void Probes::flatten() {
     syspower_values_.assign(syspower_metrics_.size(), kNaN);
     sysvoltage_values_.assign(sysvoltage_metrics_.size(), kNaN);
     syscurrent_values_.assign(syscurrent_metrics_.size(), kNaN);
+}
+
+void Probes::set_busy(bool busy) {
+    g_device_busy.store(busy, std::memory_order_relaxed);
 }
 
 void Probes::poll() {

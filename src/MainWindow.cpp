@@ -1309,6 +1309,10 @@ bool MainWindow::on_tick() {
     last_time_us_ = now;
 
     poll_downloads();
+    // Before poll(), so the one probe that writes device state sees the run
+    // that is holding the card. `stopping()` counts as busy: a worker can
+    // still be inside a vendor SDK call after stop() returns.
+    probes_.set_busy(engine_.active() || engine_.stopping());
     probes_.poll();
 
     // A hidden trace must not reach a legend aggregate. The Graphs and
