@@ -34,6 +34,9 @@ const char* api_mode_note(Accel a, ApiMode m);
 // when offering the user a choice is honest. False for Axelera and Qualcomm,
 // whose runtimes have no async inference entry point at all.
 bool accel_has_both_api_modes(Accel a);
+// The mode a card's row starts in. Async wherever it is the faster path, which
+// is every card but Axelera — see bench_runners.cpp.
+ApiMode accel_default_api_mode(Accel a);
 // For a card with only one mode: the mode it always runs, and why, e.g.
 // "Sync only - the runtime has no async inference API". Empty when the card
 // has both.

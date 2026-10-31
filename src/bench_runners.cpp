@@ -102,6 +102,29 @@ bool accel_has_both_api_modes(Accel a) {
     return false;
 }
 
+// The mode a card's row starts in.
+//
+// Async everywhere it is the faster path — and on four of the five cards it is,
+// by 3-4x. Axelera is the exception and starts in **Sync**: its 1.8 async
+// executor refuses any multi-kernel artifact, so choosing Async drops the run
+// to the batch-1 build and ~1/5 of the throughput (387.7 fps against 1967 for
+// 4-core batched sync, ResNet-50, measured 2026-09-20). A default that quietly
+// costs 5x is not a default.
+//
+// No `default:` — -Wswitch then catches a newly added Accel here.
+ApiMode accel_default_api_mode(Accel a) {
+    switch (a) {
+        case Accel::Hailo:
+        case Accel::DeepX:
+        case Accel::MemryX:
+        case Accel::Qualcomm:
+            return ApiMode::Async;
+        case Accel::Axelera:
+            return ApiMode::Sync;
+    }
+    return ApiMode::Async;
+}
+
 const char* accel_sole_api_mode_note(Accel a) {
     switch (a) {
         case Accel::Hailo:

@@ -301,7 +301,11 @@ ControlPanel::ControlPanel(const Catalog& catalog)
                     auto* sy = Gtk::make_managed<Gtk::CheckButton>("Sync");
                     auto* as = Gtk::make_managed<Gtk::CheckButton>("Async");
                     as->set_group(*sy);
-                    as->set_active(true);   // async is the default everywhere
+                    // Per card: async on the four where it is the faster path,
+                    // Sync on Axelera, where it is not. set_active() AFTER
+                    // set_group(), or joining the group clears the selection.
+                    (accel_default_api_mode(a) == ApiMode::Sync ? sy : as)
+                        ->set_active(true);
                     sy->set_tooltip_text(
                         "One frame at a time, waiting for each — what a "
                         "latency-bound real-time pipeline does.");
@@ -384,7 +388,15 @@ ControlPanel::ControlPanel(const Catalog& catalog)
                 // Range and API rows. set_active comes AFTER set_group: joining
                 // a group can clear the flag, so ordering it the other way
                 // would leave neither button selected.
-                axelera_dbuf_on_.set_active(true);   // default is still On
+                // DEFAULT OFF, deliberately, since 2026-09-20. This is the
+                // measured-safe configuration: every 4-core run this host has
+                // ever survived was made with double buffering *not reaching
+                // the runtime at all* (the ';' property bug), so "4 cores runs
+                // clean here" is evidence about the Off path only. The first
+                // GUI launch with it genuinely on took the whole machine down.
+                // On is a deliberate opt-in worth ~23%, to be soaked before it
+                // becomes a default again.
+                axelera_dbuf_off_.set_active(true);
                 const char* tip = depth_tooltip(a);
                 axelera_dbuf_on_.set_tooltip_text(tip);
                 axelera_dbuf_off_.set_tooltip_text(tip);
@@ -720,6 +732,9 @@ ControlPanel::ControlPanel(const Catalog& catalog)
 
     select_first_runnable();
     refresh_accel_sensitivity();
+    // Axelera starts in Sync, so its depth spin must start greyed and its
+    // double-buffering radios live. Nothing else has toggled yet.
+    refresh_depth_sensitivity();
 }
 
 // Sever every widget-signal connection while all the widgets are still alive.
