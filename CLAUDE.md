@@ -161,10 +161,26 @@ Three layers, cleanly separated. Keep it that way.
     The legend and checkbox rows track a separate `col` counter so hiding a
     card leaves no gap in the row.
 - **`Catalog.{h,cpp}`** — pure data, no GTK. The `Accel` enum
-  (Hailo/MemryX/DeepX/Axelera/Qualcomm, order fixes every graph's series order)
+  (**Axelera/DeepX/Hailo/MemryX/Qualcomm — alphabetical since 2026-10-31**,
+  and the order fixes every graph's series order)
   plus an INI reader for `config/models.conf`. **Append to that enum, never
   insert** — `accel_index()`/`accel_at()` are raw casts, so a card's position is
   what indexes `watts[]`, `Catalog::vendors_[]` and every graph series.
+  **It HAS been reordered once, deliberately** (2026-10-31, to alphabetical
+  from the write-order `Hailo, MemryX, DeepX, Axelera`). That was safe only
+  because nothing in the tree stores a position: the name and vendor tables are
+  switches, `watts[]` is filled through `accel_at(i)`/`accel_name()` so it
+  follows whatever the enum says, every `[kAccelCount]` initialiser is uniform,
+  and the INA228 fold matches on *name*. **Three things had to move together** —
+  the enum, `Probes::discover()`'s call order (the telemetry legends group by
+  it) and `ACCEL_ORDER` in `tools/csv-to-html-plot.py`. Checked by grep for
+  literal indices before the edit, not assumed. The rule still stands for an
+  *insert*, and a reorder is still a whole-project change, not a one-liner.
+
+  **One consequence, harmless but worth knowing:** CSV *column order* changes,
+  while the column *names* do not. Logs from before and after are no longer
+  byte-diffable, but every reader parses by name, so old logs keep plotting.
+
   Rows are **logical**: one `BenchSubject`
   holds a different artifact per vendor in `members[kAccelCount]`, so the same
   model can run on three cards at once and be compared. Two distinct notions,
@@ -374,7 +390,7 @@ Three layers, cleanly separated. Keep it that way.
   `"<board> Board"` ambient probe (any name containing a space). Everything
   unmatched falls back to the cycling palette. No ad-hoc RGB.
 - **Two orderings must agree, and they are separate.** `enum class Accel`
-  (`Hailo, MemryX, DeepX, Axelera, Qualcomm`) fixes the series order on the three
+  (`Axelera, DeepX, Hailo, MemryX, Qualcomm`) fixes the series order on the three
   benchmark graphs and the Accelerators rows. The **Power /
   Temperature / Frequency** legends instead follow `Probes::discover()`'s call
   order. Change one without the other and the two halves of the UI disagree.
@@ -653,6 +669,11 @@ Three layers, cleanly separated. Keep it that way.
   1.8.0 + firmware 1.8.0, AxModel v5 artifacts, headless:
   - **ResNet-50, 4 cores, sync: 1621–1636 fps** — indistinguishable from 1.7's
     1598–1625. The SDK jump costs nothing and buys nothing here.
+    **Superseded 2026-09-20: both figures were measured with the instance
+    properties silently dropped** (see the property-separator entry below).
+    With them applied the same run measures **1967 fps**. The conclusion that
+    1.8 is performance-neutral still holds — the gain is our bug, not the
+    SDK's — but never quote 1621 as this card's sync rate again.
   - **YOLOv8s, 4 cores: still wedges the card**, first run, with the documented
     signature (`Failed to wait for MSI 0` → `ZE_RESULT_ERROR_DEVICE_LOST` →
     `Link down` → bootloader + 1 DMA error → power cycle). The v5 artifact's
@@ -689,6 +710,62 @@ Three layers, cleanly separated. Keep it that way.
   cache entry when it no longer lives under the chosen `AXELERA_DIR`. Verify
   with `ldd build/mb-benchmark | grep axruntime`, never the configure log alone.
 
+- **Axelera instance properties are ONE PER LINE, and a `;` is a SILENT
+  misconfiguration.** `axr_create_properties()` splits on `'\n'` and nothing
+  else — `axr::split(s, 0xa)`, verified in the disassembly of **both** 1.7.0
+  and 1.8.0. A `;`-joined string is not rejected: the first key takes the whole
+  remainder as its value, `strtoul` stops at the `;`, and every later property
+  is dropped without a word. `bench_axelera.cpp` joined with `;` until
+  2026-09-20, so **`aipu_cores`, `double_buffer` and `async_mode` had never
+  once reached the runtime** — only `input_dmabuf=0` ever applied.
+
+  Measured the day it was found, ResNet-50 batch-4, four cores, 8 s runs:
+
+  | property string | fps |
+  | --- | ---: |
+  | `;`-joined (what shipped) | 1586.0 |
+  | one per line, everything set | 1903.2 · 1938.5 · **1961.6** |
+  | one per line, no `double_buffer` | 1618.6 |
+  | through the app's own runner, after the fix | **1966.8** |
+
+  **+23%, and it is all `double_buffer`** — `aipu_cores` adds nothing on top of
+  the connection's own `num_sub_devices` for a fixed-batch artifact. Two
+  consequences: the "~1600 fps ceiling" above is retired, and **any ladder
+  measured through this runner before 2026-09-20 measured the same
+  configuration twice** (the `double_buffer=4` vs `=1` parity below is an
+  example — both were no-ops here). A standalone probe that passed a single
+  property is unaffected.
+
+  **And a third: double buffering defaults to OFF — but NOT for the reason
+  first recorded here.** The first GUI launch after this fix took the whole
+  host down, and this file blamed double buffering, since that was the one
+  thing the fix had newly switched on. **That was wrong, and 2026-10-31
+  disproved it**: two more host freezes the same morning, both with double
+  buffering **off** — one at 10:45 (four cards) and one at 10:58 (DeepX +
+  Axelera, staggered). Double buffering is **not** the trigger; see the
+  host-freeze entry under **Known issues**.
+
+  The default stays Off out of caution rather than evidence — it is the
+  configuration with the most hours on it — and the +23% remains an opt-in
+  awaiting a soak. The shipped plans say `axelera.double_buffer = false` for
+  the same reason. **Do not re-cite the 09-20 crash as evidence against double
+  buffering.**
+
+  **What made this expensive is the verification, not the change.** It was
+  validated with seven **8-second** headless runs of the Axelera runner alone,
+  on an otherwise idle box, with the card healthy after each. That proves the
+  path executes. The documented failure here is *ResNet-50 runs two minutes,
+  the next load kills it* — so 8 s proves nothing about survivability, one
+  card says nothing about four plus the 1 Hz probe tick, and neither touches
+  the GUI. **A change that alters how a card is driven needs a soak and a GUI
+  run before it is called verified.**
+
+  **How to check a new key**: pass it ALONE first. An unrecognised key is
+  reported (`Invalid properties: Unknown property key: <k>`) only when it is
+  parsed as a key rather than swallowed as somebody's value — which is exactly
+  why `depth=4` produced a clean error in 1.7 while `aipu_cores` silently did
+  nothing.
+
 - **One Axelera zip holds every core build, and `Fetcher` now extracts them
   all.** The archive is `build/<m>/<m>/{1,2,3,4,quantized}/`; taking only
   `.../1/` is what made the `-Ncore` directories a manual step and left a fresh
@@ -718,6 +795,25 @@ Three layers, cleanly separated. Keep it that way.
   that have no multicore artifact — yolov8s measures 130 fps at batch 1 against
   368 with `MB_AXELERA_MULTI_INSTANCE=1` on four cores. Never label a batch-1 run
   as N cores; report the fallback instead.
+- **Inference -> Stagger starts the cards one at a time** (2026-09-21): an
+  `Enabled` box and a delay in seconds (default 5, range 1-60, off by
+  default). `ControlPanel::selection()` gives the k-th enabled card, in
+  Accelerators order, `BenchItem::start_delay_s = k x delay`; the worker waits
+  **before `make_runner()`**, so a card's device is untouched until its turn,
+  in a new `State::Waiting` (appended to the enum, shown as "waiting for its
+  turn", logged as bench_state `starting`). The wait polls `stop_flag` every
+  50 ms so Stop is not held for the full delay. A staggered run is noted in the
+  CSV (`stagger start: N s apart, Hailo -> …`) because no `<vendor>_cfg`
+  column would otherwise show it. **Why it exists:** Axelera survives alone (~1960 fps with double
+  buffering, ~1625 without) and failed the moment other cards were involved.
+  **Run 2026-09-21 and 10-31, and it is NOT a fix** — it was a test of the
+  simultaneous-inrush hypothesis and it **refuted it**: on 09-21 Axelera
+  loaded alone 15 s after the other three and still took the link down within
+  a second; on 10-31 it loaded fine behind DeepX and the host froze instead.
+  Keep the control — staggering is how those two facts were separated, and it
+  is the right way to run any future concurrency test — but do not expect it
+  to make a mixed-card run safe. Not settable from `--automation` yet.
+
 - **Graph order is System Voltage, System Current, System Power, Accelerator
   Voltage, Accelerator Current, Accelerator Power, Accumulated Energy,
   Temperature, Frequency, Frame Rate, Efficiency, Energy.** Each triplet reads
@@ -1094,13 +1190,25 @@ The five SDKs are not symmetric. Verified 2026-08-04 against installed headers
 Axelera** get radios; **Qualcomm alone** gets a static line from
 `accel_sole_api_mode_note()`.
 
-**Axelera's radios are offered even though 1.8.0's async returns
-NOT_IMPLEMENTED**, and that is deliberate — the same principle as the Qualcomm
+**The starting mode is per card, from `accel_default_api_mode()`.** Async on
+the four cards where it is the faster path; **Sync on Axelera**, because its
+async executor refuses a multi-kernel artifact and so runs the batch-1 build at
+~1/5 the rate (388 fps against 1967 for 4-core batched sync). A default that
+quietly costs 5x is not a default. The switch is exhaustive and has no
+`default:`, so `-Wswitch` catches a new card; `ControlPanel` calls
+`refresh_depth_sensitivity()` once at construction so Axelera's depth spin
+starts greyed and its double-buffering radios start live. The shipped
+automation plans deliberately do not set `axelera.api`, so they inherit this.
+
+**Axelera's radios are offered, and since 2026-09-20 its async mode actually
+runs** (387.7 fps on ResNet-50 batch 1; it was the property separator, not the
+SDK). Offering them was deliberate even while it appeared broken — the same principle as the Qualcomm
 `Backend` control: the entry point genuinely exists in the SDK, the failure is
 loud and names its own cause, and hiding it would make the UI disagree with the
-runtime. `api_mode_note(Axelera, Async)` says
-`1.8 API exists but returns NOT_IMPLEMENTED · expect failure`, so the run column
-cannot claim a working mode. `api_mode_is_native()` still reports **Sync only**
+runtime. `api_mode_note(Axelera, Async)` now says
+`1.8 internal API · batch-1 build only · slower than sync`, because a mode that
+works but cannot use the 4-core artifact would otherwise read as the faster
+one. `api_mode_is_native()` still reports **Sync only**
 for it: "native" there means *the vendor supports it*, which async is not yet. Neither switch has a
 `default:`, so `-Wswitch` catches a newly added `Accel` — unlike `make_runner()`,
 which does have one and will not warn.
@@ -1163,14 +1271,37 @@ which does have one and will not warn.
   `bench_axelera.cpp` implements it behind `$MB_AXELERA_ASYNC`, **off by
   default**, compiled out entirely below 3.2 via `MB_AXELERA_HAVE_ASYNC`.
 
-  **MEASURED 2026-09-20, and it does not work: every submission returns
-  `AXR_ERROR_NOT_IMPLEMENTED`.** Driver 1.6.2, runtime 1.8.0, firmware 1.8.0,
-  healthy card, ResNet-50 batch-4 — the call is reached and fails immediately.
-  What the library actually contains:
-  - `axr::AsyncExecutor::run_async` is a **real implementation** (`T`), but
+  **MEASURED 2026-09-20: it WORKS — 387.7 fps on ResNet-50 batch 1, through
+  the app's own runner.** An earlier pass the same day concluded "every
+  submission returns `AXR_ERROR_NOT_IMPLEMENTED`"; that was **our property
+  string**, not the SDK (see **Instance properties** below — `;` meant
+  `async_mode` never reached the runtime). With one property per line the
+  runtime logs `AsyncExecutor initialised`, `io_buffer_depth=4, queue_depth=8`
+  and four lanes retiring frames.
+
+  **Its one hard limit is the artifact.** `AsyncExecutor::init()` refuses
+  anything but a single-kernel model — `AsyncExecutor requires exactly one
+  kernel at stage 0` — and an N-core build ships N of them
+  (`resnet50-…-4core` has `kernel_function_0..3.elf`). It does not degrade, it
+  **fails the load outright**, so `bench_axelera.cpp` forces the batch-1 build
+  in Async and says `async needs the batch-1 build; ignoring N cores` in
+  `describe()`. Async and the multi-core batched builds are therefore
+  **mutually exclusive in 1.8.0**, which makes async the slower mode on this
+  card: 387.7 fps against 1967 for 4-core sync.
+
+  Two properties the vendor's own `AxInferenceNet` sets and we now set too:
+  **`max_inflight`** (lanes, default 4) and **`max_pending`** (queue depth,
+  default 8). They are only read when `async_mode` is set.
+
+  What the library contains, from the 1.8.0 disassembly — kept because it is
+  what made the diagnosis possible:
+  - `axr::AsyncExecutor::run_async` is a **real implementation** (`T`), while
     `axr::Executor::run_async` is a **weak symbol** (`W`) — the base returning
-    NOT_IMPLEMENTED — and an instance from `axr_load_model_instance()` is backed
-    by the base, not by `AsyncExecutor`.
+    NOT_IMPLEMENTED. Landing on the base is the symptom of `async_mode` not
+    having been applied, **not** proof that the C API cannot build an
+    `AsyncExecutor`: `axr_load_model_instance` calls
+    `axr::create_async_executor()` directly, gated on the parsed `async_mode`
+    flag and on the model type being `default`.
   - **`async_mode` is a genuine property key**, new in 1.8 and absent from 1.7.
     It is *accepted* at load (an invalid key fails with `Unknown property key`,
     this one does not) and gated by `async_mode only supports model type
@@ -1179,13 +1310,12 @@ which does have one and will not warn.
   - Dropping `double_buffer` (the `LockstepExecutor`) makes no difference
     either. That guess was tried and reverted.
 
-  So the async path is **wired, correct and unreachable**: the header, the
-  symbol and the property all exist, and the C API simply does not create an
-  `AsyncExecutor` in 1.8.0. Exactly what "INTERNAL USE ONLY ... not yet part of
-  the stable public ABI" means in practice. Our implementation fails **loudly
-  and harmlessly** — it surfaced the error, did not hang, and left the card
-  healthy — so it is worth keeping for whenever Axelera finishes wiring it up.
-  **Do not re-derive this; re-test it only after an SDK bump.**
+  **The lesson is the diagnosis, not the verdict.** "The symbol is weak,
+  therefore the feature is unimplemented" was wrong twice over: the strong
+  implementation was in the same library, and the one thing never checked was
+  whether our own property string had been parsed at all. When an SDK reports
+  a feature missing, confirm the input reached it before concluding anything
+  about the vendor.
 
   What follows was true of 1.7 and is kept because the reasoning still applies
   to the *stable* API: all 40 `axr_*` symbols in libaxruntime
@@ -1345,8 +1475,13 @@ which does have one and will not warn.
   shim (memfd → `F_SEAL_SHRINK` → `UDMABUF_CREATE`, a genuine dmabuf fd), so
   this measures the property and not a failed setup. **Do not re-raise it.**
 
-  **What remains is a Little's-law ceiling, and ~1600 fps is where
-  libaxruntime tops out.** `frames_in_flight = throughput × latency`. Our
+  **RETIRED 2026-09-20 — ~1600 fps was double buffering being thrown away,
+  not a ceiling.** With the property string fixed the same single-threaded path
+  measures **1967 fps**, i.e. 96% of the vendor's 2054, with no MSI timeouts
+  and one submitting thread. The arithmetic below is kept because the *method*
+  is right and it is how the gap was framed; the numbers in it are pre-fix.
+
+  **What was thought to remain is a Little's-law ceiling.** `frames_in_flight = throughput × latency`. Our
   runner: 1598.5 fps × 2.501 ms = **4.0 frames** — exactly the batch size,
   because `axr_run_model_instance()` blocks and there is no async API to
   overlap with. Voyager's own inference element: 2160.8 fps × 9.713 ms =
@@ -1596,8 +1731,12 @@ which does have one and will not warn.
   then the other mode's knob.
 
   Historically — **the Off/On radio pair replaced a 1-8 spin** (`axelera_dbuf_off_` /
-  `axelera_dbuf_on_` in `ControlPanel.cpp`, **Off listed first**, On still the
-  default; `depth(Accel)` maps them to 1 and 2 for `BenchItem`). Automation
+  `axelera_dbuf_on_` in `ControlPanel.cpp`, **Off listed first and, since
+  2026-09-20, the default**; `depth(Accel)` maps them to 1 and 2 for
+  `BenchItem`). Three places must agree on that default: the radio, `depth_`
+  in `bench_axelera.cpp` (used when `configure()` is never called), and the
+  async-ineligible fallback, which drops to sync with double buffering **off**
+  rather than into the faster untested configuration. Automation
   accepts `axelera.double_buffer` / `axelera.dbuf` as aliases for the same
   thing. Note the widget order trap: `set_active()` must come **after**
   `set_group()`, or joining the group clears the selection.
@@ -1923,7 +2062,7 @@ by 8.174 GOP/frame, against each vendor's rated INT8 throughput.
 | MemryX MX3 | 1797 | 14.7 TOPS | 14 @ 600 MHz | **105%** (see below) |
 | Hailo-8 | 1369 | 11.2 TOPS | 26 | **43%** |
 | DeepX M1 | 1087 | 8.9 TOPS | 25 | **36%** |
-| Axelera Metis | 1602 | 13.1 TOPS | 214 | **6.1%** |
+| Axelera Metis | 1967 | 16.1 TOPS | 214 | **7.5%** |
 
 **The MemryX row exceeds its own nameplate, so at least one of its two inputs is
 wrong — do not quote it as a utilisation figure.** 1796.7 fps is solid: it is the
@@ -1938,9 +2077,10 @@ can inspect a compiled `.dfp`'s topology, so this is flagged rather than
 corrected. **Establish the artifact's real GOP before publishing a MemryX
 efficiency number.**
 
-Two cards land in a plausible 36-43% band. **Axelera delivers about 6% of its
-nameplate** — up from 2.7% before the fixed-batch fix (2026-09-03), and now 78%
-of the vendor's own 2054 fps rather than 34%. Even the vendor figure is only 7.8%
+Two cards land in a plausible 36-43% band. **Axelera delivers about 7.5% of its
+nameplate** — 2.7% before the fixed-batch fix (2026-09-03), 6.1% after it, and
+7.5% since the property-separator fix (2026-09-20), which is **96%** of the
+vendor's own 2054 fps. Even the vendor figure is only 7.8%
 of the datasheet.
 That reframes the open "18% of vendor" question under **API modes**: the gap to
 the *datasheet* is far larger than the gap to the vendor's own benchmark, so
@@ -2221,6 +2361,34 @@ case. In the GUI both gates clear themselves:
   resets when it next sees a version mismatch, so a reboot or a `modprobe -r
   metis` re-arms it. `$MB_AXELERA_NO_COLLECTOR=1` opts out.
 
+  **NEVER while a benchmark is running** (2026-09-20). That write is an `axcmd`
+  shell-out — a *second process opening the card* — and its trigger, "firmware
+  present but no core_temps", fires the instant `axr_device_connect()` finishes
+  uploading firmware. Observed: the write landed one second after the upload,
+  `Link down` followed within that second, and the card fell back to
+  bootloader with a DMA error — a power cycle. **The evidence is timing, not
+  proof.** It was first read as "two firmware reloads inside that second =
+  two openers", but a single clean connect also logs *two*
+  `fwtrace: detached for firmware reload` lines (seen 2026-09-20 12:46 and
+  2026-09-21 09:20, both healthy runs), so the double reload is normal and
+  does not identify a second opener. The gate is kept because a second process
+  opening the card mid-load is never desirable, not because it is proven to
+  have caused that wedge. So
+  `Probes::set_busy(bool)` is set from `MainWindow::on_tick` **before**
+  `poll()`, from `engine_.active() || engine_.stopping()` (stopping counts:
+  a worker can still be inside a vendor SDK call), and the probe skips the
+  write with `collector not enabled while a benchmark is running`. It retries
+  once the run ends — `collector_set_` stays false. The sibling has no engine
+  and no collector write, so `set_busy()` is a no-op there by construction.
+
+  **The tools are globbed NEWEST-first, and were not.** `glob()` returns
+  sorted, so `.front()` picked `/opt/axelera/runtime-1.7.0-1/bin/axcmd` on a
+  host where 1.8 sits beside it — a 1.7 tool against the 1.8 firmware the
+  runtime had just loaded, which the app itself logged as
+  `device firmware v1.8.0 vs tool v1.7.0` and we read past. `.back()` now, the
+  same rule CMake already follows for `AXR_LIB`. **Ported to the sibling**;
+  that half applies to both, the `set_busy()` half does not.
+
 **This reverses an earlier decision, deliberately.** The probe used to stay
 passive because the collector level is *global* device state — another client
 sharing the card gets the busier log ring too. That reasoning is still true; it
@@ -2413,7 +2581,50 @@ model at idle power, so this is not an M.2 slot power budget and not thermal
 process, which points at the separate one-session-per-power-cycle entry below
 rather than at core count alone.
 
-**`axelera.cores = 4` has twice taken the whole host down, not just the card.**
+**The host freezes when Axelera runs CONCURRENTLY with another card — four
+times now, and the common factor is concurrency, not core count, not double
+buffering and not power.** Every occurrence leaves *nothing*: no kernel oops,
+no `Link down`, no MSI timeout, no systemd shutdown, and the journal simply
+stops mid-log. 2026-10-31 the whole PC jammed hard enough to drop the remote
+connection.
+
+| date | configuration | double buffer | outcome |
+| --- | --- | --- | --- |
+| 2026-08-08 x2 | `--automation`, cores = 4 | off (inert then) | host down |
+| 2026-09-20 | GUI, 4 cards, cores = 4 | **on** | host down |
+| 2026-10-31 10:45 | GUI, 4 cards, no stagger | **off** | Axelera never loaded — `Link down`, MSI timeout, card **wedged** |
+| 2026-10-31 10:58 | GUI, **DeepX + Axelera**, staggered 5 s | **off** | Axelera loaded (471 fps, 6.43 W), then **host froze** |
+
+What that table kills:
+- **Not double buffering** — off in both 10-31 failures.
+- **Not core count or total power.** The 10:58 freeze was *two* cards at ~33 W;
+  four cards at ~45 W have run for minutes.
+- **Not the 3.3 V supply.** The PMD2 (ElmorLabs) measures the PSU rail at
+  **3.291 V idle and 3.278 V at 17.6 W — 13 mV of droop** — while the card's
+  own INA228 rail moves **115 mV** (3.229 -> 3.114 V) over the same range. The
+  supply is stiff and nowhere near its limit; all the droop is downstream in
+  the board's M.2 distribution (~49 mOhm, consistent with the September
+  source-impedance measurement). **Stop treating this as a brown-out.**
+- **Not "Axelera cannot launch while another card runs"** — at 10:58 it
+  launched fine with DeepX already at 1072 fps. The two 10-31 failures are
+  *different*: one a card wedge at load, one a host freeze under concurrency.
+
+**The real obstacle is that there is no evidence.** This host had **no capture
+facility at all** (checked 2026-10-31: no kdump, no `crashkernel=`, no
+`console=` so IPMI SOL shows nothing, `hardlockup_panic` / `panic_on_oops` /
+`panic` all 0 — a detected lockup just sits there). Each freeze therefore costs
+a power cycle and yields "it stopped". **`docs/host-freeze-capture.md` has the
+commands**: serial console out to the BMC's SOL so a trace survives a total
+freeze, fatal-and-rebooting lockup detection, kdump, and the one untested
+mechanism that fits concurrency — `amd_iommu=off`, since two cards DMA-ing
+through the IOMMU is the only candidate that explains "only ever with Axelera
+plus another card". Apply the capture *before* the next reproduction.
+
+The SEL holds a `CPU_THERMTRIP` 86 s after the 09-20 journal ends, but that is
+the hard power-off that *followed* the crash, not its cause; see the THERMTRIP
+entry below.
+
+The original entry:
 Reproduced 2026-08-08 on the same `--automation` plan, twice from a cold power
 cycle: the machine died — display lost, no shutdown, nothing written by the
 kernel or by systemd — while `cores = 1` completed the identical eight-step plan
@@ -2441,13 +2652,43 @@ journald fsyncs on an interval, so both tails predate a host crash by an unknown
 margin. `Logger` now fsyncs every row for exactly this reason; the journal still
 does not, so prefer the CSV.
 
-**The host has a separate, chronic thermal problem** worth knowing about before
-leaving a multi-hour sweep unattended: the SEL holds five `Processor
-CPU_THERMTRIP` events between 2026-07-14 and 2026-08-06, each an instant
-hardware power-off followed by a restart a minute later — the same "lost the
-monitor, nothing in the logs" symptom, and *not* what happened on 08-08. Idle
-temperatures are fine (CPU 40 °C, Card Side 46 °C) but only two chassis fans
-report at all, at 500 and 800 RPM.
+**The SEL's `CPU_THERMTRIP` entries track HARD power-offs, not heat — the
+"chronic thermal problem" this file used to describe is probably not one.**
+Correlated 2026-09-21 against how each boot ended (clean = the journal reached
+a shutdown target; hard = it stops mid-log):
+
+| boot ended | how | THERMTRIP |
+| --- | --- | --- |
+| 09-20 09:53 / 10:38 / 11:22 | clean | none |
+| **09-20 12:12** | **hard** (the 3rd "host crash") | **12:13:55** |
+| 09-20 12:36 | clean | none |
+| **09-21 09:06** | **hard** | **09:09:30** |
+| 09-21 09:34 | clean, then remote power-off at 09:39 | none |
+
+**2 of 2 hard offs, 0 of 5 clean.** Both trips land 1.5-3 min *after* the
+journal's last line — a real trip would end the journal at the trip — and BMC
+temperatures were normal each time. The 09:34 row is a deliberate test: a clean
+OS shutdown, then power cut from the already-off machine, logs nothing. So the
+entry needs power cut from a **running (or hung) CPU**.
+
+**Two readings remain, and the evidence favours the first:** the BMC logs a
+spurious THERMTRIP whenever a live CPU loses power; or a real trip killed the
+machine. The decisive test is a remote power-off of a *running, healthy* OS
+with no shutdown first — a THERMTRIP then proves it spurious. Not run yet (it
+costs an unclean shutdown).
+
+Consequences: **a THERMTRIP next to a crash is not the crash's cause** — the
+09-20 12:12 one is the power-off that followed it, so that crash is still
+unexplained; and the five trips recorded 2026-07-14 … 08-06 were probably the
+same artifact. Idle temperatures are fine (CPU 40 °C, Card Side 46 °C); only
+two chassis fans report, at 500 and 800 RPM, which is worth knowing but is no
+longer evidence of anything.
+
+**`PCI PERR` fires ~9 times at every POST**, clean boots included, before any
+driver loads — a boot-time constant, never seen at a wedge. One decoded
+(`ipmitool sel get 0x78`, event data `a4 c1 00`) points at bus `0xc1` dev 0
+fn 0, which was **DeepX** that boot. Decode a few more before concluding it is
+always the same slot; BDFs move across reboots.
 
 **The Metis wedges after a load session and only a power cycle clears it.**
 Symptom, from *any* client — this app, `axcmd`, or the vendor's own Voyager
@@ -2568,7 +2809,7 @@ GOP/frame figures in **Work per frame** to turn any of these into achieved TOPS:
 | --- | --- | --- | --- | --- | --- | --- |
 | YOLOv8s | ~123 | ~490 | ~32 | ~148 | ~131 | ~154 |
 | YOLOv8m | ~61 | ~67 | | | | |
-| ResNet-50 | ~297 | ~1369 | ~393 | ~1087 | ~1602 | ~1602 |
+| ResNet-50 | ~297 | ~1369 | ~393 | ~1087 | ~1967 | ~388 |
 
 **Async is not a uniform multiplier.** YOLOv8m gains ~10% on Hailo where YOLOv8s
 gains 4× — the medium model is NPU-compute-bound, so there is little transfer
@@ -2578,7 +2819,9 @@ sign the async path is broken.
 Axelera ResNet-50, re-measured 2026-08-04 through a direct libaxruntime probe
 (one connection and one sub-device per instance): **358.7 / 574.0 / 658.6 /
 694.9 fps**. Superseded 2026-09-03 by the fixed-batch path — **359 / 632 / 1154 /
-1602** — see **API modes**. The old figures counted a batched invocation as one
+1602** — and again 2026-09-20 by the property-separator fix, which lifts the
+4-core figure to **1967**; the 1-core async mode measures **388**. See
+**API modes**. The old figures counted a batched invocation as one
 frame where the artifact was batched at all at 1 / 2 / 3 / 4 cores. The older 437 / 671 / 805 figures predate the
 cores rework and were taken differently; prefer these. Anything quoting a
 one-core Axelera number is measuring a quarter of the card.

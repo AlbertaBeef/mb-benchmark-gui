@@ -93,7 +93,7 @@ ACCEL_COLORS = {
 
 # Accel enum order — fixes series order everywhere in the app, so the legends
 # here line up with the GUI's.
-ACCEL_ORDER = ["hailo", "memryx", "deepx", "axelera", "qualcomm"]
+ACCEL_ORDER = ["axelera", "deepx", "hailo", "memryx", "qualcomm"]  # alphabetical, matches enum class Accel
 
 # Anything not identified as a card (an unmapped INA228 bridge, the board
 # ambient probe) falls back here, exactly as device_accent() returns false and

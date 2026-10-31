@@ -1713,6 +1713,19 @@ void Probes::discover(std::vector<std::string>* notes) {
         }
     };
 
+    // ALPHABETICAL, to match `enum class Accel` — the telemetry legends group
+    // by this call order while the benchmark graphs follow the enum, and the
+    // two halves of the UI disagree if only one is changed.
+    {
+        auto p = std::make_unique<AxeleraProbe>();
+        bool ok = p->discover();
+        try_add(std::move(p), ok);
+    }
+    {
+        auto p = std::make_unique<DeepXProbe>();
+        bool ok = p->discover();
+        try_add(std::move(p), ok);
+    }
 #if MB_HAVE_HAILO
     {
         auto p = std::make_unique<HailoProbe>();
@@ -1722,16 +1735,6 @@ void Probes::discover(std::vector<std::string>* notes) {
 #endif
     {
         auto p = std::make_unique<MemryXProbe>();
-        bool ok = p->discover();
-        try_add(std::move(p), ok);
-    }
-    {
-        auto p = std::make_unique<DeepXProbe>();
-        bool ok = p->discover();
-        try_add(std::move(p), ok);
-    }
-    {
-        auto p = std::make_unique<AxeleraProbe>();
         bool ok = p->discover();
         try_add(std::move(p), ok);
     }

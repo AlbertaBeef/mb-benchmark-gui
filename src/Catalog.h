@@ -24,7 +24,11 @@
 // Qualcomm is appended rather than inserted: accel_index()/accel_at() are raw
 // casts, so the position of an existing card is load-bearing (graph series
 // order, the watts[] slots, Catalog::vendors_[]).
-enum class Accel { Hailo, MemryX, DeepX, Axelera, Qualcomm };
+// ALPHABETICAL, since 2026-10-31 (was Hailo, MemryX, DeepX, Axelera — the
+// order the backends were written in). Changed deliberately, as a whole-project
+// reorder: see the note on "append, never insert" below, and keep
+// Probes::discover() and tools/csv-to-html-plot.py's ACCEL_ORDER in step.
+enum class Accel { Axelera, DeepX, Hailo, MemryX, Qualcomm };
 inline constexpr int kAccelCount = 5;
 
 inline int accel_index(Accel a) { return static_cast<int>(a); }
