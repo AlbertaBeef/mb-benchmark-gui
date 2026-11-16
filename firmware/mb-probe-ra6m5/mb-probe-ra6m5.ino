@@ -16,24 +16,26 @@
 // Reboot into the DFU bootloader with the 1200-baud touch (open the port at
 // 1200 baud, drop DTR) — the core implements it; tools/flash-ra6m5.sh uses it.
 //
-// Sensors today: INA228 (0x40-0x4F), FS3000-1005 (0x28). Planned: EMC2101 fan
-// controller (0x4C), MAX31855K thermocouple on SPI.
+// Sensors today: INA228 (0x40-0x4F), FS3000-1005 (0x28), EMC2101 fan
+// controller (0x4C, read-only). Planned: MAX31855K thermocouple on SPI.
 
 #include <Arduino.h>
 #include <Wire.h>
 #include "Ina228.h"
 #include "Fs3000.h"
+#include "Emc2101.h"
 
 static const char* kFwName = "mb-probe-ra6m5";
-static const char* kFwVersion = "0.1.0";
+static const char* kFwVersion = "0.2.0";
 static const int kProtocol = 1;
 
 static Ina228 ina;
 static Fs3000 fs;
+static Emc2101 emc;
 
 static uint32_t period_ms = 1000;
 static uint32_t seq = 0;
-static uint32_t last_report = 0, last_ina = 0, last_fs = 0;
+static uint32_t last_report = 0, last_ina = 0, last_fs = 0, last_emc = 0;
 static bool led = false;
 
 // ---------------------------------------------------------------- output ---
@@ -86,6 +88,14 @@ static void print_info() {
     Serial.print(fs.present ? 1 : 0);
     Serial.println(" addr=0x28 model=1005 range_mps=7.23");
 
+    Serial.print("I sensor=emc2101 present=");
+    Serial.print(emc.present ? 1 : 0);
+    Serial.print(" addr=0x4C product=0x");
+    Serial.print(emc.product, HEX);
+    Serial.print(" fan_config=0x");
+    Serial.print(emc.fan_config, HEX);
+    Serial.println(" control=none");
+
     if (ina.present) {
         declare("ina228.vbus", "V");
         declare("ina228.vbus_min", "V");
@@ -110,6 +120,18 @@ static void print_info() {
         declare("fs3000.raw", "count");
         declare("fs3000.n", "count");
         declare("fs3000.err", "count");
+    }
+    if (emc.present) {
+        declare("emc2101.temp_int", "C");
+        declare("emc2101.temp_ext", "C");
+        declare("emc2101.rpm", "rpm");
+        declare("emc2101.rpm_min", "rpm");
+        declare("emc2101.rpm_max", "rpm");
+        declare("emc2101.duty", "%");
+        declare("emc2101.stall", "count");
+        declare("emc2101.fault", "count");
+        declare("emc2101.n", "count");
+        declare("emc2101.err", "count");
     }
     Serial.println("I end");
 }
@@ -145,6 +167,19 @@ static void report(uint32_t now) {
         kv("fs3000.err", (long)fs.errors);
         fs.reset_stats();
     }
+    if (emc.present) {
+        kv("emc2101.temp_int", emc.temp_int.mean(), 2);
+        kv("emc2101.temp_ext", emc.temp_ext.mean(), 3);
+        kv("emc2101.rpm", emc.rpm.mean(), 1);
+        kv("emc2101.rpm_min", emc.rpm.lo, 1);
+        kv("emc2101.rpm_max", emc.rpm.hi, 1);
+        kv("emc2101.duty", emc.duty, 1);
+        kv("emc2101.stall", (long)emc.stalls);
+        kv("emc2101.fault", (long)emc.faults);
+        kv("emc2101.n", (long)emc.temp_int.n);
+        kv("emc2101.err", (long)emc.errors);
+        emc.reset_stats();
+    }
     Serial.println();
 }
 
@@ -156,6 +191,7 @@ static void scan_sensors() {
     ina.present = false;
     for (uint8_t a = 0x40; a <= 0x4F && !ina.present; ++a) ina.begin(a);
     fs.begin();
+    emc.begin();
 }
 
 static void handle(char* line) {
@@ -198,7 +234,7 @@ void setup() {
     Wire.begin();
     Wire.setClock(400000);
     scan_sensors();
-    last_report = last_ina = last_fs = millis();
+    last_report = last_ina = last_fs = last_emc = millis();
 }
 
 void loop() {
@@ -206,6 +242,7 @@ void loop() {
     poll_input();
     if (now - last_ina >= 5) { last_ina = now; ina.service(); }
     if (now - last_fs >= Fs3000::kSamplePeriodMs) { last_fs = now; fs.sample(); }
+    if (now - last_emc >= Emc2101::kSamplePeriodMs) { last_emc = now; emc.sample(); }
     if (now - last_report >= period_ms) {
         last_report += period_ms;
         if (now - last_report >= period_ms) last_report = now;  // fell behind: re-origin
@@ -213,7 +250,7 @@ void loop() {
         // statistics just roll over, so a reader that connects gets a clean
         // first period rather than an hour of accumulated samples.
         if (Serial) report(now);
-        else { ina.reset_stats(); fs.reset_stats(); }
+        else { ina.reset_stats(); fs.reset_stats(); emc.reset_stats(); }
         digitalWrite(LED_BUILTIN, led = !led);  // STAT heartbeat
     }
 }
