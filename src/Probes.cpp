@@ -1982,6 +1982,13 @@ public:
             airflow_metrics_.push_back({name_ + " AIRFLOW", "m/s"});
             airflow_values_.assign(1, kNaN);
         }
+        // The EMC2101's own die. Labelled after the chip, not "TEMP": the
+        // MAX31855K thermocouple will land in this same family on this same
+        // probe, and the CSV column is `usb <port>_<suffix>`.
+        if (link_->has_channel("emc2101.temp_int")) {
+            temp_metrics_.push_back({name_ + " EMC2101", "°C"});
+            temp_values_.assign(1, kNaN);
+        }
         note_ = link_->fw + ", serial " + serial_;
         if (link_->sensor("ina228"))
             note_ += ina_label_.empty()
@@ -1989,6 +1996,7 @@ public:
                                " = <card>` to ina228.conf)"
                          : ", INA228 -> " + ina_label_;
         if (link_->sensor("fs3000")) note_ += ", FS3000 airflow";
+        if (link_->sensor("emc2101")) note_ += ", EMC2101 (read-only)";
         startup_note_ = note_;
         return true;
     }
@@ -1997,6 +2005,8 @@ public:
         link_->pump();
         if (!airflow_values_.empty())
             airflow_values_[0] = link_->value("fs3000.airflow");
+        if (!temp_values_.empty())
+            temp_values_[0] = plausible_temp(link_->value("emc2101.temp_int"));
         // One transition note when the stream stops, one when it resumes.
         note_ = link_->stale() ? (link_->error.empty() ? std::string("no data from board")
                                                        : link_->error)

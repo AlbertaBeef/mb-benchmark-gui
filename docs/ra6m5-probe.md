@@ -10,7 +10,7 @@ bridge driven from `src/Probes.cpp`.
 | --- | --- | --- | --- |
 | INA228 power monitor | Qwiic I2C | 0x40-0x4F (0x40 here) | supported |
 | FS3000-1005 air velocity | Qwiic I2C | 0x28 (fixed) | supported |
-| EMC2101 fan controller | Qwiic I2C | 0x4C | planned |
+| EMC2101 fan controller | Qwiic I2C | 0x4C | read-only (fw 0.2.0); no control yet |
 | MAX31855K thermocouple | SPI (CS = D0/P112) | — | planned |
 | MAX17048 fuel gauge | Qwiic I2C | 0x36 | on the board itself; ignored |
 
@@ -87,6 +87,16 @@ a clean first period rather than an hour of accumulated samples.
 | `fs3000.airflow` / `_min` / `_max` | m/s | 0-7.23 |
 | `fs3000.raw` | count | latest raw reading, 409 = still air |
 | `fs3000.n` / `.err` | count | samples / checksum-or-bus failures this period |
+| `emc2101.temp_int` | °C | the EMC2101's own die, 0.25 °C steps |
+| `emc2101.temp_ext` | °C | external diode on DP/DN; `nan` with a diode fault (none fitted yet) |
+| `emc2101.rpm` / `_min` / `_max` | rpm | 5 400 000 / tach count; `nan` when stalled |
+| `emc2101.duty` | % | readback of the fan setting (0x4C); the firmware never writes it |
+| `emc2101.stall` / `.fault` / `.n` / `.err` | count | tach-stalled / diode-fault / samples / I2C failures |
+
+**The EMC2101 is read-only.** The one write is `CONFIG.ALT_TCH`, which makes
+pin 6 the tach input. Adafruit's `begin()` forces 100% duty; this firmware
+leaves the chip at its power-on 0% until fan control is designed. With no fan
+fitted (2026-11-16) every sample is a stall and that is correct.
 
 ## Host side
 
@@ -94,7 +104,8 @@ a clean first period rather than an hour of accumulated samples.
 CLAUDE.md under **The RA6M5 probe board**. In short: the board's INA228 appears
 exactly like an FT232H shunt (`INA228 - <card>`, folding onto the card), the
 airflow appears as `RA6M5 AIRFLOW` on its own **Airflow (m/s)** graph and CSV
-column `usb <port>_AIRFLOW`, and the board is mapped in `config/ina228.conf` by
+column `usb <port>_AIRFLOW`, the EMC2101 die as `RA6M5 EMC2101` on the
+Temperature graph (`usb <port>_EMC2101`), and the board is mapped in `config/ina228.conf` by
 USB serial number. The host takes the per-period **means**; the min/max columns
 are on the wire but not yet consumed.
 
