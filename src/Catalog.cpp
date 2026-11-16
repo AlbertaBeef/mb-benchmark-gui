@@ -172,7 +172,57 @@ const char* accel_unavailable_reason(Accel a) {
     return "SDK not found at build time";
 }
 
-bool accel_present(Accel a) { return accel_compiled_in(a); }
+// PCI vendor id of each M.2 card — the same ids the telemetry probes in
+// Probes.cpp and tools/npu-status.sh identify the cards by, so the UI and the
+// telemetry agree on which cards exist. 0 = not a PCIe card (the Qualcomm NSP
+// is part of the SoC, so for it presence stays a build-time question).
+static unsigned accel_pci_vendor(Accel a) {
+    switch (a) {
+        case Accel::Axelera:  return 0x1f9d;
+        case Accel::DeepX:    return 0x1ff4;
+        case Accel::Hailo:    return 0x1e60;
+        case Accel::MemryX:   return 0x1fe9;
+        case Accel::Qualcomm: return 0;
+    }
+    return 0;
+}
+
+// Is any PCI function with this vendor id enumerated? Pure sysfs reads: no
+// vendor API, no device open, nothing that can block on a wedged card — which
+// is what made runtime detection unattractive when this was build-time only.
+// Deliberately tests ENUMERATION, not whether the driver is bound: a card on
+// the bus with no driver (the MemryX D3cold case) is still shown, and fails
+// its load with a clear error, rather than vanishing. Hiding is reserved for a
+// card that is physically not there.
+static bool pci_vendor_present(unsigned vendor) {
+    std::error_code ec;
+    for (fs::directory_iterator it("/sys/bus/pci/devices", ec), end; !ec && it != end;
+         it.increment(ec)) {
+        std::ifstream f(it->path() / "vendor");
+        std::string v;
+        if (f >> v && std::strtoul(v.c_str(), nullptr, 16) == vendor) return true;
+    }
+    return false;
+}
+
+const char* accel_hidden_reason(Accel a) {
+    if (!accel_compiled_in(a)) return "no backend in this build";
+    // Escape hatch back to the old build-time rule, should detection ever
+    // hide a card that is really there.
+    if (const char* e = std::getenv("MB_BENCH_ALL_ACCELS"); e && *e && *e != '0')
+        return "";
+    const unsigned vendor = accel_pci_vendor(a);
+    if (vendor == 0) return "";
+    // Scanned once per card for the process lifetime: the UI is built once,
+    // series slots never change, and a card hot-plugged later could not be
+    // shown without rebuilding the panel anyway.
+    static int cached[kAccelCount] = {};  // 0 unknown, 1 present, 2 absent
+    int& c = cached[accel_index(a)];
+    if (c == 0) c = pci_vendor_present(vendor) ? 1 : 2;
+    return c == 1 ? "" : "compiled in, but no such PCI device";
+}
+
+bool accel_present(Accel a) { return *accel_hidden_reason(a) == '\0'; }
 
 bool BenchSubject::configured_anywhere() const {
     for (int i = 0; i < kAccelCount; ++i)

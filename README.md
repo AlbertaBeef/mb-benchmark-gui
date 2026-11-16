@@ -189,6 +189,13 @@ host with two backends you get a two-card UI rather than three greyed-out
 placeholders. Its telemetry still graphs if the hardware is there, since that
 comes from sysfs rather than the SDK. The build works on any host.
 
+The same goes for a card whose SDK **is** built in but whose hardware is not
+fitted: at startup the app looks for each M.2 card's PCI vendor id in sysfs
+(no vendor API, nothing that can hang), so a host with all four SDKs and one
+card shows one card. A card that is on the bus but not working is still shown,
+and reports its load error. The startup log says which cards were hidden and
+why; set `MB_BENCH_ALL_ACCELS=1` to show every compiled-in card regardless.
+
 Greying therefore has exactly one meaning: the card is here, but the selected
 model has no artifact for it (hover for which — not downloaded yet, or no build
 configured).

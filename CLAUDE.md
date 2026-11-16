@@ -129,7 +129,8 @@ Three layers, cleanly separated. Keep it that way.
   (the original describes a Vala caller). QNN is never linked — the shim
   `dlopen`s a backend library and asks it for an interface struct, which is why
   CMake needs only headers and `libdl`.
-- **A card the build has no backend for is hidden completely.** `accel_present()`
+- **A card the build has no backend for — or, since 2026-11-16, whose hardware
+  is not on the PCI bus — is hidden completely.** `accel_present()`
   in `Catalog.h` is the single question every UI site asks: no Inference
   checkbox, no Accelerators row, no legend entry, no
   trace, and no mention on the model rows' card line.
@@ -144,12 +145,30 @@ Three layers, cleanly separated. Keep it that way.
   "SDK not found" tooltip branch.
 
   Three implementation notes that are easy to get wrong:
-  - **`accel_present()` is build-time only** (`accel_compiled_in()`). It
-    deliberately does *not* detect a compiled-in card whose hardware is
-    unplugged: that needs each vendor's enumeration API on the GUI thread at
-    startup, and a false negative would hide a working card — worse than showing
-    one that then reports a clear load error. Extend there, not at the call
-    sites.
+  - **`accel_present()` = compiled in AND enumerated on the PCI bus**
+    (2026-11-16). It was build-time only until then, on the argument that
+    detecting hardware needed each vendor's enumeration API on the GUI thread,
+    and that a false negative would hide a working card. That cost a real
+    problem: the Strix Halo has every SDK installed and only a Hailo-8 fitted,
+    so it showed four cards, and a run with the absent three ticked sat in
+    `starting` for its whole length and took ~20 s to Stop while MemryX's
+    connect timed out. The check is now **pure sysfs**: any
+    `/sys/bus/pci/devices/*/vendor` equal to the card's id — `0x1e60` Hailo,
+    `0x1ff4` DeepX, `0x1fe9` MemryX, `0x1f9d` Axelera, the same ids the
+    telemetry probes and `npu-status.sh` use. No vendor API, no device open,
+    nothing that can block on a wedged card.
+    **It tests enumeration, deliberately NOT driver binding**: a card on the bus
+    with no driver (the MemryX D3cold state) is still shown and fails its load
+    with a clear error. Hiding is reserved for "not physically there", which is
+    the false-negative the original rule was guarding against. Qualcomm is part
+    of the SoC and stays build-time. Scanned once per card per process (the
+    panel is built once; a hot-plugged card could not appear anyway).
+    `$MB_BENCH_ALL_ACCELS=1` restores the build-time rule. `accel_hidden_reason()`
+    says which test failed, and the startup note logs it
+    (`accelerators shown: Hailo · hidden: Axelera (compiled in, but no such PCI
+    device), …` — one note, no `;`, because the plotter splits the startup note
+    on `;` and reads any `<Card>: …` part as a probe line). Extend there, not at
+    the call sites.
   - **Series counts do not change.** `fps_`/`eff_`/`energy_` still have
     `kAccelCount` series in `Accel` order; a hidden card keeps its slot and is
     hidden with `set_series_visible(i, false)`. The engine still folds onto

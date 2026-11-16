@@ -216,6 +216,23 @@ MainWindow::MainWindow(AutomationPlan plan)
     std::vector<std::string> notes;
     probes_.discover(&notes);
     catalog_.discover(&notes);
+    // Which cards the UI offers, and why the rest are hidden. One note, led by
+    // a word that is not a card name and free of ';': the plotter splits the
+    // startup note on ';' and reads any "<Card>: …" part as that card's sensor
+    // line, so per-card entries here would be mistaken for probe results.
+    {
+        std::string shown, hidden;
+        for (int i = 0; i < kAccelCount; ++i) {
+            const Accel a = accel_at(i);
+            const char* why = accel_hidden_reason(a);
+            std::string& out = *why ? hidden : shown;
+            if (!out.empty()) out += ", ";
+            out += accel_name(a);
+            if (*why) out += std::string(" (") + why + ")";
+        }
+        notes.push_back("accelerators shown: " + (shown.empty() ? "none" : shown) +
+                        (hidden.empty() ? "" : " · hidden: " + hidden));
+    }
 
     // Open the CSV now: the header needs the metric lists, which are fixed for
     // the process lifetime once discover() has run. Column names mirror
