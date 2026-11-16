@@ -1,0 +1,14 @@
+# SparkFun Thing Plus RA6M5 — the mb-probe telemetry board.
+#
+#   1b4f:0037  running sketch (USB CDC, /dev/ttyACM*) — dialout already covers it
+#   1b4f:0036  DFU bootloader (double-tap RST) — what arduino-cli/dfu-util flash
+#
+# Without the 0036 line dfu-util fails with LIBUSB_ERROR_ACCESS as a normal user.
+# Named 99- deliberately: a rule sorting before 50-udev-default.rules has its
+# MODE overwritten by the default (see the FTDI entry in CLAUDE.md).
+#
+# Install:
+#   sudo install -m 644 tools/99-thingplus-ra6m5.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=usb
+SUBSYSTEM=="usb", ATTR{idVendor}=="1b4f", ATTR{idProduct}=="0036", MODE="0666", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1b4f", ATTR{idProduct}=="0037", MODE="0666", TAG+="uaccess"
