@@ -1982,13 +1982,17 @@ public:
             airflow_metrics_.push_back({name_ + " AIRFLOW", "m/s"});
             airflow_values_.assign(1, kNaN);
         }
-        // The EMC2101's own die. Labelled after the chip, not "TEMP": the
-        // MAX31855K thermocouple will land in this same family on this same
-        // probe, and the CSV column is `usb <port>_<suffix>`.
-        if (link_->has_channel("emc2101.temp_int")) {
-            temp_metrics_.push_back({name_ + " EMC2101", "°C"});
-            temp_values_.assign(1, kNaN);
+        // Temperatures are labelled after the chip, not "TEMP": two share this
+        // family on this probe, and the CSV column is `usb <port>_<suffix>`.
+        // EMC2101 = that chip's own die; MAX31855 = the thermocouple junction
+        // (its cold-junction reading stays on the wire, like the min/max).
+        for (const char* ch : {"emc2101.temp_int", "max31855.tc"}) {
+            if (!link_->has_channel(ch)) continue;
+            temp_channels_.push_back(ch);
+            temp_metrics_.push_back(
+                {name_ + (ch[0] == 'e' ? " EMC2101" : " MAX31855"), "°C"});
         }
+        temp_values_.assign(temp_metrics_.size(), kNaN);
         note_ = link_->fw + ", serial " + serial_;
         if (link_->sensor("ina228"))
             note_ += ina_label_.empty()
@@ -1997,6 +2001,7 @@ public:
                          : ", INA228 -> " + ina_label_;
         if (link_->sensor("fs3000")) note_ += ", FS3000 airflow";
         if (link_->sensor("emc2101")) note_ += ", EMC2101 (read-only)";
+        if (link_->sensor("max31855")) note_ += ", MAX31855K thermocouple";
         startup_note_ = note_;
         return true;
     }
@@ -2005,8 +2010,10 @@ public:
         link_->pump();
         if (!airflow_values_.empty())
             airflow_values_[0] = link_->value("fs3000.airflow");
-        if (!temp_values_.empty())
-            temp_values_[0] = plausible_temp(link_->value("emc2101.temp_int"));
+        // An open or shorted thermocouple reports nan (the firmware counts it
+        // in max31855.fault), so a disconnected probe is a gap, not a value.
+        for (size_t i = 0; i < temp_channels_.size(); ++i)
+            temp_values_[i] = plausible_temp(link_->value(temp_channels_[i]));
         // One transition note when the stream stops, one when it resumes.
         note_ = link_->stale() ? (link_->error.empty() ? std::string("no data from board")
                                                        : link_->error)
@@ -2016,6 +2023,7 @@ public:
 private:
     std::shared_ptr<ra6m5::Link> link_;
     std::string port_, serial_, name_, ina_label_, startup_note_;
+    std::vector<const char*> temp_channels_;  // aligned with temp_metrics_
 };
 
 }  // namespace

@@ -160,7 +160,7 @@ _METRIC_RE = re.compile(
     r"|SYS_VBUS|SYS_CURRENT|SYS_POWER"
     r"|(?:" + _PMD2_RAILS + r")_(?:POWER|VBUS|CURRENT)"
     r"|POW|TEMP|TS\d+|T\d+|N\d+-\d+|SYS|AI\d+|PCIE\d+|TOTAL|INA228"
-    r"|ENERGY|CHARGE|VBUS|CURRENT|CLK|C\d+|AIRFLOW|EMC2101)$"
+    r"|ENERGY|CHARGE|VBUS|CURRENT|CLK|C\d+|AIRFLOW|EMC2101|MAX31855)$"
 )
 
 # Benchmark columns: <vendor>_<metric>, vendor being accel_vendor().
@@ -200,8 +200,9 @@ def _classify_metric(met):
     # Pre-PMD2-suffix logs: a bare PCIE<n> column was this meter's rail power.
     if re.match(r"^pcie\d+$", met):
         return "syspower"
-    # emc2101: the RA6M5 board's fan-controller die (bdf "usb <port>").
-    if met in ("temp", "sys", "ina228_temp", "emc2101"):
+    # emc2101 / max31855: the RA6M5 board's fan-controller die and its
+    # thermocouple (bdf "usb <port>").
+    if met in ("temp", "sys", "ina228_temp", "emc2101", "max31855"):
         return "temp"
     if re.match(r"^(ts|t|ai)\d+$", met):
         return "temp"

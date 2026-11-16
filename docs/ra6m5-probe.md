@@ -11,7 +11,7 @@ bridge driven from `src/Probes.cpp`.
 | INA228 power monitor | Qwiic I2C | 0x40-0x4F (0x40 here) | supported |
 | FS3000-1005 air velocity | Qwiic I2C | 0x28 (fixed) | supported |
 | EMC2101 fan controller | Qwiic I2C | 0x4C | read-only (fw 0.2.0); no control yet |
-| MAX31855K thermocouple | SPI (CS = D0/P112) | — | planned |
+| MAX31855K thermocouple, K-type | SPI, SCK D19 / DO D17 / CS D0 (P112) | — | supported (fw 0.3.0) |
 | MAX17048 fuel gauge | Qwiic I2C | 0x36 | on the board itself; ignored |
 
 ## Building and flashing
@@ -92,11 +92,26 @@ a clean first period rather than an hour of accumulated samples.
 | `emc2101.rpm` / `_min` / `_max` | rpm | 5 400 000 / tach count; `nan` when stalled |
 | `emc2101.duty` | % | readback of the fan setting (0x4C); the firmware never writes it |
 | `emc2101.stall` / `.fault` / `.n` / `.err` | count | tach-stalled / diode-fault / samples / I2C failures |
+| `max31855.tc` / `_min` / `_max` | °C | thermocouple junction, 0.25 °C steps, 4 Hz; `nan` while faulted |
+| `max31855.cj` | °C | cold junction = the MAX31855's own die, 0.0625 °C steps |
+| `max31855.fault` | count | samples with the fault bit set this period |
+| `max31855.fault_bits` | mask | OR over the period: 1 open circuit, 2 short to GND, 4 short to VCC |
+| `max31855.n` / `.err` | count | samples / frames failing the reserved-bit check |
 
 **The EMC2101 is read-only.** The one write is `CONFIG.ALT_TCH`, which makes
 pin 6 the tach input. Adafruit's `begin()` forces 100% duty; this firmware
 leaves the chip at its power-on 0% until fan control is designed. With no fan
 fitted (2026-11-16) every sample is a stall and that is correct.
+
+**The MAX31855K is detected by its two reserved bits** (D17, D3), which are
+always 0 — an unwired MISO reads all ones or all zeros and is rejected, so
+`present=1` means a real chip answered. Its K-type conversion is the chip's own
+linear 41.276 uV/°C, good to about ±2 °C near room-to-a-few-hundred °C; no NIST
+correction is applied. A fault (`fault_bits=1` = open, the usual cause being a
+probe not seated in the screw terminal) makes `max31855.tc` `nan`, so the GUI
+shows a gap rather than the cold-junction temperature. First reading,
+2026-11-16: chip present, cold junction 23.76 °C (EMC2101 die 23.0 °C beside
+it), thermocouple reporting open circuit.
 
 ## Host side
 
@@ -104,8 +119,9 @@ fitted (2026-11-16) every sample is a stall and that is correct.
 CLAUDE.md under **The RA6M5 probe board**. In short: the board's INA228 appears
 exactly like an FT232H shunt (`INA228 - <card>`, folding onto the card), the
 airflow appears as `RA6M5 AIRFLOW` on its own **Airflow (m/s)** graph and CSV
-column `usb <port>_AIRFLOW`, the EMC2101 die as `RA6M5 EMC2101` on the
-Temperature graph (`usb <port>_EMC2101`), and the board is mapped in `config/ina228.conf` by
+column `usb <port>_AIRFLOW`, the EMC2101 die as `RA6M5 EMC2101` and the
+thermocouple as `RA6M5 MAX31855` on the Temperature graph
+(`usb <port>_EMC2101`, `usb <port>_MAX31855`), and the board is mapped in `config/ina228.conf` by
 USB serial number. The host takes the per-period **means**; the min/max columns
 are on the wire but not yet consumed.
 

@@ -17,25 +17,27 @@
 // 1200 baud, drop DTR) — the core implements it; tools/flash-ra6m5.sh uses it.
 //
 // Sensors today: INA228 (0x40-0x4F), FS3000-1005 (0x28), EMC2101 fan
-// controller (0x4C, read-only). Planned: MAX31855K thermocouple on SPI.
+// controller (0x4C, read-only), MAX31855K thermocouple on SPI (CS = D0).
 
 #include <Arduino.h>
 #include <Wire.h>
 #include "Ina228.h"
 #include "Fs3000.h"
 #include "Emc2101.h"
+#include "Max31855.h"
 
 static const char* kFwName = "mb-probe-ra6m5";
-static const char* kFwVersion = "0.2.0";
+static const char* kFwVersion = "0.3.0";
 static const int kProtocol = 1;
 
 static Ina228 ina;
 static Fs3000 fs;
 static Emc2101 emc;
+static Max31855 tcx;
 
 static uint32_t period_ms = 1000;
 static uint32_t seq = 0;
-static uint32_t last_report = 0, last_ina = 0, last_fs = 0, last_emc = 0;
+static uint32_t last_report = 0, last_ina = 0, last_fs = 0, last_emc = 0, last_tc = 0;
 static bool led = false;
 
 // ---------------------------------------------------------------- output ---
@@ -96,6 +98,12 @@ static void print_info() {
     Serial.print(emc.fan_config, HEX);
     Serial.println(" control=none");
 
+    Serial.print("I sensor=max31855 present=");
+    Serial.print(tcx.present ? 1 : 0);
+    Serial.print(" bus=spi cs=D");
+    Serial.print(Max31855::kCsPin);
+    Serial.println(" type=K");
+
     if (ina.present) {
         declare("ina228.vbus", "V");
         declare("ina228.vbus_min", "V");
@@ -132,6 +140,16 @@ static void print_info() {
         declare("emc2101.fault", "count");
         declare("emc2101.n", "count");
         declare("emc2101.err", "count");
+    }
+    if (tcx.present) {
+        declare("max31855.tc", "C");
+        declare("max31855.tc_min", "C");
+        declare("max31855.tc_max", "C");
+        declare("max31855.cj", "C");
+        declare("max31855.fault", "count");
+        declare("max31855.fault_bits", "mask");
+        declare("max31855.n", "count");
+        declare("max31855.err", "count");
     }
     Serial.println("I end");
 }
@@ -180,6 +198,17 @@ static void report(uint32_t now) {
         kv("emc2101.err", (long)emc.errors);
         emc.reset_stats();
     }
+    if (tcx.present) {
+        kv("max31855.tc", tcx.tc.mean(), 2);
+        kv("max31855.tc_min", tcx.tc.lo, 2);
+        kv("max31855.tc_max", tcx.tc.hi, 2);
+        kv("max31855.cj", tcx.cj.mean(), 3);
+        kv("max31855.fault", (long)tcx.faults);
+        kv("max31855.fault_bits", (long)tcx.fault_bits);
+        kv("max31855.n", (long)(tcx.tc.n + tcx.faults));
+        kv("max31855.err", (long)tcx.errors);
+        tcx.reset_stats();
+    }
     Serial.println();
 }
 
@@ -192,6 +221,7 @@ static void scan_sensors() {
     for (uint8_t a = 0x40; a <= 0x4F && !ina.present; ++a) ina.begin(a);
     fs.begin();
     emc.begin();
+    tcx.begin();
 }
 
 static void handle(char* line) {
@@ -234,7 +264,7 @@ void setup() {
     Wire.begin();
     Wire.setClock(400000);
     scan_sensors();
-    last_report = last_ina = last_fs = last_emc = millis();
+    last_report = last_ina = last_fs = last_emc = last_tc = millis();
 }
 
 void loop() {
@@ -243,6 +273,7 @@ void loop() {
     if (now - last_ina >= 5) { last_ina = now; ina.service(); }
     if (now - last_fs >= Fs3000::kSamplePeriodMs) { last_fs = now; fs.sample(); }
     if (now - last_emc >= Emc2101::kSamplePeriodMs) { last_emc = now; emc.sample(); }
+    if (now - last_tc >= Max31855::kSamplePeriodMs) { last_tc = now; tcx.sample(); }
     if (now - last_report >= period_ms) {
         last_report += period_ms;
         if (now - last_report >= period_ms) last_report = now;  // fell behind: re-origin
@@ -250,7 +281,7 @@ void loop() {
         // statistics just roll over, so a reader that connects gets a clean
         // first period rather than an hour of accumulated samples.
         if (Serial) report(now);
-        else { ina.reset_stats(); fs.reset_stats(); emc.reset_stats(); }
+        else { ina.reset_stats(); fs.reset_stats(); emc.reset_stats(); tcx.reset_stats(); }
         digitalWrite(LED_BUILTIN, led = !led);  // STAT heartbeat
     }
 }

@@ -1199,11 +1199,14 @@ lines over USB CDC. **`docs/ra6m5-probe.md` has the protocol, the one-time
 toolchain setup and the first readings** — read it before touching either side.
 `tools/flash-ra6m5.sh` builds and flashes with no button press.
 
-Sensors today: INA228 (0x40), FS3000-1005 airflow (0x28) and the EMC2101 fan
-controller (0x4C) — **read-only**: only its die temperature reaches the GUI
-(`RA6M5 EMC2101`, column `usb <port>_EMC2101`, named after the chip so the
-planned MAX31855K thermocouple can join the same family without a collision).
-RPM and duty are on the wire but wait for a fan; no fan control yet. Two
+Sensors today: INA228 (0x40), FS3000-1005 airflow (0x28), the EMC2101 fan
+controller (0x4C) and a MAX31855K thermocouple on SPI (CS = D0). The EMC2101 is
+**read-only**: only its die temperature reaches the GUI. Both temperatures sit
+on the Temperature graph as `RA6M5 EMC2101` and `RA6M5 MAX31855` (columns
+`usb <port>_EMC2101` / `_MAX31855`), **named after the chip** because two
+share one family on one probe and a bare `TEMP` would collide. An open
+thermocouple is a gap, not a value. RPM and duty are on the wire but wait for a
+fan; no fan control yet. Two
 boards exist (serials ending `A8CC…` and `3BA5…`), both mapped to Hailo. 0x36 on the bus is
 the board's own MAX17048 fuel gauge and is ignored.
 
