@@ -10,7 +10,7 @@ bridge driven from `src/Probes.cpp`.
 | --- | --- | --- | --- |
 | INA228 power monitor | Qwiic I2C | 0x40-0x4F (0x40 here) | supported |
 | FS3000-1005 air velocity | Qwiic I2C | 0x28 (fixed) | supported |
-| EMC2101 fan controller | Qwiic I2C | 0x4C | read-only (fw 0.2.0); no control yet |
+| EMC2101 fan controller | Qwiic I2C | 0x4C | duty set by host command `fan` (fw 0.4.0); tach not reading yet |
 | MAX31855K thermocouple, K-type | SPI, SCK D19 / DO D17 / CS D0 (P112) | — | supported (fw 0.3.0) |
 | MAX17048 fuel gauge | Qwiic I2C | 0x36 | on the board itself; ignored |
 
@@ -98,10 +98,21 @@ a clean first period rather than an hour of accumulated samples.
 | `max31855.fault_bits` | mask | OR over the period: 1 open circuit, 2 short to GND, 4 short to VCC |
 | `max31855.n` / `.err` | count | samples / frames failing the reserved-bit check |
 
-**The EMC2101 is read-only.** The one write is `CONFIG.ALT_TCH`, which makes
-pin 6 the tach input. Adafruit's `begin()` forces 100% duty; this firmware
-leaves the chip at its power-on 0% until fan control is designed. With no fan
-fitted (2026-11-16) every sample is a stall and that is correct.
+**The EMC2101 has two writes, both deliberate.** `CONFIG.ALT_TCH` at start-up
+makes pin 6 the tach input. The fan setting (0x4C) is written **only** by the
+host command `fan <percent>` (0-100, 64 steps, replies `OK fan <applied>`);
+nothing in the firmware drives the fan on its own. Adafruit's `begin()` forces
+100% duty; this firmware leaves the chip at its power-on 0%. A set duty is
+kept until the next command or a power cycle — **not** cleared when the host
+disconnects, since a cooling fan quitting with the app is the worse failure.
+Direct drive relies on `FAN_CONFIG.PROG` (0x4A bit 5), the power-on default;
+`set_duty()` checks it. `emc_regs` prints a read-only register dump.
+
+Verified 2026-11-16: `fan 100` spins the fan, `fan 0` stops it. **The tach
+reads 0xFFFF (stalled) while the fan turns**, with ALT_TCH set (CONFIG 0x84):
+the chip sees no edges, so the cause is on the wire — a fan tach is open
+collector and needs a pull-up to 3.3 V on the TACH line. Until that is fixed
+`emc2101.rpm` is `nan` and `emc2101.stall` counts every sample.
 
 **The MAX31855K is detected by its two reserved bits** (D17, D3), which are
 always 0 — an unwired MISO reads all ones or all zeros and is rejected, so

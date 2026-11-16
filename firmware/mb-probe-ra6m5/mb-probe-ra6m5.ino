@@ -11,13 +11,13 @@
 //                    channel every time, "nan" when there was no valid sample
 //     OK <cmd> | E <message>
 //   host -> device:
-//     info | period <ms> | reset_acc | rescan
+//     info | period <ms> | reset_acc | rescan | fan <percent>
 //
 // Reboot into the DFU bootloader with the 1200-baud touch (open the port at
 // 1200 baud, drop DTR) — the core implements it; tools/flash-ra6m5.sh uses it.
 //
 // Sensors today: INA228 (0x40-0x4F), FS3000-1005 (0x28), EMC2101 fan
-// controller (0x4C, read-only), MAX31855K thermocouple on SPI (CS = D0).
+// controller (0x4C, duty only on the host's `fan` command), MAX31855K thermocouple on SPI (CS = D0).
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -27,7 +27,7 @@
 #include "Max31855.h"
 
 static const char* kFwName = "mb-probe-ra6m5";
-static const char* kFwVersion = "0.3.0";
+static const char* kFwVersion = "0.4.0";
 static const int kProtocol = 1;
 
 static Ina228 ina;
@@ -96,7 +96,7 @@ static void print_info() {
     Serial.print(emc.product, HEX);
     Serial.print(" fan_config=0x");
     Serial.print(emc.fan_config, HEX);
-    Serial.println(" control=none");
+    Serial.println(" control=host");
 
     Serial.print("I sensor=max31855 present=");
     Serial.print(tcx.present ? 1 : 0);
@@ -236,6 +236,27 @@ static void handle(char* line) {
         Serial.println("OK period");
     } else if (!strcmp(line, "reset_acc")) {
         Serial.println(ina.reset_accumulators() ? "OK reset_acc" : "E reset_acc failed");
+    } else if (!strcmp(line, "fan")) {
+        // EMC2101 fan duty, 0..100 %, in 1/63 steps. Kept until changed.
+        double applied = 0;
+        if (!arg || !*arg) { Serial.println("E fan needs a percentage 0..100"); return; }
+        if (!emc.set_duty(atof(arg), &applied)) { Serial.println("E fan: no EMC2101 or I2C failure"); return; }
+        Serial.print("OK fan ");
+        Serial.println(applied, 1);
+    } else if (!strcmp(line, "emc_regs")) {
+        // Read-only register dump for bring-up: "I emc <reg>=<val> ...".
+        static const uint8_t regs[] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x10,
+                                       0x46, 0x47, 0x48, 0x49, 0x4A, 0x4B,
+                                       0x4C, 0x4D, 0x4E, 0x4F, 0xFD, 0xFE};
+        Serial.print("I emc");
+        for (uint8_t r : regs) {
+            uint8_t v = 0;
+            Serial.print(' ');
+            Serial.print(r, HEX);
+            Serial.print('=');
+            if (emc.peek(r, &v)) Serial.print(v, HEX); else Serial.print("err");
+        }
+        Serial.println();
     } else if (!strcmp(line, "rescan")) {
         scan_sensors();
         Serial.println("OK rescan");

@@ -1,16 +1,20 @@
 // Microchip EMC2101 fan controller + temperature sensor (Adafruit breakout),
 // fixed I2C address 0x4C.
 //
-// READ-ONLY BY DESIGN, with one exception. The duty cycle, the look-up table
-// and the PWM setup are left exactly as the chip has them: driving the fan is
-// the first thing this project would write to hardware that changes the
-// physical world, and that is a separate, deliberate step. The exception is
-// CONFIG.ALT_TCH (0x03 bit 2), which turns pin 6 from ALERT into the TACH
-// input — without it the tach count is meaningless. It changes what the chip
-// measures, not what it drives, like the INA228's ADC configuration.
+// Two writes, both deliberate:
+//   - CONFIG.ALT_TCH (0x03 bit 2) at begin(), which turns pin 6 from ALERT into
+//     the TACH input — without it the tach count is meaningless.
+//   - the fan setting (0x4C), ONLY on the host's `fan <percent>` command
+//     (fw 0.4.0). Nothing else drives the fan: begin() does not touch the duty,
+//     the look-up table, the PWM frequency or the data rate (Adafruit's
+//     library forces 100% duty at begin; this does not). The chip powers up at
+//     0%, and a set duty is kept until the next command or power cycle — the
+//     firmware does NOT stop the fan when the host disconnects, because a
+//     cooling fan that quits with the app is the worse failure.
 //
-// Unlike Adafruit's library, begin() therefore does NOT set the duty to 100%,
-// the PWM frequency or the data rate.
+// Direct drive needs FAN_CONFIG.PROG (0x4A bit 5) set, which is the chip's
+// power-on default (0x20): the fan-setting register then drives the PWM and
+// the look-up table is idle. set_duty() checks rather than assumes it.
 //
 // Registers (datasheet DS20006703):
 //   0x00 internal temp, signed 8-bit degC
@@ -72,6 +76,25 @@ public:
 
         if (read8(0x4C, &fs)) duty = (fs & 0x3F) * 100.0 / 63.0; else ++errors;
     }
+
+    // pct 0..100 -> fan setting 0..63. Returns the duty actually written.
+    bool set_duty(double pct, double* applied) {
+        if (!present) return false;
+        if (pct < 0) pct = 0;
+        if (pct > 100) pct = 100;
+        uint8_t fc = 0;
+        if (!read8(0x4A, &fc)) return false;
+        if (!(fc & 0x20) && !write8(0x4A, fc | 0x20)) return false;  // PROG
+        fan_config = fc | 0x20;
+        const uint8_t v = (uint8_t)(pct * 63.0 / 100.0 + 0.5);
+        if (!write8(0x4C, v)) return false;
+        *applied = v * 100.0 / 63.0;
+        return true;
+    }
+
+    // Diagnostic: read one register (no side effects except the documented
+    // tach LSB->MSB latch, which sample() re-does on its next read).
+    bool peek(uint8_t reg, uint8_t* v) { return read8(reg, v); }
 
     void reset_stats() {
         temp_int.reset(); temp_ext.reset(); rpm.reset();
