@@ -208,6 +208,12 @@ private:
     std::vector<AggEntry> freq_avg_labels_;
     std::vector<LegendRow> freq_rows_;
 
+    // Air velocity from an RA6M5 board's FS3000. Null when there is none.
+    GraphArea* airflow_graph_ = nullptr;
+    std::vector<Gtk::Label*> airflow_values_;
+    std::vector<AggEntry> airflow_max_labels_;
+    std::vector<LegendRow> airflow_rows_;
+
     // Accumulated energy from the INA228 hardware accumulators. Named `accum_`
     // rather than `energy_` because that member is already the *benchmark*
     // Energy section (mJ/frame, one series per card) — a different quantity from

@@ -88,6 +88,16 @@ a clean first period rather than an hour of accumulated samples.
 | `fs3000.raw` | count | latest raw reading, 409 = still air |
 | `fs3000.n` / `.err` | count | samples / checksum-or-bus failures this period |
 
+## Host side
+
+`src/Probes.cpp`, namespace `ra6m5` plus two probes; the design notes are in
+CLAUDE.md under **The RA6M5 probe board**. In short: the board's INA228 appears
+exactly like an FT232H shunt (`INA228 - <card>`, folding onto the card), the
+airflow appears as `RA6M5 AIRFLOW` on its own **Airflow (m/s)** graph and CSV
+column `usb <port>_AIRFLOW`, and the board is mapped in `config/ina228.conf` by
+USB serial number. The host takes the per-period **means**; the min/max columns
+are on the wire but not yet consumed.
+
 ## Things that are deliberate
 
 - **The INA228 is configured exactly as the FT232H driver configures it**
@@ -112,3 +122,10 @@ Bench check on the Strix Halo host, no card under load: VBUS 3.3245 V × |I| 0.1
 conversions and 8 FS3000 samples per second, zero errors. **Current reads
 negative — this breakout is wired IN+/IN- reversed too**, like the four on the
 EPYC rig. FS3000 raw ~490-505 (≈0.19 m/s) in near-still air.
+
+**Cross-checked against the card's own sensor, same day.** Mapped to Hailo (the
+board sits on the Strix Halo's Hailo-8 rail) and with HailoRT installed, the
+shunt folds onto the real `Hailo` row: `Hailo INA228 POWER` **0.4985 W** against
+the Hailo-8's on-board INA231 `Hailo POW` **0.4973 W** — agreement to 0.2%.
+That confirms the rail, and that 0.50 W is this card's genuine idle here,
+below the 0.81-0.85 W the mb-hailo skill records on other boards.

@@ -816,7 +816,8 @@ Three layers, cleanly separated. Keep it that way.
 
 - **Graph order is System Voltage, System Current, System Power, Accelerator
   Voltage, Accelerator Current, Accelerator Power, Accumulated Energy,
-  Temperature, Frequency, Frame Rate, Efficiency, Energy.** Each triplet reads
+  Temperature, Frequency, Airflow, Frame Rate, Efficiency, Energy.** Airflow
+  exists only with an RA6M5 board carrying an FS3000. Each triplet reads
   voltage -> current -> power, because the meter measures V and I and *derives*
   W; board total first, then the per-card breakdown inside it. The telemetry graphs
   lead because they are live with no run in progress.
@@ -901,9 +902,9 @@ Three layers, cleanly separated. Keep it that way.
 
 ## Telemetry families (Probes)
 
-`Probes` publishes **ten** flat metric families — temperature, power,
-frequency, energy, charge, voltage, current, and the system voltage / current /
-power of an inline supply meter — each with an aligned value
+`Probes` publishes **eleven** flat metric families — temperature, power,
+frequency, energy, charge, voltage, current, the system voltage / current /
+power of an inline supply meter, and airflow (RA6M5 board) — each with an aligned value
 vector refreshed by `poll()`. Frequency alone follows plain discovery order,
 because a clock always belongs to the card reporting it and there is nothing to
 fold; the other six use `alias_device_order()` and the INA228 fold.
@@ -1142,7 +1143,9 @@ ported too — an earlier version of this paragraph said it was not, and that wa
 already stale. Everything INA228 **has** been: energy/charge and the
 die-temperature fold (2026-09-03), then `VBUS`, `CURRENT` with the per-rail
 `invert` flag, the latched undervoltage check and `plausible_power()`
-(2026-09-07 … 09-12). Current line counts are **1950 here against 1831 there**.
+(2026-09-07 … 09-12). **Not ported: the RA6M5 probe and the airflow family
+(2026-11-16)**, nor the `rails::` move of the config loader that came with them
+— port those as one hunk set if the sibling ever needs the board.
 
 **Three divergences bit during the frequency port, and each would have silently
 no-op'd a `str.replace`** — they are the concrete form of "port hunk by hunk":
@@ -1165,6 +1168,53 @@ signature difference (the sibling's helpers take no `order` argument).
 sibling's is `$MB_INA228_CONFIG` → `~/.config` only, with no repo copy. A
 `config/ina228.conf` was created in the sibling once and was **inert** — it is
 never consulted. Don't add one back.
+
+### The RA6M5 probe board (2026-11-16)
+
+A SparkFun Thing Plus RA6M5 running `firmware/mb-probe-ra6m5/` is the second
+kind of INA228 carrier, **alongside** the FT232H — and the opposite design: the
+FT232H is a dumb I2C bridge driven from the host, the RA6M5 is *smart*. Its
+firmware owns the sensors, takes every INA228 conversion (~5 Hz) and every
+FS3000 sample (8 Hz), and reports per-period mean/min/max as `key=value` text
+lines over USB CDC. **`docs/ra6m5-probe.md` has the protocol, the one-time
+toolchain setup and the first readings** — read it before touching either side.
+`tools/flash-ra6m5.sh` builds and flashes with no button press.
+
+Sensors today: INA228 (0x40) and FS3000-1005 airflow (0x28). Planned: EMC2101
+fan controller (0x4C) and a MAX31855K thermocouple on SPI. 0x36 on the bus is
+the board's own MAX17048 fuel gauge and is ignored.
+
+Host side, in `Probes.cpp` — things that are deliberate:
+- **One board is TWO `DeviceProbe`s sharing one `ra6m5::Link`.**
+  `RA6M5InaProbe` mirrors `INA228Probe` exactly (name scheme, colour alias, the
+  same six families and labels), so the existing fold makes it
+  `<Card> INA228 <FAMILY>` and every consumer — CSV, plotter, Telemetry ->
+  INA228 switch, `power_for_device()` — treats it as just another shunt, with
+  no change. `RA6M5BoardProbe` ("RA6M5") carries what belongs to **no card**:
+  airflow now, fan and thermocouple later. Folding those would mislabel them.
+- **The fold names a family by its suffix alone**, so a folded probe can carry
+  only ONE metric per family: a second (say `vbus_min`, or a thermocouple in
+  the temperature family) would collide with `<Card> INA228 VBUS/TEMP`. That is
+  why the min/max the firmware reports are not on the host yet, and why the
+  thermocouple must go on the board probe. Fixing it means teaching `emit()` a
+  per-metric suffix — do that deliberately, since it renames CSV columns.
+- **Mapped in `ina228.conf` by USB serial number**, not port-path — the board
+  has one (the RA6M5 unique id). The board's startup note prints the serial
+  and, when unmapped, the exact line to add; that note is why the board probe
+  is always added even with no airflow sensor.
+- **`reset_acc` is sent at discovery**, matching the FT232H path's RSTACC
+  pulse; otherwise energy starts at whatever the board integrated since it was
+  flashed (249 J the first time it was tested).
+- **The firmware is the only reader of `DIAG_ALRT`**, so the undervoltage note
+  counts every flagged conversion rather than one sampled latch per second. The
+  host counts `ina228.uv` once per D line (`seq`), because the host tick and
+  the firmware period are not phase-locked and one line can be seen twice.
+- **No reconnect.** The metric list is fixed at discovery; an unplugged or
+  re-flashed board goes stale after 3 s and every value becomes a gap, with one
+  transition note. Restart the app after flashing.
+- Unmapped shunts number `INA228#<n>` across both carriers, from one counter.
+- Two INA228s mapped to the **same** card (an FT232H and an RA6M5) would emit
+  duplicate CSV column names. Not guarded; don't map both.
 
 ## API modes (Sync / Async)
 

@@ -160,7 +160,7 @@ _METRIC_RE = re.compile(
     r"|SYS_VBUS|SYS_CURRENT|SYS_POWER"
     r"|(?:" + _PMD2_RAILS + r")_(?:POWER|VBUS|CURRENT)"
     r"|POW|TEMP|TS\d+|T\d+|N\d+-\d+|SYS|AI\d+|PCIE\d+|TOTAL|INA228"
-    r"|ENERGY|CHARGE|VBUS|CURRENT|CLK|C\d+)$"
+    r"|ENERGY|CHARGE|VBUS|CURRENT|CLK|C\d+|AIRFLOW)$"
 )
 
 # Benchmark columns: <vendor>_<metric>, vendor being accel_vendor().
@@ -233,6 +233,11 @@ def _classify_metric(met):
     # quantities anyway -- board total vs one card.
     if met == "sys_power":
         return "syspower"
+    # Air velocity (m/s) from an FS3000 on an RA6M5 probe board, column
+    # `usb <port>_AIRFLOW`. Its own chart: one unit per chart, and it belongs
+    # to no card.
+    if met == "airflow":
+        return "airflow"
     # Charge is read and logged but deliberately not plotted: it is coulombs,
     # and a chart carries one unit, so it cannot share the joules axis. It is
     # an analysis column — divide by elapsed for average current. Returning
@@ -817,6 +822,7 @@ def build_datasets(rows, telemetry, bench, ident, overlays, t0, bucket_size):
     syspower = []                   # inline supply meter, whole board (W)
     sysvolts = []                   # inline supply meter, board input (V)
     sysamps  = []                   # inline supply meter, board input (A)
+    airflow  = []                   # FS3000 on an RA6M5 board (m/s)
     fps, eff, energy = [], [], []
     idle = set()
 
@@ -862,6 +868,8 @@ def build_datasets(rows, telemetry, bench, ident, overlays, t0, bucket_size):
             sysvolts.append(style(label, series, color, [], 0.1))
         elif kind == "syscurrent":
             sysamps.append(style(label, series, color, [], 0.1))
+        elif kind == "airflow":
+            airflow.append(style(label, series, color, [], 0.1))
 
     # Benchmark series. These need no inference — the column names the vendor.
     bench_by = {(v, met): (i, raw) for v, met, i, raw in bench}
@@ -903,7 +911,7 @@ def build_datasets(rows, telemetry, bench, ident, overlays, t0, bucket_size):
                 "tension": 0, "showLine": True})
 
     return (power, temp, freq, accum, volts, amps,
-            syspower, sysvolts, sysamps, fps, eff, energy, idle)
+            syspower, sysvolts, sysamps, airflow, fps, eff, energy, idle)
 
 
 # ---------------------------------------------------------------------------
@@ -1180,7 +1188,7 @@ def main():
                                    threshold=args.phase_threshold)
 
     (power, temp, freq, accum, volts, amps,
-     syspower, sysvolts, sysamps, fps, eff, energy, idle) = build_datasets(
+     syspower, sysvolts, sysamps, airflow, fps, eff, energy, idle) = build_datasets(
         rows, telemetry, bench, ident, overlays, t0, bucket_size)
 
     runs = extract_runs(rows, context, bench, t0,
@@ -1216,6 +1224,8 @@ def main():
          "y_label": "temperature (°C)", "unit": "°C", "zero_based": False},
         {"title": "Frequency", "canvas": "freqChart", "datasets": freq,
          "y_label": "clock (MHz)", "unit": "MHz", "zero_based": True},
+        {"title": "Airflow", "canvas": "airflowChart", "datasets": airflow,
+         "y_label": "air velocity (m/s)", "unit": "m/s", "zero_based": True},
         {"title": "Frame Rate", "canvas": "fpsChart", "datasets": fps,
          "y_label": "frame rate (fps)", "unit": "fps", "zero_based": True},
         {"title": "Efficiency", "canvas": "effChart", "datasets": eff,
@@ -1244,6 +1254,7 @@ def main():
     print(f"  series: {n_power} power, {len(syspower)} syspower, "
           f"{len(sysvolts)} sysvoltage, {len(sysamps)} syscurrent, "
           f"{len(temp)} temperature, {len(freq)} frequency, "
+          f"{len(airflow)} airflow, "
           f"{len(accum)} accum, {len(fps)} fps, {len(eff)} efficiency, "
           f"{len(energy)} energy, {len(volts)} voltage, {len(amps)} current")
     print(f"  runs: {len(runs)}, messages: {len(messages)}, "

@@ -110,6 +110,14 @@ std::string fmt_freq(double v) {
     std::snprintf(b, sizeof(b), "%.0f MHz", v);
     return b;
 }
+// Air velocity. Two decimals: the FS3000-1005 spans 0-7.23 m/s and a fan
+// stepping up is a few tenths.
+std::string fmt_mps(double v) {
+    if (std::isnan(v)) return "—";
+    char b[24];
+    std::snprintf(b, sizeof(b), "%.2f m/s", v);
+    return b;
+}
 std::string fmt_fps(double v) {
     char b[24];
     std::snprintf(b, sizeof(b), "%.1f", v);
@@ -240,6 +248,9 @@ MainWindow::MainWindow(AutomationPlan plan)
         add(probes_.syscurrent_metrics());
         add(probes_.syspower_metrics());
         add(probes_.current_metrics());
+        // Appended last so every column before it keeps its position — and it
+        // must stay last in the telem insert below, which mirrors this order.
+        add(probes_.airflow_metrics());
         const std::string path = Logger::default_path();
         if (!path.empty() && log_.open(path, cols))
             notes.push_back("logging to " + path);
@@ -514,6 +525,25 @@ MainWindow::MainWindow(AutomationPlan plan)
                              "not — its probe is passive thermal only.",
                              &freq_avg_labels_, &freq_rows_, /*min_axis_max=*/1000.0),
         /*expanded=*/false));
+
+    // Airflow, after Temperature and Frequency: the three are read together —
+    // a die heating, its clock sagging, and the air that is (or is not) taking
+    // the heat away. Built only when an RA6M5 board carries an FS3000, like
+    // Accumulated Energy without shunts; collapsed by default.
+    if (!probes_.airflow_metrics().empty()) {
+        graphs->append(make_section(
+            "Airflow (m/s)",
+            build_metric_section(probes_.airflow_metrics(),
+                                 colors_for(probes_.airflow_metrics()),
+                                 /*fixed_temp_axis=*/false, fmt_mps, airflow_graph_,
+                                 airflow_values_, "No airflow sensor found.",
+                                 &airflow_max_labels_, &airflow_rows_,
+                                 // Low floor: still air reads ~0.1-0.2 m/s and
+                                 // should not pin to the bottom edge. Max mode
+                                 // grows it toward the part's 7.23 m/s.
+                                 /*min_axis_max=*/1.0),
+            /*expanded=*/false));
+    }
 
     fps_ = build_accel_section(fmt_fps, /*min_axis_max=*/30.0);
     graphs->append(make_section("Frame Rate (fps)", *fps_.root));
@@ -1262,6 +1292,7 @@ void MainWindow::apply_graph_filter() {
     by_device(curr_graph_, probes_.current_metrics(), curr_rows_);
     by_device(temp_graph_, probes_.temp_metrics(), temp_rows_);
     by_device(freq_graph_, probes_.freq_metrics(), freq_rows_);
+    by_device(airflow_graph_, probes_.airflow_metrics(), airflow_rows_);
 
     // Benchmark graphs: exactly one series per card, in Accel order, with the
     // legend cell beside it.
@@ -1285,7 +1316,7 @@ std::vector<GraphArea*> MainWindow::all_graphs() {
     std::vector<GraphArea*> v;
     for (GraphArea* g : {sysvbus_graph_, syscurr_graph_, syspower_graph_,
                          vbus_graph_, curr_graph_, power_graph_, accum_graph_,
-                         temp_graph_, freq_graph_,
+                         temp_graph_, freq_graph_, airflow_graph_,
                          fps_.graph, eff_.graph, energy_.graph}) {
         if (g) v.push_back(g);
     }
@@ -1457,6 +1488,25 @@ bool MainWindow::on_tick() {
                 if (!std::isnan(fv[k])) { sum += fv[k]; ++cnt; }
             }
             a.label->set_text(cnt ? "avg " + fmt_freq(sum / cnt) : "avg —");
+        }
+    }
+
+    // Airflow. Max aggregate: with several sensors the question is whether ANY
+    // air is moving past a part, and a mean would dilute one live duct.
+    const auto& afv = probes_.airflow_values();
+    if (airflow_graph_ && !afv.empty() &&
+        static_cast<int>(afv.size()) == airflow_graph_->series_count()) {
+        airflow_graph_->push(afv);
+        for (size_t i = 0; i < airflow_values_.size() && i < afv.size(); ++i)
+            airflow_values_[i]->set_text(fmt_mps(afv[i]));
+        for (const auto& a : airflow_max_labels_) {
+            double hi = -std::numeric_limits<double>::infinity();
+            for (int k = a.start;
+                 k < a.start + a.count && k < static_cast<int>(afv.size()); ++k) {
+                if (!counted(airflow_graph_, k)) continue;
+                if (!std::isnan(afv[k]) && afv[k] > hi) hi = afv[k];
+            }
+            a.label->set_text(std::isinf(hi) ? "max —" : "max " + fmt_mps(hi));
         }
     }
 
@@ -1669,6 +1719,7 @@ bool MainWindow::on_tick() {
         telem.insert(telem.end(), sp.begin(), sp.end());
         const auto& av = probes_.current_values();
         telem.insert(telem.end(), av.begin(), av.end());
+        telem.insert(telem.end(), afv.begin(), afv.end());
 
         Logger::Row row;
         row.telemetry = &telem;

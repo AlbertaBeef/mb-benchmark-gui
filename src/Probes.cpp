@@ -19,11 +19,14 @@
 
 #if MB_HAVE_FTDI
 #include <libftdi1/ftdi.h>
-#include <chrono>
-#include <thread>
 #endif
 
+#include <chrono>
+#include <thread>
+
+#include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <climits>
 #include <cmath>
 #include <cstdio>
@@ -1155,6 +1158,102 @@ const char* const PMD2Probe::kRailNames[10] = {
     "ATX12V", "ATX5V", "ATX5VSB", "ATX3.3V", "HPWR1",
     "EPS1", "EPS2", "PCIE1", "PCIE2", "PCIE3"};
 
+// ---------------------------------------------------------------------------
+// INA228 rail map, shared by every probe that carries an INA228: the FT232H
+// bridges (keyed by USB port-path) and the RA6M5 boards (keyed by USB serial
+// number). Outside the MB_HAVE_FTDI guard because an RA6M5 needs no libftdi.
+// ---------------------------------------------------------------------------
+namespace rails {
+
+// Directory holding this executable, so the repo's own config/ can be found
+// relative to the build tree rather than the current working directory.
+inline std::string exe_dir() {
+    char buf[PATH_MAX];
+    const ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n <= 0) return {};
+    buf[n] = '\0';
+    std::string p(buf);
+    const size_t slash = p.find_last_of('/');
+    return slash == std::string::npos ? std::string() : p.substr(0, slash);
+}
+
+// Optional user map: USB port-path → legend label (which accelerator's rail this
+// INA228 measures). Searched in order:
+//   1. $MB_INA228_CONFIG
+//   2. <repo>/config/ina228.conf  — the app's own config, versioned with it
+//   3. $XDG_CONFIG_HOME/mb-benchmark-gui/ina228.conf (else ~/.config/…)
+// Lines are "<port> = <label>[, <flag>...]", '#' starts a comment. No file found
+// → empty map (probes fall back to "INA228#<n>").
+//
+// The one flag today is `invert`, which negates CURRENT and CHARGE for that
+// rail. It exists because IN+/IN- can be wired either way round on the shunt
+// breakout, and the INA228 reports the shunt drop signed: reversed leads give a
+// negative current for a card that is drawing. VBUS, POWER and ENERGY are
+// unsigned registers and are unaffected, which is why only two families move.
+//
+// Deliberately per-rail, not global: the harness can be corrected one breakout
+// at a time, and a global switch would then be wrong for every other rail.
+struct RailSpec {
+    std::string label;
+    bool invert = false;
+};
+inline std::map<std::string, RailSpec> load_label_map() {
+    std::vector<std::string> candidates;
+    if (const char* e = std::getenv("MB_INA228_CONFIG")) {
+        candidates.push_back(e);
+    } else {
+        // The binary lives in <repo>/build, so config/ is one level up.
+        const std::string exe = exe_dir();
+        if (!exe.empty()) candidates.push_back(exe + "/../config/ina228.conf");
+
+        std::string base;
+        if (const char* x = std::getenv("XDG_CONFIG_HOME")) base = x;
+        else if (const char* h = std::getenv("HOME")) base = std::string(h) + "/.config";
+        if (!base.empty()) candidates.push_back(base + "/mb-benchmark-gui/ina228.conf");
+    }
+    std::string path;
+    for (const auto& c : candidates) {
+        std::ifstream probe(c);
+        if (probe) { path = c; break; }
+    }
+    std::map<std::string, RailSpec> m;
+    if (path.empty()) return m;
+    std::ifstream f(path);
+    if (!f) return m;
+    auto trim = [](std::string s) {
+        size_t a = s.find_first_not_of(" \t\r\n");
+        size_t b = s.find_last_not_of(" \t\r\n");
+        return a == std::string::npos ? std::string() : s.substr(a, b - a + 1);
+    };
+    std::string line;
+    while (std::getline(f, line)) {
+        auto hash = line.find('#');
+        if (hash != std::string::npos) line.erase(hash);
+        auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string key = trim(line.substr(0, eq)), val = trim(line.substr(eq + 1));
+        if (key.empty() || val.empty()) continue;
+        RailSpec spec;
+        // "<label>[, flag[, flag...]]" — unknown flags are ignored rather than
+        // fatal, so an older binary reading a newer config still maps the rail.
+        std::size_t start = 0;
+        for (int field = 0;; ++field) {
+            const std::size_t comma = val.find(',', start);
+            std::string tok = trim(val.substr(
+                start, comma == std::string::npos ? comma : comma - start));
+            std::string low = tok;
+            for (auto& c : low) c = (char)std::tolower((unsigned char)c);
+            if (field == 0) spec.label = tok;
+            else if (low == "invert") spec.invert = true;
+            if (comma == std::string::npos) break;
+            start = comma + 1;
+        }
+        if (!spec.label.empty()) m[key] = spec;
+    }
+    return m;
+}
+}  // namespace rails
+
 #if MB_HAVE_FTDI
 // ---------------------------------------------------------------------------
 // INA228 external power meter over an FT232H USB->I2C bridge (libftdi1 MPSSE).
@@ -1441,93 +1540,6 @@ inline std::vector<Loc> enumerate_bridges() {
     return out;
 }
 
-// Directory holding this executable, so the repo's own config/ can be found
-// relative to the build tree rather than the current working directory.
-inline std::string exe_dir() {
-    char buf[PATH_MAX];
-    const ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-    if (n <= 0) return {};
-    buf[n] = '\0';
-    std::string p(buf);
-    const size_t slash = p.find_last_of('/');
-    return slash == std::string::npos ? std::string() : p.substr(0, slash);
-}
-
-// Optional user map: USB port-path → legend label (which accelerator's rail this
-// INA228 measures). Searched in order:
-//   1. $MB_INA228_CONFIG
-//   2. <repo>/config/ina228.conf  — the app's own config, versioned with it
-//   3. $XDG_CONFIG_HOME/mb-benchmark-gui/ina228.conf (else ~/.config/…)
-// Lines are "<port> = <label>[, <flag>...]", '#' starts a comment. No file found
-// → empty map (probes fall back to "INA228#<n>").
-//
-// The one flag today is `invert`, which negates CURRENT and CHARGE for that
-// rail. It exists because IN+/IN- can be wired either way round on the shunt
-// breakout, and the INA228 reports the shunt drop signed: reversed leads give a
-// negative current for a card that is drawing. VBUS, POWER and ENERGY are
-// unsigned registers and are unaffected, which is why only two families move.
-//
-// Deliberately per-rail, not global: the harness can be corrected one breakout
-// at a time, and a global switch would then be wrong for every other rail.
-struct RailSpec {
-    std::string label;
-    bool invert = false;
-};
-inline std::map<std::string, RailSpec> load_label_map() {
-    std::vector<std::string> candidates;
-    if (const char* e = std::getenv("MB_INA228_CONFIG")) {
-        candidates.push_back(e);
-    } else {
-        // The binary lives in <repo>/build, so config/ is one level up.
-        const std::string exe = exe_dir();
-        if (!exe.empty()) candidates.push_back(exe + "/../config/ina228.conf");
-
-        std::string base;
-        if (const char* x = std::getenv("XDG_CONFIG_HOME")) base = x;
-        else if (const char* h = std::getenv("HOME")) base = std::string(h) + "/.config";
-        if (!base.empty()) candidates.push_back(base + "/mb-benchmark-gui/ina228.conf");
-    }
-    std::string path;
-    for (const auto& c : candidates) {
-        std::ifstream probe(c);
-        if (probe) { path = c; break; }
-    }
-    std::map<std::string, RailSpec> m;
-    if (path.empty()) return m;
-    std::ifstream f(path);
-    if (!f) return m;
-    auto trim = [](std::string s) {
-        size_t a = s.find_first_not_of(" \t\r\n");
-        size_t b = s.find_last_not_of(" \t\r\n");
-        return a == std::string::npos ? std::string() : s.substr(a, b - a + 1);
-    };
-    std::string line;
-    while (std::getline(f, line)) {
-        auto hash = line.find('#');
-        if (hash != std::string::npos) line.erase(hash);
-        auto eq = line.find('=');
-        if (eq == std::string::npos) continue;
-        std::string key = trim(line.substr(0, eq)), val = trim(line.substr(eq + 1));
-        if (key.empty() || val.empty()) continue;
-        RailSpec spec;
-        // "<label>[, flag[, flag...]]" — unknown flags are ignored rather than
-        // fatal, so an older binary reading a newer config still maps the rail.
-        std::size_t start = 0;
-        for (int field = 0;; ++field) {
-            const std::size_t comma = val.find(',', start);
-            std::string tok = trim(val.substr(
-                start, comma == std::string::npos ? comma : comma - start));
-            std::string low = tok;
-            for (auto& c : low) c = (char)std::tolower((unsigned char)c);
-            if (field == 0) spec.label = tok;
-            else if (low == "invert") spec.invert = true;
-            if (comma == std::string::npos) break;
-            start = comma + 1;
-        }
-        if (!spec.label.empty()) m[key] = spec;
-    }
-    return m;
-}
 }  // namespace ftdi
 
 // One FT232H bridge and the INA228(s) on it, as a DeviceProbe. Passive w.r.t.
@@ -1664,6 +1676,338 @@ private:
 };
 #endif  // MB_HAVE_FTDI
 
+// ---------------------------------------------------------------------------
+// SparkFun Thing Plus RA6M5 running firmware/mb-probe-ra6m5 — a SMART probe.
+// Unlike the FT232H bridge, the board owns its sensors: it takes every INA228
+// conversion (~5 Hz) and every FS3000 sample (8 Hz), and once per period sends
+// one text line of per-period statistics over USB CDC. This side only parses.
+// Protocol: docs/ra6m5-probe.md.
+//
+// One board appears as TWO DeviceProbes sharing one serial Link:
+//   - RA6M5InaProbe, which mirrors INA228Probe exactly — same name scheme
+//     ("INA228 - <card>" / "INA228#<n>"), same colour alias, same six families
+//     — so the existing fold turns it into `<Card> INA228 <FAMILY>` and every
+//     consumer (CSV, plotter, Telemetry -> INA228 switch, power_for_device)
+//     treats it as just another shunt;
+//   - RA6M5BoardProbe ("RA6M5"), carrying what belongs to no card: airflow
+//     now, the fan and the thermocouple later. Folding those onto a card would
+//     mislabel them, and in the temperature family a folded thermocouple would
+//     collide with `<Card> INA228 TEMP`, because the fold names every metric of
+//     a family by the family suffix alone.
+//
+// The mapping lives in ina228.conf like the FT232H rails', keyed on the
+// board's USB serial number (the RA6M5 unique id), not its port-path: the
+// board carries a serial, so the mapping follows the board between ports.
+// ---------------------------------------------------------------------------
+namespace ra6m5 {
+
+struct Found { std::string node, serial, port; };
+
+// Every /dev/ttyACM* whose USB device is 1b4f:0037 (the running sketch; 0036
+// is the DFU bootloader, which has no tty).
+inline std::vector<Found> enumerate() {
+    std::vector<Found> out;
+    for (const auto& t : glob_paths("/sys/class/tty/ttyACM*")) {
+        char buf[PATH_MAX];
+        const char* r = realpath((t + "/device/..").c_str(), buf);
+        if (!r) continue;
+        const std::string dev(r);
+        if (trim_sysfs(read_file(dev + "/idVendor")) != "1b4f") continue;
+        if (trim_sysfs(read_file(dev + "/idProduct")) != "0037") continue;
+        out.push_back({"/dev/" + basename_of(t), trim_sysfs(read_file(dev + "/serial")),
+                       basename_of(dev)});
+    }
+    return out;
+}
+
+class Link {
+public:
+    ~Link() { if (fd_ >= 0) ::close(fd_); }
+    std::string error;   // why the link is down; empty while healthy
+    std::string fw;      // "mb-probe-ra6m5 0.1.0"
+
+    // Open the tty and run the `info` handshake. Opening asserts DTR, which
+    // is what makes the firmware start reporting at all.
+    bool open(const std::string& node) {
+        fd_ = ::open(node.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
+        if (fd_ < 0) { error = node + ": " + std::strerror(errno); return false; }
+        termios t{};
+        if (tcgetattr(fd_, &t) != 0) { error = "tcgetattr failed"; return false; }
+        cfmakeraw(&t);
+        cfsetispeed(&t, B115200);  // nominal on USB CDC
+        cfsetospeed(&t, B115200);
+        t.c_cflag |= (CLOCAL | CREAD);
+        t.c_cc[VMIN] = 0;
+        t.c_cc[VTIME] = 0;
+        if (tcsetattr(fd_, TCSANOW, &t) != 0) { error = "tcsetattr failed"; return false; }
+        tcflush(fd_, TCIOFLUSH);
+        static const char cmd[] = "info\n";
+        if (::write(fd_, cmd, sizeof cmd - 1) != (ssize_t)(sizeof cmd - 1)) {
+            error = "write failed";
+            return false;
+        }
+        // The I block arrives within a few ms; D lines may interleave with it
+        // (they are whole lines, never split), and are ignored until "I end".
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        int proto = -1;
+        while (std::chrono::steady_clock::now() < deadline) {
+            std::string line;
+            if (!next_line(&line)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                continue;
+            }
+            if (line.rfind("I ", 0) != 0) continue;
+            const auto kv = parse_kv(line.substr(2));
+            auto get = [&](const char* k) {
+                auto it = kv.find(k);
+                return it == kv.end() ? std::string() : it->second;
+            };
+            if (line == "I end") {
+                if (proto != 1) {
+                    error = "unsupported protocol " + std::to_string(proto);
+                    return false;
+                }
+                // Staleness is measured from here: a board that has just
+                // answered is not "silent", even before its first D line.
+                last_data_ = std::chrono::steady_clock::now();
+                return true;
+            }
+            if (!get("proto").empty()) {
+                proto = std::atoi(get("proto").c_str());
+                fw = get("fw") + " " + get("ver");
+            } else if (!get("sensor").empty()) {
+                sensors_[get("sensor")] = get("present") == "1";
+            } else if (!get("ch").empty()) {
+                channels_.push_back(get("ch"));
+            }
+        }
+        error = "no answer to `info` within 3 s";
+        return false;
+    }
+
+    // Fire-and-forget command; the firmware's OK/E reply is drained by pump()
+    // like any other non-D line.
+    bool send(const std::string& cmd) {
+        if (fd_ < 0) return false;
+        const std::string line = cmd + "\n";
+        return ::write(fd_, line.data(), line.size()) == (ssize_t)line.size();
+    }
+
+    bool sensor(const std::string& name) const {
+        auto it = sensors_.find(name);
+        return it != sensors_.end() && it->second;
+    }
+    bool has_channel(const std::string& ch) const {
+        return std::find(channels_.begin(), channels_.end(), ch) != channels_.end();
+    }
+
+    // Drain whatever has arrived and keep the newest complete D line. Cheap and
+    // non-blocking, so every probe sharing the link calls it from its own
+    // poll() — the second call in a tick simply finds nothing new.
+    void pump() {
+        if (fd_ < 0) return;
+        std::string line;
+        while (next_line(&line)) {
+            if (line.rfind("D ", 0) != 0) continue;
+            latest_.clear();
+            for (const auto& [k, v] : parse_kv(line.substr(2)))
+                latest_[k] = std::strtod(v.c_str(), nullptr);  // "nan" -> NaN
+            last_data_ = std::chrono::steady_clock::now();
+            auto it = latest_.find("seq");
+            seq_ = it == latest_.end() ? seq_ + 1 : static_cast<long>(it->second);
+        }
+    }
+
+    // Newest value of a channel; NaN when absent, when the firmware reported
+    // nan, or when no line has arrived for kStaleSeconds (unplugged, wedged).
+    double value(const std::string& ch) const {
+        if (stale()) return kNaN;
+        auto it = latest_.find(ch);
+        return it == latest_.end() ? kNaN : it->second;
+    }
+    bool stale() const {
+        return std::chrono::steady_clock::now() - last_data_ >
+               std::chrono::seconds(kStaleSeconds);
+    }
+    // Sequence number of the newest D line; lets a consumer act once per line
+    // even though the host tick and the firmware period are not phase-locked.
+    long seq() const { return seq_; }
+
+private:
+    static constexpr int kStaleSeconds = 3;
+    int fd_ = -1;
+    std::string rx_;
+    std::map<std::string, bool> sensors_;
+    std::vector<std::string> channels_;
+    std::map<std::string, double> latest_;
+    std::chrono::steady_clock::time_point last_data_{};
+    long seq_ = -1;
+
+    bool next_line(std::string* line) {
+        for (;;) {
+            const auto nl = rx_.find('\n');
+            if (nl != std::string::npos) {
+                *line = rx_.substr(0, nl);
+                rx_.erase(0, nl + 1);
+                if (!line->empty() && line->back() == '\r') line->pop_back();
+                return true;
+            }
+            char buf[1024];
+            const ssize_t r = ::read(fd_, buf, sizeof buf);
+            if (r > 0) {
+                rx_.append(buf, static_cast<size_t>(r));
+                if (rx_.size() > 65536) rx_.clear();  // no newline in 64 KB: junk
+                continue;
+            }
+            if (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+                // EIO / ENODEV once the board is unplugged or rebooted. No
+                // reconnect: the metric list was fixed at discovery, and
+                // staleness turns every value into a gap from here on.
+                error = std::string("read: ") + std::strerror(errno);
+                ::close(fd_);
+                fd_ = -1;
+            }
+            return false;
+        }
+    }
+
+    static std::map<std::string, std::string> parse_kv(const std::string& s) {
+        std::map<std::string, std::string> m;
+        std::istringstream in(s);
+        std::string tok;
+        while (in >> tok) {
+            const auto eq = tok.find('=');
+            if (eq != std::string::npos) m[tok.substr(0, eq)] = tok.substr(eq + 1);
+        }
+        return m;
+    }
+};
+
+}  // namespace ra6m5
+
+// The board's INA228, presented exactly as an FT232H-bridged one so that the
+// fold, the CSV names and every consumer treat the two identically. Values are
+// the firmware's per-period MEANS; energy and charge are the hardware
+// accumulators as read at report time.
+class RA6M5InaProbe : public DeviceProbe {
+public:
+    RA6M5InaProbe(std::shared_ptr<ra6m5::Link> link, std::string port,
+                  std::string label, int index, bool invert)
+        : link_(std::move(link)), port_(std::move(port)), invert_(invert) {
+        name_ = label.empty() ? "INA228#" + std::to_string(index)
+                              : "INA228 - " + label;
+        color_alias_ = label;
+    }
+    const char* name() const override { return name_.c_str(); }
+
+    bool discover() {
+        if (!link_->sensor("ina228")) {
+            note_ = "RA6M5 reports no INA228";
+            return false;
+        }
+        // Same six families and labels as INA228Probe, declared up front for
+        // the Logger's fixed header.
+        power_metrics_.push_back({name_ + " POW", "W"});
+        temp_metrics_.push_back({name_ + " TEMP", "°C"});
+        energy_metrics_.push_back({name_ + " ENERGY", "J"});
+        charge_metrics_.push_back({name_ + " CHARGE", "C"});
+        voltage_metrics_.push_back({name_ + " VBUS", "V"});
+        current_metrics_.push_back({name_ + " CURRENT", "A"});
+        for (auto* v : {&power_values_, &temp_values_, &energy_values_,
+                        &charge_values_, &voltage_values_, &current_values_})
+            v->assign(1, kNaN);
+        bdf_ = "usb " + port_;
+        // Clear ENERGY/CHARGE so the session's series start at zero — the same
+        // RSTACC pulse INA228Probe's configure() makes, and for the same
+        // reason. Without it the board reports whatever it has integrated
+        // since it was last flashed or powered.
+        link_->send("reset_acc");
+        return true;
+    }
+
+    void poll() override {
+        link_->pump();
+        power_values_[0] = plausible_power(link_->value("ina228.power"));
+        temp_values_[0] = plausible_temp(link_->value("ina228.dietemp"));
+        energy_values_[0] = link_->value("ina228.energy");
+        voltage_values_[0] = link_->value("ina228.vbus");
+        // `invert` from ina228.conf, on the two SIGNED families only — exactly
+        // as INA228Probe applies it. The firmware reports them as measured.
+        const double c = link_->value("ina228.charge");
+        const double a = link_->value("ina228.current");
+        charge_values_[0] = invert_ ? -c : c;
+        current_values_[0] = invert_ ? -a : a;
+
+        // The firmware counts every conversion below BUVL (3.00 V) in the
+        // period — all ~5 of them, not one sampled instant — so this sees
+        // dips a 1 Hz host read of the latch could only catch by luck. Counted
+        // once per D line: the host tick and the firmware period drift, so
+        // the same line can be seen by two ticks.
+        if (link_->seq() != last_seq_) {
+            last_seq_ = link_->seq();
+            const double uv = link_->value("ina228.uv");
+            if (!std::isnan(uv) && uv > 0) undervolt_count_ += static_cast<int>(uv);
+        }
+        if (undervolt_count_ != last_undervolt_count_) {
+            note_ = name_ + ": bus voltage dipped below 3.00 V (" +
+                    std::to_string(undervolt_count_) + " conversion" +
+                    (undervolt_count_ == 1 ? "" : "s") +
+                    " since discovery) — supply may be browning out";
+            last_undervolt_count_ = undervolt_count_;
+        }
+    }
+
+private:
+    std::shared_ptr<ra6m5::Link> link_;
+    std::string port_, name_;
+    bool invert_ = false;
+    long last_seq_ = -1;
+    int undervolt_count_ = 0, last_undervolt_count_ = 0;
+};
+
+// What the board measures that belongs to no card. Always added when a board
+// answers, because its startup note is where the log records the board's
+// serial number — the key ina228.conf needs.
+class RA6M5BoardProbe : public DeviceProbe {
+public:
+    RA6M5BoardProbe(std::shared_ptr<ra6m5::Link> link, std::string port,
+                    std::string serial, std::string name, std::string ina_label)
+        : link_(std::move(link)), port_(std::move(port)), serial_(std::move(serial)),
+          name_(std::move(name)), ina_label_(std::move(ina_label)) {}
+    const char* name() const override { return name_.c_str(); }
+
+    bool discover() {
+        bdf_ = "usb " + port_;
+        if (link_->has_channel("fs3000.airflow")) {
+            airflow_metrics_.push_back({name_ + " AIRFLOW", "m/s"});
+            airflow_values_.assign(1, kNaN);
+        }
+        note_ = link_->fw + ", serial " + serial_;
+        if (link_->sensor("ina228"))
+            note_ += ina_label_.empty()
+                         ? ", INA228 unmapped (add `" + serial_ +
+                               " = <card>` to ina228.conf)"
+                         : ", INA228 -> " + ina_label_;
+        if (link_->sensor("fs3000")) note_ += ", FS3000 airflow";
+        startup_note_ = note_;
+        return true;
+    }
+
+    void poll() override {
+        link_->pump();
+        if (!airflow_values_.empty())
+            airflow_values_[0] = link_->value("fs3000.airflow");
+        // One transition note when the stream stops, one when it resumes.
+        note_ = link_->stale() ? (link_->error.empty() ? std::string("no data from board")
+                                                       : link_->error)
+                               : startup_note_;
+    }
+
+private:
+    std::shared_ptr<ra6m5::Link> link_;
+    std::string port_, serial_, name_, ina_label_, startup_note_;
+};
+
 }  // namespace
 
 void Probes::discover(std::vector<std::string>* notes) {
@@ -1765,13 +2109,16 @@ void Probes::discover(std::vector<std::string>* notes) {
         bool ok = p->discover();
         try_add(std::move(p), ok);
     }
+    // Shared by both kinds of INA228 carrier, so an unmapped shunt's
+    // "INA228#<n>" is unique across FT232H bridges and RA6M5 boards alike.
+    const auto labels = rails::load_label_map();
+    int ina_idx = 0;
 #if MB_HAVE_FTDI
     // One probe per FT232H bridge (each carries an INA228). Bridges have no
     // serials, so the config file maps each by its stable USB port-path to an
     // accelerator label; unmapped bridges fall back to "INA228#<n>".
     {
-        auto labels = ftdi::load_label_map();
-        int idx = 0;
+        int& idx = ina_idx;
         for (const auto& br : ftdi::enumerate_bridges()) {
             auto it = labels.find(br.port);
             const std::string label =
@@ -1784,6 +2131,37 @@ void Probes::discover(std::vector<std::string>* notes) {
         }
     }
 #endif
+    // RA6M5 boards, after the FT232H rails: the same kind of instrument. Keyed
+    // in ina228.conf by USB serial number, since — unlike an FT232H — the
+    // board has one. Needs no library, so it is not behind any build flag.
+    {
+        int board = 0;
+        for (const auto& f : ra6m5::enumerate()) {
+            auto link = std::make_shared<ra6m5::Link>();
+            if (!link->open(f.node)) {
+                if (notes)
+                    notes->push_back("RA6M5 @ usb " + f.port + ": " + link->error);
+                continue;
+            }
+            auto it = labels.find(f.serial);
+            const std::string label =
+                (it != labels.end()) ? it->second.label : std::string();
+            const bool invert = (it != labels.end()) && it->second.invert;
+            {
+                auto p = std::make_unique<RA6M5InaProbe>(link, f.port, label,
+                                                         ina_idx, invert);
+                const bool ok = p->discover();
+                if (ok) ++ina_idx;
+                if (ok) try_add(std::move(p), ok);  // its absence is in the board note
+            }
+            const std::string name =
+                board == 0 ? std::string("RA6M5") : "RA6M5#" + std::to_string(board);
+            ++board;
+            auto p = std::make_unique<RA6M5BoardProbe>(link, f.port, f.serial, name, label);
+            const bool ok = p->discover();
+            try_add(std::move(p), ok);
+        }
+    }
 
     flatten();
 }
@@ -1844,6 +2222,7 @@ void Probes::flatten() {
     syspower_metrics_.clear();
     sysvoltage_metrics_.clear();
     syscurrent_metrics_.clear();
+    airflow_metrics_.clear();
     auto stamp = [](MetricInfo& m, size_t k, DeviceProbe* d) {
         m.device = static_cast<int>(k);
         m.device_name = d->name();
@@ -1896,6 +2275,9 @@ void Probes::flatten() {
     emit(dev_order_, &DeviceProbe::syspower_metrics, " SYS POWER", syspower_metrics_);
     emit(dev_order_, &DeviceProbe::sysvoltage_metrics, " SYS VBUS", sysvoltage_metrics_);
     emit(dev_order_, &DeviceProbe::syscurrent_metrics, " SYS CURRENT", syscurrent_metrics_);
+    // Only an RA6M5 board probe publishes airflow, and it never carries a
+    // colour alias, so the suffix is never applied — it is here for symmetry.
+    emit(dev_order_, &DeviceProbe::airflow_metrics, " AIRFLOW", airflow_metrics_);
 
     // Frequency follows plain discovery order — there is no INA228-style
     // folding to do, since a clock always belongs to the card reporting it.
@@ -1914,6 +2296,7 @@ void Probes::flatten() {
     syspower_values_.assign(syspower_metrics_.size(), kNaN);
     sysvoltage_values_.assign(sysvoltage_metrics_.size(), kNaN);
     syscurrent_values_.assign(syscurrent_metrics_.size(), kNaN);
+    airflow_values_.assign(airflow_metrics_.size(), kNaN);
 }
 
 void Probes::set_busy(bool busy) {
@@ -1955,6 +2338,7 @@ void Probes::poll() {
     fill(dev_order_, &DeviceProbe::syspower_values, syspower_values_);
     fill(dev_order_, &DeviceProbe::sysvoltage_values, sysvoltage_values_);
     fill(dev_order_, &DeviceProbe::syscurrent_values, syscurrent_values_);
+    fill(dev_order_, &DeviceProbe::airflow_values, airflow_values_);
     size_t fi = 0;
     for (auto& d : devices_)
         for (double v : d->freq_values()) freq_values_[fi++] = v;
