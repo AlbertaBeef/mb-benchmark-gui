@@ -111,7 +111,8 @@ correction is applied. A fault (`fault_bits=1` = open, the usual cause being a
 probe not seated in the screw terminal) makes `max31855.tc` `nan`, so the GUI
 shows a gap rather than the cold-junction temperature. First reading,
 2026-11-16: chip present, cold junction 23.76 °C (EMC2101 die 23.0 °C beside
-it), thermocouple reporting open circuit.
+it), thermocouple reporting open circuit — correctly, as no thermocouple wire
+was fitted yet.
 
 ## Host side
 
