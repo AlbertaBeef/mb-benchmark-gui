@@ -129,3 +129,10 @@ shunt folds onto the real `Hailo` row: `Hailo INA228 POWER` **0.4985 W** against
 the Hailo-8's on-board INA231 `Hailo POW` **0.4973 W** — agreement to 0.2%.
 That confirms the rail, and that 0.50 W is this card's genuine idle here,
 below the 0.81-0.85 W the mb-hailo skill records on other boards.
+
+**Under load, through the GUI** (log `mb-benchmark-20261116-102043.csv`,
+ResNet-50, Hailo async depth 4): ~1195 fps; shunt 0.50 -> **3.43-3.47 W**
+within a second of Start and back to 0.51 W at Stop; the INA231 read
+3.33-3.39 W, so the shunt runs 1.5-2.5% above the card's own sensor under load
+and, being the max, is what fps/W uses (~347 fps/W, 2.88 mJ/frame). The rail
+sagged 3.324 -> 3.254 V at ~1.06 A.
