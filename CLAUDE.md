@@ -1200,15 +1200,16 @@ toolchain setup and the first readings** — read it before touching either side
 `tools/flash-ra6m5.sh` builds and flashes with no button press.
 
 Sensors today: INA228 (0x40), FS3000-1005 airflow (0x28), the EMC2101 fan
-controller (0x4C) and a MAX31855K thermocouple on SPI (CS = D0). The EMC2101 is
-**read-only**: only its die temperature reaches the GUI. Both temperatures sit
+controller (0x4C) and a MAX31855K thermocouple on SPI (CS = D0). Of the EMC2101,
+only the die temperature reaches the GUI. Both temperatures sit
 on the Temperature graph as `RA6M5 EMC2101` and `RA6M5 MAX31855` (columns
 `usb <port>_EMC2101` / `_MAX31855`), **named after the chip** because two
 share one family on one probe and a bare `TEMP` would collide. An open
-thermocouple is a gap, not a value. RPM and duty are on the wire but wait for a
-working tach (the fan
-turns under `fan <percent>`, a host command — fw 0.4.0 — but the tach reads
-stalled; see the doc). The GUI does not drive the fan yet. Two
+thermocouple is a gap, not a value. RPM and duty are on the wire but not on the host
+yet: the fan turns under `fan <percent>` (a host command, fw 0.4.0) and the
+tach reads cleanly **only with the breakout's `TACH` solder jumper bridged** —
+it ships open, and without it the tach reads stalled (see the doc). The GUI
+does not drive the fan yet. Two
 boards exist (serials ending `A8CC…` and `3BA5…`), both mapped to Hailo. 0x36 on the bus is
 the board's own MAX17048 fuel gauge and is ignored.
 

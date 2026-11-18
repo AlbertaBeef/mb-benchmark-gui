@@ -10,7 +10,7 @@ bridge driven from `src/Probes.cpp`.
 | --- | --- | --- | --- |
 | INA228 power monitor | Qwiic I2C | 0x40-0x4F (0x40 here) | supported |
 | FS3000-1005 air velocity | Qwiic I2C | 0x28 (fixed) | supported |
-| EMC2101 fan controller | Qwiic I2C | 0x4C | duty set by host command `fan` (fw 0.4.0); tach not reading yet |
+| EMC2101 fan controller | Qwiic I2C | 0x4C | duty set by host command `fan` (fw 0.4.0); tach needs the board's TACH jumper bridged |
 | MAX31855K thermocouple, K-type | SPI, SCK D19 / DO D17 / CS D0 (P112) | — | supported (fw 0.3.0) |
 | MAX17048 fuel gauge | Qwiic I2C | 0x36 | on the board itself; ignored |
 
@@ -108,11 +108,34 @@ disconnects, since a cooling fan quitting with the app is the worse failure.
 Direct drive relies on `FAN_CONFIG.PROG` (0x4A bit 5), the power-on default;
 `set_duty()` checks it. `emc_regs` prints a read-only register dump.
 
-Verified 2026-11-16: `fan 100` spins the fan, `fan 0` stops it. **The tach
-reads 0xFFFF (stalled) while the fan turns**, with ALT_TCH set (CONFIG 0x84):
-the chip sees no edges, so the cause is on the wire — a fan tach is open
-collector and needs a pull-up to 3.3 V on the TACH line. Until that is fixed
-`emc2101.rpm` is `nan` and `emc2101.stall` counts every sample.
+Verified 2026-11-16: `fan 100` spins the fan, `fan 0` stops it.
+
+**The tach needs the Adafruit breakout's `TACH` solder jumper bridged.** A fan
+tach is open collector; that jumper is the board's only pull-up on the line and
+ships **open**. Without it the tach reads 0xFFFF (stalled) while the fan turns,
+with ALT_TCH correctly set (CONFIG 0x84) — the chip simply sees no edges. A
+hand-held short is not good enough: it read, but noisily (per-second means
+3860–6220 rpm, single samples up to 12 770 — contact bounce counted as edges).
+
+Measured 2026-11-18 with the jumper soldered, Noctua NF-A4x10 5V PWM (green
+wire on TACH), 1 s reports, settled:
+
+| duty | rpm | spread within a report |
+| --- | ---: | --- |
+| 100 % | 4190 → 4290, still spinning up | < 1 % |
+| 74.6 % | 4320 → 4380 (the climb from 100 % continued) | < 1 % |
+| 50.8 % | 3163–3173 | < 0.3 % |
+| 30.2 % | 1918–1923 | < 0.3 % |
+| 0 % | `nan`, `stall` = 4/4 | — |
+
+Above ~75 % the fan is at or near its ceiling, so the top of the range buys
+little; 50 % and 30 % are clean and proportional. The fan takes well over
+10 s to settle at full speed, so measure a step after it, not during.
+
+**Reconnecting the Qwiic chain needs a `rescan`.** The firmware scans I2C at
+boot only; a bus plugged back in while the board is powered stays
+`present=0` (INA228, FS3000 and EMC2101 all at once) until the host sends
+`rescan` or the board is replugged.
 
 **The MAX31855K is detected by its two reserved bits** (D17, D3), which are
 always 0 — an unwired MISO reads all ones or all zeros and is rejected, so
