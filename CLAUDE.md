@@ -2614,8 +2614,11 @@ the remote connection.
 | 2026-10-31 10:45 | GUI, 4 cards, no stagger | **off** | Axelera never loaded — `Link down`, MSI timeout, card **wedged** |
 | 2026-10-31 10:58 | GUI, **DeepX + Axelera**, staggered 5 s | **off** | Axelera loaded (471 fps, 6.43 W), then **host froze** |
 | 2026-10-31 12:13 | GUI, **Axelera first**, staggered 5 s | **off** | Axelera **running at 1627 fps**, died at **DeepX's** init; host survived |
+| **2026-11-02 13:21** | GUI, **Axelera first**, staggered 5 s, **`amd_iommu=off`** | **off** | identical, and **captured over netconsole**: Axelera at **1710 fps**, `Link down` **79 ms** after DeepX's `load()`; card wedged, host survived |
 
 What that table kills:
+- **Not the IOMMU** — the 11-02 run reproduced it exactly under
+  `amd_iommu=off`, with 0 `IO_PAGE_FAULT`s for the boot.
 - **Not double buffering** — off in both 10-31 failures.
 - **Not core count or total power.** The 10:58 freeze was *two* cards at ~33 W;
   four cards at ~45 W have run for minutes.
@@ -2631,16 +2634,69 @@ What that table kills:
 - **Not load, duration or rate.** 12:13 died four seconds in, at full rate,
   having just held 3.140 V — the same rail voltage as a healthy solo run.
 
-**The IOMMU is now the leading suspect, and it is the one test not yet run.**
-What points at it: the trigger is *device initialisation* — i.e. DMA mapping
-setup — rather than load, power, duration or core count; it fires in either
-direction; and Axelera's own init at 12:13:19 logged **two** `IO_PAGE_FAULT`s
-where exactly one per boot is the documented norm. `docs/host-freeze-capture.md`
-step 3 is `amd_iommu=off` on one boot, repeating the 12:13 case. Put the SOL
-capture (step 1) in place first, because the same event sometimes takes the
-host with it and then leaves no trace at all.
+**The IOMMU is RULED OUT — tested 2026-11-02, and it is not the cause.** It was
+the leading suspect: the trigger is *device initialisation*, i.e. DMA mapping
+setup; it fires in either direction; and Axelera's own init on 10-31 logged
+**two** `IO_PAGE_FAULT`s where one per boot is the norm. The test ran under
+`amd_iommu=off` with `iommu_groups: 0` confirmed **before** the run, and the
+failure reproduced **identically**. `IO_PAGE_FAULT` for that boot was **0**, so
+the two page faults were not a clue either. **Do not re-run this test** —
+`~/iommu-test/` holds the runbook and scripts if the reasoning needs checking.
 
-**The real obstacle is that there is no evidence.** This host had **no capture
+A solo Axelera control under `amd_iommu=off` measured **1666 fps mean (excl.
+first sample) / 1710 max** against the IOMMU-on baseline's 1614 / 1662: +3.2%,
+within noise, with no `swiotlb buffer is full`. So the test boot was not a
+degraded one and the null result is trustworthy.
+
+**What the capture bought — the first real evidence in this investigation.**
+netconsole (printk over UDP to another machine; *not* a serial console, which
+breaks RealVNC here) plus `kernel.printk = 7 4 1 7`, because `quiet` leaves
+`console_loglevel` at 4 and a console receives only levels 0-3 — **`Link down`
+would have been dropped**. App CSV and kernel log interleaved:
+
+```
+13:20:57.445  app:  stagger start: 5 s apart, Axelera -> DeepX
+13:20:58-02   app:  Axelera 1451 / 1670 / 1666 / 1666 / 1710 fps   healthy
+13:21:02.445  app:  DeepX leaves Waiting -> make_runner() -> load()  (exactly 5.000 s)
+13:21:02.524  axl:  Link down                                       (+79 ms)
+13:21:02.612  axl:  Link up
+13:21:03.201  app:  deepx_cfg -> "1x224x224x3 uint8 - depth 4"      DeepX load() done
+13:21:04      app:  Axelera 0 fps — never again
+13:21:07.852  axl:  vmsi configured + fwtrace: detached for firmware reload
+13:21:09.196  axl:  IRQ MSI timeout (12 1), then once a second indefinitely
+13:21:10.273  app:  firmware v1.3.2+bl1 vs tool v1.8.0 -> BOOTLOADER = wedged
+13:21:33.826  app:  Axelera: run failed: AXR_ERROR_RUNTIME_ERROR
+13:21:33 on   app:  DeepX 1080 fps for another 2.5 minutes, untouched
+```
+
+Three further eliminations from that run:
+- **The two cards do not share a PCIe hierarchy.** `axl` sits under root port
+  `0000:80:01.1`, DeepX under `0000:c0:01.1` — **different root complexes**. No
+  shared switch, so no shared bus reset or link retrain can be the mechanism.
+  Verify with `basename $(readlink -f /sys/bus/pci/devices/0000:<bdf>/..)`
+  rather than assuming; BDFs move.
+- **DeepX's init writes NOTHING to the kernel log.** The
+  `dxrt0: dxrt_recovery_device` lines are from **boot**, not the run — do not
+  mistake them for the trigger. Whatever happens at 13:21:02.4 is entirely
+  userspace, inside the DXRT runtime.
+- **The Axelera is the only casualty.** DeepX ran 2.5 more minutes at full
+  rate, so this is not a shared-resource collapse.
+
+**The next lead: the axl driver logs `All AER errors masked` at probe.** It
+masks the PCIe error reporting that would say *why* the link dropped — a
+completion timeout and a receiver error look identical from outside. Unmasking
+AER on that device, or enabling it on the root port, is cheap and is the
+experiment to run next. The driver also prints one `aer_cor_status: 0x00002000`
+at probe — bit 13, Advisory Non-Fatal, **correctable**, once per boot on four
+consecutive boots including clean ones. Boot-time constant, like the `PCI PERR`
+SEL entries; not a lead.
+
+**The capture facility now exists and works** — netconsole, `console_loglevel`
+7, kdump armed, `hardlockup_panic` / `panic_on_oops` / `panic=20`;
+`~/iommu-test/README.md` is the runbook and the 2026-11-02 reproduction above is
+the first event it caught. What follows describes the state before that.
+
+**The real obstacle WAS that there is no evidence.** This host had **no capture
 facility at all** (checked 2026-10-31: no kdump, no `crashkernel=`, no
 `console=` so IPMI SOL shows nothing, `hardlockup_panic` / `panic_on_oops` /
 `panic` all 0 — a detected lockup just sits there). Each freeze therefore costs
