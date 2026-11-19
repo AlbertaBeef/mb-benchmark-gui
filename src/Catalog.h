@@ -55,13 +55,24 @@ const char* accel_unavailable_reason(Accel a);
 // card greyed because a model has no artifact looked identical to a MemryX card
 // greyed because the SDK is absent.
 //
-// Today this is purely build-time. It deliberately does NOT try to detect a
-// compiled-in card whose hardware is unplugged: that needs each vendor's
-// enumeration API on the GUI thread at startup, and a false negative would hide
-// a working card — worse than showing one that then reports a clear load error.
-// Extend *here* if runtime detection is ever wanted; every UI site asks this
-// one question.
+// Two tests, both must pass: the backend is compiled in, AND (for the four
+// M.2 cards) a PCI device with that vendor's id is enumerated in sysfs. The
+// second half was added 2026-11-16: until then this was build-time only, so a
+// host with every SDK installed but one card fitted (the Strix Halo, Hailo
+// only) showed four cards, and ticking the absent three stalled every run in
+// "starting" and made Stop wait out their load timeouts.
+//
+// The original objection to runtime detection was that it needed each
+// vendor's enumeration API on the GUI thread, and that a false negative would
+// hide a working card. Reading sysfs avoids the first entirely, and testing
+// enumeration rather than driver binding keeps the second to "the card is not
+// on the bus". The Qualcomm NSP is part of the SoC and stays build-time.
+// $MB_BENCH_ALL_ACCELS=1 restores the build-time rule. Every UI site asks this
+// one question; extend here, not at the call sites.
 bool accel_present(Accel a);
+// Why accel_present() is false — "no backend in this build" or "compiled in,
+// but no such PCI device" — or "" when the card is shown.
+const char* accel_hidden_reason(Accel a);
 
 // How a vendor's artifacts are obtained.
 enum class Fetch {

@@ -112,6 +112,20 @@ public:
     bool ina228_shown() const { return ina228_enabled_.get_active(); }
     bool powerz_shown() const { return powerz_enabled_.get_active(); }
 
+    // Fan duty for an RA6M5 board's EMC2101. Unlike the switches above this
+    // one ACTS: each change sends `fan <percent>` to the board. The row is
+    // hidden until MainWindow finds a board with a fan.
+    //
+    // The spin starts at whatever the board reports, not at a default: the
+    // firmware keeps its duty across host disconnects, so a fan already
+    // running from the last session must not be stopped by opening the app.
+    // set_fan_duty_readback() takes the first valid reading and then stops
+    // listening — after that the control is the user's, and the readback is
+    // what the graph shows.
+    void set_fan_present(bool present);
+    void set_fan_duty_readback(double pct);
+    sigc::signal<void(double)>& signal_fan_duty_changed() { return sig_fan_duty_; }
+
     // Per-accelerator settings from the Accelerators section's rows.
     int memryx_freq_mhz() const;   // MPU clock to request before a run
     bool axelera_double_buffer() const;  // Axelera: the double_buffer property
@@ -238,6 +252,11 @@ private:
     Gtk::CheckButton ina228_enabled_{"Enabled"};
     Gtk::Box* powerz_row_ = nullptr;
     Gtk::CheckButton powerz_enabled_{"Enabled"};
+    Gtk::Box* fan_row_ = nullptr;
+    Gtk::SpinButton fan_duty_;
+    bool fan_synced_ = false;    // first readback taken; the spin is the user's
+    bool fan_syncing_ = false;   // a readback is being applied: don't send it back
+    sigc::signal<void(double)> sig_fan_duty_;
     std::map<std::string, Gtk::CheckButton*> pmd2_boxes_;
     bool running_ = false;
     bool busy_ = false;   // workers from a previous run still shutting down

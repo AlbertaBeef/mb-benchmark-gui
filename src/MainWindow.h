@@ -208,6 +208,19 @@ private:
     std::vector<AggEntry> freq_avg_labels_;
     std::vector<LegendRow> freq_rows_;
 
+    // Air velocity from an RA6M5 board's FS3000. Null when there is none.
+    GraphArea* airflow_graph_ = nullptr;
+    std::vector<Gtk::Label*> airflow_values_;
+    std::vector<AggEntry> airflow_max_labels_;
+    std::vector<LegendRow> airflow_rows_;
+    // The fan's rpm and duty share that graph for now, on its one axis, so
+    // the section draws a merged list: airflow metrics and fan metrics, kept
+    // contiguous per device for the legend. af_src_[i] says where series i
+    // comes from — {false, k}: airflow_values()[k]; {true, k}: fan_values()[k].
+    // Values are scaled only at push(): rpm in thousands, duty in tens of %.
+    std::vector<MetricInfo> af_metrics_;
+    std::vector<std::pair<bool, int>> af_src_;
+
     // Accumulated energy from the INA228 hardware accumulators. Named `accum_`
     // rather than `energy_` because that member is already the *benchmark*
     // Energy section (mJ/frame, one series per card) — a different quantity from

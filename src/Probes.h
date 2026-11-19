@@ -45,6 +45,10 @@ public:
     // corresponding *_metrics() lists; a missing reading is NaN.
     virtual void poll() = 0;
 
+    // Fan duty, percent. Only a probe that drives a fan overrides this (the
+    // RA6M5 board, through its EMC2101); everything else has nothing to set.
+    virtual bool set_fan_duty(double /*pct*/) { return false; }
+
     const std::vector<MetricInfo>& temp_metrics() const { return temp_metrics_; }
     const std::vector<double>& temp_values() const { return temp_values_; }
     const std::vector<MetricInfo>& power_metrics() const { return power_metrics_; }
@@ -102,6 +106,18 @@ public:
     const std::vector<double>& sysvoltage_values() const { return sysvoltage_values_; }
     const std::vector<MetricInfo>& syscurrent_metrics() const { return syscurrent_metrics_; }
     const std::vector<double>& syscurrent_values() const { return syscurrent_values_; }
+    // Air velocity (m/s), from an FS3000 on an RA6M5 probe board. Its own family
+    // because it is its own unit; and it belongs to no card — the airflow over
+    // a heatsink is not a rail — so the RA6M5's board probe carries it rather
+    // than the INA228 probe that folds onto a card.
+    const std::vector<MetricInfo>& airflow_metrics() const { return airflow_metrics_; }
+    const std::vector<double>& airflow_values() const { return airflow_values_; }
+    // The fan an RA6M5 board drives: speed (rpm) and duty (%). Its own family
+    // because neither unit is airflow's; the Airflow graph shows them anyway
+    // (MainWindow scales them onto its axis), but the values here and in the
+    // CSV are the real ones.
+    const std::vector<MetricInfo>& fan_metrics() const { return fan_metrics_; }
+    const std::vector<double>& fan_values() const { return fan_values_; }
 
 protected:
     std::vector<MetricInfo> temp_metrics_;
@@ -124,6 +140,10 @@ protected:
     std::vector<double> sysvoltage_values_;
     std::vector<MetricInfo> syscurrent_metrics_;
     std::vector<double> syscurrent_values_;
+    std::vector<MetricInfo> airflow_metrics_;
+    std::vector<double> airflow_values_;
+    std::vector<MetricInfo> fan_metrics_;
+    std::vector<double> fan_values_;
     std::string bdf_;
     std::string note_;
     std::string color_alias_;
@@ -194,6 +214,16 @@ public:
     const std::vector<double>& sysvoltage_values() const { return sysvoltage_values_; }
     const std::vector<MetricInfo>& syscurrent_metrics() const { return syscurrent_metrics_; }
     const std::vector<double>& syscurrent_values() const { return syscurrent_values_; }
+    // Air velocity (m/s) from RA6M5 probe boards. Empty without one.
+    const std::vector<MetricInfo>& airflow_metrics() const { return airflow_metrics_; }
+    const std::vector<double>& airflow_values() const { return airflow_values_; }
+    // Fan speed (rpm) and duty (%) from RA6M5 boards; see DeviceProbe.
+    const std::vector<MetricInfo>& fan_metrics() const { return fan_metrics_; }
+    const std::vector<double>& fan_values() const { return fan_values_; }
+    // Whether any probe can drive a fan, and the command to do it. Applies to
+    // every such probe; returns true if at least one accepted it.
+    bool has_fan_control() const;
+    bool set_fan_duty(double pct);
 
     int device_count() const { return static_cast<int>(devices_.size()); }
 
@@ -224,6 +254,10 @@ private:
         current_metrics_;
     std::vector<double> energy_values_, charge_values_, voltage_values_,
         current_values_;
+    std::vector<MetricInfo> airflow_metrics_;
+    std::vector<double> airflow_values_;
+    std::vector<MetricInfo> fan_metrics_;
+    std::vector<double> fan_values_;
     // devices_ indices, emission order for every folded family.
     std::vector<size_t> dev_order_;
     std::function<void(const std::string&)> note_sink_;

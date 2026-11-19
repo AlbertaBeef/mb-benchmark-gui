@@ -27,7 +27,7 @@ Axelera's stream loop, Qualcomm's per-engine workers) and until 2026-09-13 the
 cap did not reach them: ResNet-50 on MemryX capped to 300 fps still drew 8.24 W
 against 8.18 W uncapped. It now draws 4.04 W.
 
-Twelve stacked graphs, each a scrolling 10-minute window:
+Up to thirteen stacked graphs, each a scrolling 10-minute window:
 
 | Graph | What it shows |
 | ----- | ------------- |
@@ -40,6 +40,7 @@ Twelve stacked graphs, each a scrolling 10-minute window:
 | **Accumulated Energy (J)** | Joules since launch per rail, from the INA228 hardware accumulators — integrated at the ADC rate, not sampled. |
 | **Temperature (°C)** | Per-sensor die temperatures. The legend's per-device summary is the **max** across that card's sensors, not the mean — the hottest die is what throttles, and averaging four buries one running well above its neighbours. |
 | **Frequency (MHz)** | Core clock per NPU. Sits right below temperature because a clock sagging while a die heats *is* thermal throttling. Collapsed by default. |
+| **Airflow (m/s)** | Air velocity from an FS3000 on an [RA6M5 probe board](docs/ra6m5-probe.md). Only present when one is connected; collapsed by default. |
 | **Frame Rate (fps)** | Achieved rate per card. An idle card sits at 0. |
 | **Efficiency (fps/W)** | *Instantaneous*: this second's frame rate divided by this second's watts. |
 | **Energy (mJ/frame)** | This second's watts divided by this second's frame rate — the raw energy cost of a frame. **Lower is better** — the only graph here where that is true. Collapsed by default. |
@@ -187,6 +188,13 @@ all** — no Accelerators row, no Graphs checkbox, no legend swatch and no trace
 host with two backends you get a two-card UI rather than three greyed-out
 placeholders. Its telemetry still graphs if the hardware is there, since that
 comes from sysfs rather than the SDK. The build works on any host.
+
+The same goes for a card whose SDK **is** built in but whose hardware is not
+fitted: at startup the app looks for each M.2 card's PCI vendor id in sysfs
+(no vendor API, nothing that can hang), so a host with all four SDKs and one
+card shows one card. A card that is on the bus but not working is still shown,
+and reports its load error. The startup log says which cards were hidden and
+why; set `MB_BENCH_ALL_ACCELS=1` to show every compiled-in card regardless.
 
 Greying therefore has exactly one meaning: the card is here, but the selected
 model has no artifact for it (hover for which — not downloaded yet, or no build
@@ -694,6 +702,15 @@ and feeds nothing. Search order:
 2. `<repo>/config/ina228.conf` — resolved relative to the binary, so it works
    from any working directory
 3. `$XDG_CONFIG_HOME/mb-benchmark-gui/ina228.conf` (else `~/.config/…`)
+
+An INA228 on an [RA6M5 probe board](docs/ra6m5-probe.md) is mapped in the same
+file, keyed by the board's **USB serial number** instead of a port-path — the
+board has one, so the mapping follows it between ports. The startup log prints
+the serial of an unmapped board:
+
+```ini
+4201286835363532A8CC46534E4B2CC6 = MemryX, invert
+```
 
 ## Automation
 

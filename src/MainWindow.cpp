@@ -110,6 +110,14 @@ std::string fmt_freq(double v) {
     std::snprintf(b, sizeof(b), "%.0f MHz", v);
     return b;
 }
+// Air velocity. Two decimals: the FS3000-1005 spans 0-7.23 m/s and a fan
+// stepping up is a few tenths.
+std::string fmt_mps(double v) {
+    if (std::isnan(v)) return "—";
+    char b[24];
+    std::snprintf(b, sizeof(b), "%.2f m/s", v);
+    return b;
+}
 std::string fmt_fps(double v) {
     char b[24];
     std::snprintf(b, sizeof(b), "%.1f", v);
@@ -208,6 +216,23 @@ MainWindow::MainWindow(AutomationPlan plan)
     std::vector<std::string> notes;
     probes_.discover(&notes);
     catalog_.discover(&notes);
+    // Which cards the UI offers, and why the rest are hidden. One note, led by
+    // a word that is not a card name and free of ';': the plotter splits the
+    // startup note on ';' and reads any "<Card>: …" part as that card's sensor
+    // line, so per-card entries here would be mistaken for probe results.
+    {
+        std::string shown, hidden;
+        for (int i = 0; i < kAccelCount; ++i) {
+            const Accel a = accel_at(i);
+            const char* why = accel_hidden_reason(a);
+            std::string& out = *why ? hidden : shown;
+            if (!out.empty()) out += ", ";
+            out += accel_name(a);
+            if (*why) out += std::string(" (") + why + ")";
+        }
+        notes.push_back("accelerators shown: " + (shown.empty() ? "none" : shown) +
+                        (hidden.empty() ? "" : " · hidden: " + hidden));
+    }
 
     // Open the CSV now: the header needs the metric lists, which are fixed for
     // the process lifetime once discover() has run. Column names mirror
@@ -240,6 +265,10 @@ MainWindow::MainWindow(AutomationPlan plan)
         add(probes_.syscurrent_metrics());
         add(probes_.syspower_metrics());
         add(probes_.current_metrics());
+        // Appended last so every column before it keeps its position — and it
+        // must stay last in the telem insert below, which mirrors this order.
+        add(probes_.airflow_metrics());
+        add(probes_.fan_metrics());   // after airflow, for the same reason
         const std::string path = Logger::default_path();
         if (!path.empty() && log_.open(path, cols))
             notes.push_back("logging to " + path);
@@ -316,6 +345,14 @@ MainWindow::MainWindow(AutomationPlan plan)
         sigc::mem_fun(*this, &MainWindow::apply_time_range));
     controls_->signal_graph_filter_changed().connect(
         sigc::mem_fun(*this, &MainWindow::apply_graph_filter));
+    controls_->signal_fan_duty_changed().connect([this](double pct) {
+        // A setting that changes what the airflow and temperature columns
+        // measure, so it goes in the log; the readback in FAN_DUTY confirms it.
+        char b[64];
+        std::snprintf(b, sizeof b, "fan duty set to %.0f %%", pct);
+        if (!probes_.set_fan_duty(pct)) std::strcat(b, " — no board accepted it");
+        log_.note(b);
+    });
     controls_->signal_legends_changed().connect([this] {
         const bool vis = controls_->legends_shown();
         for (Gtk::Widget* g : legend_grids_)
@@ -515,6 +552,55 @@ MainWindow::MainWindow(AutomationPlan plan)
                              &freq_avg_labels_, &freq_rows_, /*min_axis_max=*/1000.0),
         /*expanded=*/false));
 
+    // Airflow, after Temperature and Frequency: the three are read together —
+    // a die heating, its clock sagging, and the air that is (or is not) taking
+    // the heat away. Built only when an RA6M5 board carries an FS3000, like
+    // Accumulated Energy without shunts; collapsed by default.
+    //
+    // The fan's rpm and duty join it for now (2026-11-18), scaled onto the
+    // same axis: rpm / 1000 and duty / 10, so a 4300 rpm fan at 100 % draws at
+    // 4.3 and 10 beside air at 0-7 m/s. The legend and the CSV carry the real
+    // values; only the trace is scaled. When the fan earns a graph of its
+    // own, this merge and the scaling go, and nothing else changes.
+    {
+        struct E { MetricInfo m; bool fan; int k; };
+        std::vector<E> es;
+        const auto& am = probes_.airflow_metrics();
+        const auto& fm = probes_.fan_metrics();
+        for (size_t k = 0; k < am.size(); ++k) es.push_back({am[k], false, (int)k});
+        for (size_t k = 0; k < fm.size(); ++k) es.push_back({fm[k], true, (int)k});
+        // The legend groups by contiguous runs of device, so one board's
+        // airflow and fan must sit together.
+        std::stable_sort(es.begin(), es.end(),
+                         [](const E& a, const E& b) { return a.m.device < b.m.device; });
+        for (auto& e : es) {
+            af_metrics_.push_back(e.m);
+            af_src_.push_back({e.fan, e.k});
+        }
+    }
+    if (!af_metrics_.empty()) {
+        graphs->append(make_section(
+            probes_.fan_metrics().empty() ? "Airflow (m/s)"
+                                          : "Airflow (m/s) · Fan (krpm, duty % ÷ 10)",
+            build_metric_section(af_metrics_, colors_for(af_metrics_),
+                                 /*fixed_temp_axis=*/false,
+                                 probes_.fan_metrics().empty()
+                                     ? std::function<std::string(double)>(fmt_mps)
+                                     : [](double v) {
+                                           char b[16];
+                                           std::snprintf(b, sizeof b, "%.1f", v);
+                                           return std::string(b);
+                                       },
+                                 airflow_graph_,
+                                 airflow_values_, "No airflow sensor found.",
+                                 &airflow_max_labels_, &airflow_rows_,
+                                 // Low floor: still air reads ~0.1-0.2 m/s and
+                                 // should not pin to the bottom edge. Max mode
+                                 // grows it toward the part's 7.23 m/s.
+                                 /*min_axis_max=*/1.0),
+            /*expanded=*/false));
+    }
+
     fps_ = build_accel_section(fmt_fps, /*min_axis_max=*/30.0);
     graphs->append(make_section("Frame Rate (fps)", *fps_.root));
 
@@ -588,6 +674,7 @@ MainWindow::MainWindow(AutomationPlan plan)
         scan(probes_.syscurrent_metrics());
         controls_->set_ina228_present(ina228);
         controls_->set_powerz_present(powerz);
+        controls_->set_fan_present(probes_.has_fan_control());
     }
 
     apply_range_mode();
@@ -1262,6 +1349,7 @@ void MainWindow::apply_graph_filter() {
     by_device(curr_graph_, probes_.current_metrics(), curr_rows_);
     by_device(temp_graph_, probes_.temp_metrics(), temp_rows_);
     by_device(freq_graph_, probes_.freq_metrics(), freq_rows_);
+    by_device(airflow_graph_, af_metrics_, airflow_rows_);
 
     // Benchmark graphs: exactly one series per card, in Accel order, with the
     // legend cell beside it.
@@ -1285,7 +1373,7 @@ std::vector<GraphArea*> MainWindow::all_graphs() {
     std::vector<GraphArea*> v;
     for (GraphArea* g : {sysvbus_graph_, syscurr_graph_, syspower_graph_,
                          vbus_graph_, curr_graph_, power_graph_, accum_graph_,
-                         temp_graph_, freq_graph_,
+                         temp_graph_, freq_graph_, airflow_graph_,
                          fps_.graph, eff_.graph, energy_.graph}) {
         if (g) v.push_back(g);
     }
@@ -1458,6 +1546,56 @@ bool MainWindow::on_tick() {
             }
             a.label->set_text(cnt ? "avg " + fmt_freq(sum / cnt) : "avg —");
         }
+    }
+
+    // Airflow. Max aggregate: with several sensors the question is whether ANY
+    // air is moving past a part, and a mean would dilute one live duct.
+    // The aggregate is over airflow only — a max across m/s, rpm and % would
+    // be meaningless.
+    const auto& afv = probes_.airflow_values();
+    {
+        const auto& fnv = probes_.fan_values();
+        const int n = static_cast<int>(af_src_.size());
+        std::vector<double> raw(n), plot(n);
+        std::vector<bool> is_air(n);
+        for (int i = 0; i < n; ++i) {
+            const auto [fan, k] = af_src_[i];
+            const auto& src = fan ? fnv : afv;
+            raw[i] = k < static_cast<int>(src.size()) ? src[k] : std::nan("");
+            const std::string& unit = af_metrics_[i].unit;
+            is_air[i] = !fan;
+            plot[i] = !fan ? raw[i] : unit == "rpm" ? raw[i] / 1000.0 : raw[i] / 10.0;
+        }
+        if (airflow_graph_ && n > 0 && n == airflow_graph_->series_count()) {
+            airflow_graph_->push(plot);
+            for (int i = 0; i < n && i < static_cast<int>(airflow_values_.size()); ++i) {
+                std::string t = "—";
+                if (is_air[i]) {
+                    t = fmt_mps(raw[i]);
+                } else if (!std::isnan(raw[i])) {
+                    char b[24];
+                    std::snprintf(b, sizeof b, af_metrics_[i].unit == "rpm"
+                                                   ? "%.0f rpm" : "%.0f %%", raw[i]);
+                    t = b;
+                }
+                airflow_values_[i]->set_text(t);
+            }
+            for (const auto& a : airflow_max_labels_) {
+                double hi = -std::numeric_limits<double>::infinity();
+                for (int k = a.start; k < a.start + a.count && k < n; ++k) {
+                    if (!is_air[k] || !counted(airflow_graph_, k)) continue;
+                    if (!std::isnan(raw[k]) && raw[k] > hi) hi = raw[k];
+                }
+                a.label->set_text(std::isinf(hi) ? (a.count && !is_air[a.start] ? "" : "max —")
+                                                 : "max " + fmt_mps(hi));
+            }
+        }
+        // Seed the panel's duty control from the board, once.
+        for (int i = 0; i < n; ++i)
+            if (!is_air[i] && af_metrics_[i].unit == "%" && !std::isnan(raw[i])) {
+                controls_->set_fan_duty_readback(raw[i]);
+                break;
+            }
     }
 
     const auto& pv = probes_.power_values();
@@ -1669,6 +1807,9 @@ bool MainWindow::on_tick() {
         telem.insert(telem.end(), sp.begin(), sp.end());
         const auto& av = probes_.current_values();
         telem.insert(telem.end(), av.begin(), av.end());
+        telem.insert(telem.end(), afv.begin(), afv.end());
+        const auto& fnv = probes_.fan_values();
+        telem.insert(telem.end(), fnv.begin(), fnv.end());
 
         Logger::Row row;
         row.telemetry = &telem;

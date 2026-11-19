@@ -129,7 +129,8 @@ Three layers, cleanly separated. Keep it that way.
   (the original describes a Vala caller). QNN is never linked — the shim
   `dlopen`s a backend library and asks it for an interface struct, which is why
   CMake needs only headers and `libdl`.
-- **A card the build has no backend for is hidden completely.** `accel_present()`
+- **A card the build has no backend for — or, since 2026-11-16, whose hardware
+  is not on the PCI bus — is hidden completely.** `accel_present()`
   in `Catalog.h` is the single question every UI site asks: no Inference
   checkbox, no Accelerators row, no legend entry, no
   trace, and no mention on the model rows' card line.
@@ -144,12 +145,30 @@ Three layers, cleanly separated. Keep it that way.
   "SDK not found" tooltip branch.
 
   Three implementation notes that are easy to get wrong:
-  - **`accel_present()` is build-time only** (`accel_compiled_in()`). It
-    deliberately does *not* detect a compiled-in card whose hardware is
-    unplugged: that needs each vendor's enumeration API on the GUI thread at
-    startup, and a false negative would hide a working card — worse than showing
-    one that then reports a clear load error. Extend there, not at the call
-    sites.
+  - **`accel_present()` = compiled in AND enumerated on the PCI bus**
+    (2026-11-16). It was build-time only until then, on the argument that
+    detecting hardware needed each vendor's enumeration API on the GUI thread,
+    and that a false negative would hide a working card. That cost a real
+    problem: the Strix Halo has every SDK installed and only a Hailo-8 fitted,
+    so it showed four cards, and a run with the absent three ticked sat in
+    `starting` for its whole length and took ~20 s to Stop while MemryX's
+    connect timed out. The check is now **pure sysfs**: any
+    `/sys/bus/pci/devices/*/vendor` equal to the card's id — `0x1e60` Hailo,
+    `0x1ff4` DeepX, `0x1fe9` MemryX, `0x1f9d` Axelera, the same ids the
+    telemetry probes and `npu-status.sh` use. No vendor API, no device open,
+    nothing that can block on a wedged card.
+    **It tests enumeration, deliberately NOT driver binding**: a card on the bus
+    with no driver (the MemryX D3cold state) is still shown and fails its load
+    with a clear error. Hiding is reserved for "not physically there", which is
+    the false-negative the original rule was guarding against. Qualcomm is part
+    of the SoC and stays build-time. Scanned once per card per process (the
+    panel is built once; a hot-plugged card could not appear anyway).
+    `$MB_BENCH_ALL_ACCELS=1` restores the build-time rule. `accel_hidden_reason()`
+    says which test failed, and the startup note logs it
+    (`accelerators shown: Hailo · hidden: Axelera (compiled in, but no such PCI
+    device), …` — one note, no `;`, because the plotter splits the startup note
+    on `;` and reads any `<Card>: …` part as a probe line). Extend there, not at
+    the call sites.
   - **Series counts do not change.** `fps_`/`eff_`/`energy_` still have
     `kAccelCount` series in `Accel` order; a hidden card keeps its slot and is
     hidden with `set_series_visible(i, false)`. The engine still folds onto
@@ -816,7 +835,8 @@ Three layers, cleanly separated. Keep it that way.
 
 - **Graph order is System Voltage, System Current, System Power, Accelerator
   Voltage, Accelerator Current, Accelerator Power, Accumulated Energy,
-  Temperature, Frequency, Frame Rate, Efficiency, Energy.** Each triplet reads
+  Temperature, Frequency, Airflow, Frame Rate, Efficiency, Energy.** Airflow
+  exists only with an RA6M5 board carrying an FS3000. Each triplet reads
   voltage -> current -> power, because the meter measures V and I and *derives*
   W; board total first, then the per-card breakdown inside it. The telemetry graphs
   lead because they are live with no run in progress.
@@ -901,9 +921,9 @@ Three layers, cleanly separated. Keep it that way.
 
 ## Telemetry families (Probes)
 
-`Probes` publishes **ten** flat metric families — temperature, power,
-frequency, energy, charge, voltage, current, and the system voltage / current /
-power of an inline supply meter — each with an aligned value
+`Probes` publishes **twelve** flat metric families — temperature, power,
+frequency, energy, charge, voltage, current, the system voltage / current /
+power of an inline supply meter, airflow and fan (RA6M5 board) — each with an aligned value
 vector refreshed by `poll()`. Frequency alone follows plain discovery order,
 because a clock always belongs to the card reporting it and there is nothing to
 fold; the other six use `alias_device_order()` and the INA228 fold.
@@ -1142,7 +1162,9 @@ ported too — an earlier version of this paragraph said it was not, and that wa
 already stale. Everything INA228 **has** been: energy/charge and the
 die-temperature fold (2026-09-03), then `VBUS`, `CURRENT` with the per-rail
 `invert` flag, the latched undervoltage check and `plausible_power()`
-(2026-09-07 … 09-12). Current line counts are **1950 here against 1831 there**.
+(2026-09-07 … 09-12). **Not ported: the RA6M5 probe and the airflow family
+(2026-11-16)**, nor the `rails::` move of the config loader that came with them
+— port those as one hunk set if the sibling ever needs the board.
 
 **Three divergences bit during the frequency port, and each would have silently
 no-op'd a `str.replace`** — they are the concrete form of "port hunk by hunk":
@@ -1165,6 +1187,67 @@ signature difference (the sibling's helpers take no `order` argument).
 sibling's is `$MB_INA228_CONFIG` → `~/.config` only, with no repo copy. A
 `config/ina228.conf` was created in the sibling once and was **inert** — it is
 never consulted. Don't add one back.
+
+### The RA6M5 probe board (2026-11-16)
+
+A SparkFun Thing Plus RA6M5 running `firmware/mb-probe-ra6m5/` is the second
+kind of INA228 carrier, **alongside** the FT232H — and the opposite design: the
+FT232H is a dumb I2C bridge driven from the host, the RA6M5 is *smart*. Its
+firmware owns the sensors, takes every INA228 conversion (~5 Hz) and every
+FS3000 sample (8 Hz), and reports per-period mean/min/max as `key=value` text
+lines over USB CDC. **`docs/ra6m5-probe.md` has the protocol, the one-time
+toolchain setup and the first readings** — read it before touching either side.
+`tools/flash-ra6m5.sh` builds and flashes with no button press.
+
+Sensors today: INA228 (0x40), FS3000-1005 airflow (0x28), the EMC2101 fan
+controller (0x4C) and a MAX31855K thermocouple on SPI (CS = D0). Of the EMC2101,
+only the die temperature reaches the GUI. Both temperatures sit
+on the Temperature graph as `RA6M5 EMC2101` and `RA6M5 MAX31855` (columns
+`usb <port>_EMC2101` / `_MAX31855`), **named after the chip** because two
+share one family on one probe and a bare `TEMP` would collide. An open
+thermocouple is a gap, not a value. The fan (fw 0.4.0) is a `fan` family of
+its own — `FAN_RPM` / `FAN_DUTY` columns, real units — **drawn on the Airflow
+graph for now**, scaled onto that axis (rpm / 1000, duty / 10) at `push()`
+only; separating it later is a MainWindow-only change (`af_metrics_` /
+`af_src_`). **Telemetry -> Fan is the first control in that section that
+ACTS on hardware**: every change sends `fan <percent>` and logs a note, and
+it seeds itself from the board's reported duty rather than a default, so
+launching the app never stops a running fan. The tach reads **only with the
+breakout's `TACH` solder jumper bridged** (it ships open); see the doc. Two
+boards exist (serials ending `A8CC…` and `3BA5…`), both mapped to Hailo. 0x36 on the bus is
+the board's own MAX17048 fuel gauge and is ignored.
+
+Host side, in `Probes.cpp` — things that are deliberate:
+- **One board is TWO `DeviceProbe`s sharing one `ra6m5::Link`.**
+  `RA6M5InaProbe` mirrors `INA228Probe` exactly (name scheme, colour alias, the
+  same six families and labels), so the existing fold makes it
+  `<Card> INA228 <FAMILY>` and every consumer — CSV, plotter, Telemetry ->
+  INA228 switch, `power_for_device()` — treats it as just another shunt, with
+  no change. `RA6M5BoardProbe` ("RA6M5") carries what belongs to **no card**:
+  airflow now, fan and thermocouple later. Folding those would mislabel them.
+- **The fold names a family by its suffix alone**, so a folded probe can carry
+  only ONE metric per family: a second (say `vbus_min`, or a thermocouple in
+  the temperature family) would collide with `<Card> INA228 VBUS/TEMP`. That is
+  why the min/max the firmware reports are not on the host yet, and why the
+  thermocouple must go on the board probe. Fixing it means teaching `emit()` a
+  per-metric suffix — do that deliberately, since it renames CSV columns.
+- **Mapped in `ina228.conf` by USB serial number**, not port-path — the board
+  has one (the RA6M5 unique id). The board's startup note prints the serial
+  and, when unmapped, the exact line to add; that note is why the board probe
+  is always added even with no airflow sensor.
+- **`reset_acc` is sent at discovery**, matching the FT232H path's RSTACC
+  pulse; otherwise energy starts at whatever the board integrated since it was
+  flashed (249 J the first time it was tested).
+- **The firmware is the only reader of `DIAG_ALRT`**, so the undervoltage note
+  counts every flagged conversion rather than one sampled latch per second. The
+  host counts `ina228.uv` once per D line (`seq`), because the host tick and
+  the firmware period are not phase-locked and one line can be seen twice.
+- **No reconnect.** The metric list is fixed at discovery; an unplugged or
+  re-flashed board goes stale after 3 s and every value becomes a gap, with one
+  transition note. Restart the app after flashing.
+- Unmapped shunts number `INA228#<n>` across both carriers, from one counter.
+- Two INA228s mapped to the **same** card (an FT232H and an RA6M5) would emit
+  duplicate CSV column names. Not guarded; don't map both.
 
 ## API modes (Sync / Async)
 
