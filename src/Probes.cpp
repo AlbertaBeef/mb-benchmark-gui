@@ -1689,8 +1689,8 @@ private:
 //     — so the existing fold turns it into `<Card> INA228 <FAMILY>` and every
 //     consumer (CSV, plotter, Telemetry -> INA228 switch, power_for_device)
 //     treats it as just another shunt;
-//   - RA6M5BoardProbe ("RA6M5"), carrying what belongs to no card: airflow
-//     now, the fan and the thermocouple later. Folding those onto a card would
+//   - RA6M5BoardProbe ("RA6M5"), carrying what belongs to no card: airflow,
+//     the fan and the thermocouple. Folding those onto a card would
 //     mislabel them, and in the temperature family a folded thermocouple would
 //     collide with `<Card> INA228 TEMP`, because the fold names every metric of
 //     a family by the family suffix alone.
@@ -1982,6 +1982,13 @@ public:
             airflow_metrics_.push_back({name_ + " AIRFLOW", "m/s"});
             airflow_values_.assign(1, kNaN);
         }
+        // Fan speed and duty. Labelled `FAN RPM` / `FAN DUTY`, so the CSV
+        // columns are `usb <port>_FAN_RPM` / `_FAN_DUTY`.
+        if (link_->has_channel("emc2101.rpm")) {
+            fan_metrics_.push_back({name_ + " FAN RPM", "rpm"});
+            fan_metrics_.push_back({name_ + " FAN DUTY", "%"});
+            fan_values_.assign(2, kNaN);
+        }
         // Temperatures are labelled after the chip, not "TEMP": two share this
         // family on this probe, and the CSV column is `usb <port>_<suffix>`.
         // EMC2101 = that chip's own die; MAX31855 = the thermocouple junction
@@ -2000,7 +2007,7 @@ public:
                                " = <card>` to ina228.conf)"
                          : ", INA228 -> " + ina_label_;
         if (link_->sensor("fs3000")) note_ += ", FS3000 airflow";
-        if (link_->sensor("emc2101")) note_ += ", EMC2101 (read-only)";
+        if (link_->sensor("emc2101")) note_ += ", EMC2101 fan";
         if (link_->sensor("max31855")) note_ += ", MAX31855K thermocouple";
         startup_note_ = note_;
         return true;
@@ -2010,6 +2017,16 @@ public:
         link_->pump();
         if (!airflow_values_.empty())
             airflow_values_[0] = link_->value("fs3000.airflow");
+        if (!fan_values_.empty()) {
+            // The firmware reports rpm as nan when every sample in the period
+            // was a stall (tach count 0xFFFF: no edges, i.e. below ~82 rpm).
+            // That IS a reading — a stopped fan — so it plots as 0, not a gap.
+            // A stale link still makes both values nan.
+            double rpm = link_->value("emc2101.rpm");
+            if (std::isnan(rpm) && link_->value("emc2101.stall") > 0) rpm = 0.0;
+            fan_values_[0] = rpm;
+            fan_values_[1] = link_->value("emc2101.duty");
+        }
         // An open or shorted thermocouple reports nan (the firmware counts it
         // in max31855.fault), so a disconnected probe is a gap, not a value.
         for (size_t i = 0; i < temp_channels_.size(); ++i)
@@ -2018,6 +2035,15 @@ public:
         note_ = link_->stale() ? (link_->error.empty() ? std::string("no data from board")
                                                        : link_->error)
                                : startup_note_;
+    }
+
+    // `fan <pct>`; the firmware answers OK/E, which pump() drains — the duty
+    // read back in the next D line is the confirmation.
+    bool set_fan_duty(double pct) override {
+        if (!link_->sensor("emc2101")) return false;
+        char b[32];
+        std::snprintf(b, sizeof b, "fan %.1f", pct);
+        return link_->send(b);
     }
 
 private:
@@ -2241,6 +2267,7 @@ void Probes::flatten() {
     sysvoltage_metrics_.clear();
     syscurrent_metrics_.clear();
     airflow_metrics_.clear();
+    fan_metrics_.clear();
     auto stamp = [](MetricInfo& m, size_t k, DeviceProbe* d) {
         m.device = static_cast<int>(k);
         m.device_name = d->name();
@@ -2296,6 +2323,7 @@ void Probes::flatten() {
     // Only an RA6M5 board probe publishes airflow, and it never carries a
     // colour alias, so the suffix is never applied — it is here for symmetry.
     emit(dev_order_, &DeviceProbe::airflow_metrics, " AIRFLOW", airflow_metrics_);
+    emit(dev_order_, &DeviceProbe::fan_metrics, " FAN", fan_metrics_);
 
     // Frequency follows plain discovery order — there is no INA228-style
     // folding to do, since a clock always belongs to the card reporting it.
@@ -2315,6 +2343,19 @@ void Probes::flatten() {
     sysvoltage_values_.assign(sysvoltage_metrics_.size(), kNaN);
     syscurrent_values_.assign(syscurrent_metrics_.size(), kNaN);
     airflow_values_.assign(airflow_metrics_.size(), kNaN);
+    fan_values_.assign(fan_metrics_.size(), kNaN);
+}
+
+bool Probes::has_fan_control() const {
+    for (const auto& d : devices_)
+        if (!d->fan_metrics().empty()) return true;
+    return false;
+}
+
+bool Probes::set_fan_duty(double pct) {
+    bool any = false;
+    for (auto& d : devices_) any = d->set_fan_duty(pct) || any;
+    return any;
 }
 
 void Probes::set_busy(bool busy) {
@@ -2357,6 +2398,7 @@ void Probes::poll() {
     fill(dev_order_, &DeviceProbe::sysvoltage_values, sysvoltage_values_);
     fill(dev_order_, &DeviceProbe::syscurrent_values, syscurrent_values_);
     fill(dev_order_, &DeviceProbe::airflow_values, airflow_values_);
+    fill(dev_order_, &DeviceProbe::fan_values, fan_values_);
     size_t fi = 0;
     for (auto& d : devices_)
         for (double v : d->freq_values()) freq_values_[fi++] = v;

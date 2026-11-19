@@ -157,7 +157,18 @@ airflow appears as `RA6M5 AIRFLOW` on its own **Airflow (m/s)** graph and CSV
 column `usb <port>_AIRFLOW`, the EMC2101 die as `RA6M5 EMC2101` and the
 thermocouple as `RA6M5 MAX31855` on the Temperature graph
 (`usb <port>_EMC2101`, `usb <port>_MAX31855`), and the board is mapped in `config/ina228.conf` by
-USB serial number. The host takes the per-period **means**; the min/max columns
+USB serial number.
+
+**The fan** (2026-11-18) is its own `fan` family — `RA6M5 FAN RPM` and
+`RA6M5 FAN DUTY`, CSV `usb <port>_FAN_RPM` / `_FAN_DUTY`, real units — but is
+drawn on the Airflow graph for now, scaled onto its axis (rpm / 1000, duty /
+10; the section title says so, the legend shows real values). A period in
+which every tach sample stalled is logged as **0 rpm, not a gap**: with the
+TACH pull-up fitted a stall means a stopped fan. **Telemetry -> Fan** in the
+panel sends `fan <percent>` on every change and logs `fan duty set to N %`;
+it starts at the duty the board reports, because the firmware keeps a duty
+across host disconnects and opening the app must not stop a running fan.
+Nothing stops the fan when the app exits either. The host takes the per-period **means**; the min/max columns
 are on the wire but not yet consumed.
 
 ## Things that are deliberate

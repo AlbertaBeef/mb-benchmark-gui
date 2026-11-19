@@ -15,6 +15,7 @@
 
 #include <glibmm/markup.h>
 #include <pangomm/layout.h>
+#include <cmath>
 
 namespace {
 constexpr int kDefaultFps = 30;
@@ -743,6 +744,33 @@ ControlPanel::ControlPanel(const Catalog& catalog)
             "screen, and drops them from the axis. They are read and logged "
             "either way.");
 
+        // Fan: a duty control rather than a display switch. Its traces sit on
+        // the Airflow graph and are always drawn.
+        {
+            fan_row_ = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
+            auto* lbl = Gtk::make_managed<Gtk::Label>("Fan");
+            lbl->set_xalign(0.0);
+            lbl->set_width_chars(12);
+            fan_row_->append(*lbl);
+            fan_duty_.set_adjustment(Gtk::Adjustment::create(0, 0, 100, 5, 10));
+            fan_duty_.set_numeric(true);
+            fan_duty_.set_tooltip_text(
+                "PWM duty of the fan on the RA6M5 probe board (EMC2101), in "
+                "percent. Applied as soon as it changes, and logged. The board "
+                "keeps it after the app exits — set 0 to stop the fan.");
+            fan_row_->append(fan_duty_);
+            auto* unit = Gtk::make_managed<Gtk::Label>("% duty");
+            unit->add_css_class("dim-label");
+            fan_row_->append(*unit);
+            fan_row_->set_visible(false);
+            conns_.push_back(fan_duty_.signal_value_changed().connect([this] {
+                if (fan_syncing_) return;
+                fan_synced_ = true;   // a user change ends the readback sync
+                sig_fan_duty_.emit(fan_duty_.get_value());
+            }));
+            box->append(*fan_row_);
+        }
+
         frame->set_child(*box);
         append(*frame);
     }
@@ -1092,6 +1120,16 @@ void ControlPanel::set_ina228_present(bool present) {
 }
 void ControlPanel::set_powerz_present(bool present) {
     if (powerz_row_) powerz_row_->set_visible(present);
+}
+void ControlPanel::set_fan_present(bool present) {
+    if (fan_row_) fan_row_->set_visible(present);
+}
+void ControlPanel::set_fan_duty_readback(double pct) {
+    if (fan_synced_ || std::isnan(pct)) return;
+    fan_synced_ = true;
+    fan_syncing_ = true;
+    fan_duty_.set_value(pct);
+    fan_syncing_ = false;
 }
 
 bool ControlPanel::pmd2_shown(const std::string& measurement) const {

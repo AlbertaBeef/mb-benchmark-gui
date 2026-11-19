@@ -921,9 +921,9 @@ Three layers, cleanly separated. Keep it that way.
 
 ## Telemetry families (Probes)
 
-`Probes` publishes **eleven** flat metric families — temperature, power,
+`Probes` publishes **twelve** flat metric families — temperature, power,
 frequency, energy, charge, voltage, current, the system voltage / current /
-power of an inline supply meter, and airflow (RA6M5 board) — each with an aligned value
+power of an inline supply meter, airflow and fan (RA6M5 board) — each with an aligned value
 vector refreshed by `poll()`. Frequency alone follows plain discovery order,
 because a clock always belongs to the card reporting it and there is nothing to
 fold; the other six use `alias_device_order()` and the INA228 fold.
@@ -1205,11 +1205,15 @@ only the die temperature reaches the GUI. Both temperatures sit
 on the Temperature graph as `RA6M5 EMC2101` and `RA6M5 MAX31855` (columns
 `usb <port>_EMC2101` / `_MAX31855`), **named after the chip** because two
 share one family on one probe and a bare `TEMP` would collide. An open
-thermocouple is a gap, not a value. RPM and duty are on the wire but not on the host
-yet: the fan turns under `fan <percent>` (a host command, fw 0.4.0) and the
-tach reads cleanly **only with the breakout's `TACH` solder jumper bridged** —
-it ships open, and without it the tach reads stalled (see the doc). The GUI
-does not drive the fan yet. Two
+thermocouple is a gap, not a value. The fan (fw 0.4.0) is a `fan` family of
+its own — `FAN_RPM` / `FAN_DUTY` columns, real units — **drawn on the Airflow
+graph for now**, scaled onto that axis (rpm / 1000, duty / 10) at `push()`
+only; separating it later is a MainWindow-only change (`af_metrics_` /
+`af_src_`). **Telemetry -> Fan is the first control in that section that
+ACTS on hardware**: every change sends `fan <percent>` and logs a note, and
+it seeds itself from the board's reported duty rather than a default, so
+launching the app never stops a running fan. The tach reads **only with the
+breakout's `TACH` solder jumper bridged** (it ships open); see the doc. Two
 boards exist (serials ending `A8CC…` and `3BA5…`), both mapped to Hailo. 0x36 on the bus is
 the board's own MAX17048 fuel gauge and is ignored.
 

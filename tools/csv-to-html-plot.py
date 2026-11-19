@@ -160,7 +160,7 @@ _METRIC_RE = re.compile(
     r"|SYS_VBUS|SYS_CURRENT|SYS_POWER"
     r"|(?:" + _PMD2_RAILS + r")_(?:POWER|VBUS|CURRENT)"
     r"|POW|TEMP|TS\d+|T\d+|N\d+-\d+|SYS|AI\d+|PCIE\d+|TOTAL|INA228"
-    r"|ENERGY|CHARGE|VBUS|CURRENT|CLK|C\d+|AIRFLOW|EMC2101|MAX31855)$"
+    r"|ENERGY|CHARGE|VBUS|CURRENT|CLK|C\d+|AIRFLOW|FAN_RPM|FAN_DUTY|EMC2101|MAX31855)$"
 )
 
 # Benchmark columns: <vendor>_<metric>, vendor being accel_vendor().
@@ -239,6 +239,11 @@ def _classify_metric(met):
     # `usb <port>_AIRFLOW`. Its own chart: one unit per chart, and it belongs
     # to no card.
     if met == "airflow":
+        return "airflow"
+    # The fan the same board drives (`_FAN_RPM`, `_FAN_DUTY`). On the Airflow
+    # chart for now, scaled the way the GUI scales it (rpm / 1000, duty / 10);
+    # the dataset label says so.
+    if met in ("fan_rpm", "fan_duty"):
         return "airflow"
     # Charge is read and logged but deliberately not plotted: it is coulombs,
     # and a chart carries one unit, so it cannot share the joules axis. It is
@@ -871,7 +876,14 @@ def build_datasets(rows, telemetry, bench, ident, overlays, t0, bucket_size):
         elif kind == "syscurrent":
             sysamps.append(style(label, series, color, [], 0.1))
         elif kind == "airflow":
-            airflow.append(style(label, series, color, [], 0.1))
+            if met in ("fan_rpm", "fan_duty"):
+                div, note = (1000.0, "krpm") if met == "fan_rpm" else (10.0, "% ÷ 10")
+                series = [{"x": p["x"], "y": None if p["y"] is None else p["y"] / div}
+                          for p in series]
+                label = f"{label} ({note})"
+                airflow.append(style(label, series, color, [6, 4], 0.1))
+            else:
+                airflow.append(style(label, series, color, [], 0.1))
 
     # Benchmark series. These need no inference — the column names the vendor.
     bench_by = {(v, met): (i, raw) for v, met, i, raw in bench}
@@ -1226,8 +1238,12 @@ def main():
          "y_label": "temperature (°C)", "unit": "°C", "zero_based": False},
         {"title": "Frequency", "canvas": "freqChart", "datasets": freq,
          "y_label": "clock (MHz)", "unit": "MHz", "zero_based": True},
-        {"title": "Airflow", "canvas": "airflowChart", "datasets": airflow,
-         "y_label": "air velocity (m/s)", "unit": "m/s", "zero_based": True},
+        {"title": "Airflow" + (" · Fan" if any("FAN_" in d["label"] for d in airflow) else ""),
+         "canvas": "airflowChart", "datasets": airflow,
+         "y_label": "air velocity (m/s) · fan krpm · duty % ÷ 10"
+                    if any("FAN_" in d["label"] for d in airflow) else "air velocity (m/s)",
+         "unit": "" if any("FAN_" in d["label"] for d in airflow) else "m/s",
+         "zero_based": True},
         {"title": "Frame Rate", "canvas": "fpsChart", "datasets": fps,
          "y_label": "frame rate (fps)", "unit": "fps", "zero_based": True},
         {"title": "Efficiency", "canvas": "effChart", "datasets": eff,
