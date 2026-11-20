@@ -1,6 +1,8 @@
 #include "Automation.h"
 
+#include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
 
@@ -42,6 +44,17 @@ bool parse_minutes(const std::string& v, double& out) {
     const double m = std::strtod(t.c_str(), &end);
     if (end == t.c_str() || *end != '\0' || m < 0) return false;
     out = m * 60.0;
+    return true;
+}
+
+// A bare number, for the fan's percentages. Signed: fan.step may ramp down.
+bool parse_num(const std::string& v, double& out) {
+    const std::string t = trim(v);
+    if (t.empty()) return false;
+    char* end = nullptr;
+    const double d = std::strtod(t.c_str(), &end);
+    if (end == t.c_str() || *end != '\0') return false;
+    out = d;
     return true;
 }
 
@@ -122,6 +135,53 @@ bool apply_accel_key(AutomationSettings& s, const std::string& vendor,
     return false;
 }
 
+// `fan` and `fan.<knob>`. Kept apart from apply_accel_key() because the fan is
+// not a card: "fan" has no dot at all, and "fan.start" has one whose left half
+// is not a vendor, so both would fall through to "unknown accelerator".
+bool apply_fan_key(FanPlan& f, const std::string& knob, const std::string& val,
+                   std::string& why) {
+    const std::string k = lower(knob);
+    // Bare `fan = N` is the duty to hold.
+    if (k.empty() || k == "duty") {
+        if (!parse_num(val, f.duty) || f.duty < 0 || f.duty > 100) {
+            why = "fan must be a percentage 0..100, got '" + val + "'";
+            return false;
+        }
+        return true;
+    }
+    if (k == "start" || k == "max") {
+        double* dst = (k == "start") ? &f.start : &f.max;
+        if (!parse_num(val, *dst) || *dst < 0 || *dst > 100) {
+            why = "fan." + k + " must be a percentage 0..100, got '" + val + "'";
+            return false;
+        }
+        return true;
+    }
+    if (k == "step") {
+        if (!parse_num(val, f.step) || f.step < -100 || f.step > 100) {
+            why = "fan.step must be a percentage -100..100, got '" + val + "'";
+            return false;
+        }
+        return true;
+    }
+    // Intervals are minutes in the file like every other duration, so a plan
+    // never mixes units — "fan.every = 1" is once a minute.
+    if (k == "every" || k == "after") {
+        double* dst = (k == "every") ? &f.every : &f.after;
+        if (!parse_minutes(val, *dst)) {
+            why = "fan." + k + " must be minutes, got '" + val + "'";
+            return false;
+        }
+        if (k == "every" && *dst <= 0) {
+            why = "fan.every must be greater than zero";
+            return false;
+        }
+        return true;
+    }
+    why = "unknown fan setting '" + knob + "'";
+    return false;
+}
+
 // "accelerators = hailo deepx" — the whitelist for a run. Space-separated,
 // because the surrounding per-step syntax already uses commas.
 bool apply_accel_list(AutomationSettings& s, const std::string& val,
@@ -164,9 +224,12 @@ bool apply_setting(AutomationSettings& s, const std::string& key,
     if (lower(key) == "accelerators") return apply_accel_list(s, val, why);
     const std::size_t dot = key.find('.');
     if (dot == std::string::npos) {
+        if (lower(key) == "fan") return apply_fan_key(s.fan, "", val, why);
         why = "unknown key '" + key + "'";
         return false;
     }
+    if (lower(key.substr(0, dot)) == "fan")
+        return apply_fan_key(s.fan, key.substr(dot + 1), val, why);
     return apply_accel_key(s, key.substr(0, dot), key.substr(dot + 1), val, why);
 }
 
@@ -183,8 +246,33 @@ void AccelSettings::overlay(const AccelSettings& o) {
     if (!o.backend.empty())   backend  = o.backend;
 }
 
+void FanPlan::overlay(const FanPlan& o) {
+    if (o.duty  != kUnset) duty  = o.duty;
+    if (o.start != kUnset) start = o.start;
+    if (o.step  != kUnset) step  = o.step;
+    if (o.every != kUnset) every = o.every;
+    if (o.after != kUnset) after = o.after;
+    if (o.max   != kUnset) max   = o.max;
+}
+
+// The ramp is computed from `t` rather than accumulated, so it cannot drift and
+// a missed tick cannot lose a step: at any moment the answer depends only on
+// how far into the run we are.
+double FanPlan::at(double t) const {
+    if (!ramps()) return duty;              // constant, or kUnset = say nothing
+    const double a = (after == kUnset) ? 0.0 : after;
+    // Before the ramp begins the base duty holds — that is the "fan off until
+    // it settles" half of a thermal plan.
+    if (t < a) return duty;
+    double d = start + std::floor((t - a) / every) * step;
+    // `max` is where the ramp stops: a ceiling going up, a floor coming down.
+    if (max != kUnset) d = (step < 0) ? std::max(d, max) : std::min(d, max);
+    return std::min(100.0, std::max(0.0, d));
+}
+
 void AutomationSettings::overlay(const AutomationSettings& o) {
     for (int i = 0; i < kAccelCount; ++i) accel[i].overlay(o.accel[i]);
+    fan.overlay(o.fan);
 }
 
 double AutomationPlan::bench_for(std::size_t i) const {

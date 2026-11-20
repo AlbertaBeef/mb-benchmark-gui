@@ -51,6 +51,10 @@ private:
     void tick_automation();
     void advance_automation_step();
     void tick_automation_end();
+    // Set the fan to whatever the current step wants `t` seconds into its run.
+    // Called at the start of a run and once per tick inside it, so a ramp is
+    // driven by the same clock as everything else automation does.
+    void apply_automation_fan(double t);
     void on_about();
 
     // --- telemetry sections (one row per device, as in mb-powermon-gui) ---
@@ -174,6 +178,13 @@ private:
     // Seconds counted since the plan finished, for the `end` delay before the
     // app closes itself.
     double auto_end_s_ = 0.0;
+    // Last duty automation asked for, so a held or ramped value is sent on
+    // transition rather than every second — the same 'log on change, not on
+    // repeat' rule the notes follow, and it keeps one I2C write per step
+    // instead of one per tick.
+    double auto_fan_last_ = -1.0;
+    // Warned once that the plan wants the fan but no board has one.
+    bool auto_fan_warned_ = false;
     // Set when automation has asked to close. on_tick() bails out immediately
     // on seeing it — see tick_automation_end() for why the close cannot happen
     // inline.

@@ -1,14 +1,31 @@
 # SparkFun Thing Plus RA6M5 — the mb-probe telemetry board.
 #
-#   1b4f:0037  running sketch (USB CDC, /dev/ttyACM*) — dialout already covers it
+#   1b4f:0037  running sketch (USB CDC, /dev/ttyACM*) — what Probes.cpp opens
 #   1b4f:0036  DFU bootloader (double-tap RST) — what arduino-cli/dfu-util flash
 #
 # Without the 0036 line dfu-util fails with LIBUSB_ERROR_ACCESS as a normal user.
+#
+# TWO RULES, AND BOTH ARE NEEDED. They match different devices: a `usb` rule
+# sets the mode on the USB device node (/dev/bus/usb/...), which is what libusb
+# — i.e. dfu-util — opens, and a `tty` rule sets it on /dev/ttyACM*, which is
+# what the app opens. A `usb` rule does NOT reach the tty child, and `uaccess`
+# does not propagate to it either. This file carried only the `usb` form until
+# 2026-11-19, on the assumption that `dialout` covered the port; on a host whose
+# user is not in `dialout` the board enumerated, was mapped, and still could not
+# be read (`Permission denied` on /dev/ttyACM0). Note the attribute spelling
+# differs with the subsystem: ATTR on the usb device itself, ATTRS to reach the
+# parent's from the tty. /etc/udev/rules.d/99-pmd2.rules is the same shape.
+#
 # Named 99- deliberately: a rule sorting before 50-udev-default.rules has its
 # MODE overwritten by the default (see the FTDI entry in CLAUDE.md).
 #
 # Install:
 #   sudo install -m 644 tools/99-thingplus-ra6m5.rules /etc/udev/rules.d/
-#   sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=usb
+#   sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=usb --subsystem-match=tty
+#
+# Verify — both must be writable by you, and the tty must carry the tag:
+#   ls -l /dev/ttyACM* /dev/bus/usb/*/*
+#   udevadm info -q all -n /dev/ttyACM0 | grep CURRENT_TAGS     # expect uaccess
 SUBSYSTEM=="usb", ATTR{idVendor}=="1b4f", ATTR{idProduct}=="0036", MODE="0666", TAG+="uaccess"
 SUBSYSTEM=="usb", ATTR{idVendor}=="1b4f", ATTR{idProduct}=="0037", MODE="0666", TAG+="uaccess"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1b4f", ATTRS{idProduct}=="0037", MODE="0666", TAG+="uaccess"

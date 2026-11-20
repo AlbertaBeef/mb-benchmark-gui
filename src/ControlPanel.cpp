@@ -1124,6 +1124,15 @@ void ControlPanel::set_powerz_present(bool present) {
 void ControlPanel::set_fan_present(bool present) {
     if (fan_row_) fan_row_->set_visible(present);
 }
+void ControlPanel::set_fan_duty(double pct) {
+    if (std::isnan(pct)) return;
+    fan_synced_ = true;          // the plan owns it now; stop taking readbacks
+    // Deliberately NOT guarded by fan_syncing_: the value_changed handler must
+    // fire, because that is what reaches the board. set_value() is idempotent,
+    // so an unchanged duty costs nothing and sends nothing.
+    fan_duty_.set_value(pct);
+}
+
 void ControlPanel::set_fan_duty_readback(double pct) {
     if (fan_synced_ || std::isnan(pct)) return;
     fan_synced_ = true;

@@ -60,6 +60,7 @@ li::marker { color: var(--accent); }
 .finding p { font-size: 14px; color: var(--fg-2); line-height: 1.45; }
 
 .tbl-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); }
+.tbl-wrap.tall { max-height: 420px; overflow-y: auto; }
 table { border-collapse: collapse; width: 100%; font-size: 14px; }
 th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--grid); vertical-align: top; }
 th { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-2); font-weight: 500; white-space: nowrap; }
@@ -89,20 +90,23 @@ footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule);
 <header>
   <div class="eyebrow">mb-benchmark-gui · telemetry hardware</div>
   <h1>RA6M5 probe board exploration</h1>
-  <p class="lede">Bringing up a SparkFun Thing Plus RA6M5 as a smart telemetry probe for an M.2 Hailo-8: rail power, airflow, a PWM fan with tachometer and a thermocouple input, then using it to find out how much cooling the card needs.</p>
+  <p class="lede">Bringing up a SparkFun Thing Plus RA6M5 as a smart telemetry probe for M.2 edge-AI cards: rail power, airflow, a PWM fan with tachometer and a thermocouple input, then using it to find out how much cooling the card needs. Two 125-minute unattended runs on one rig, each with its fan ramp written into the automation plan itself, and <em>only the card changed between them</em> &mdash; a Hailo-8 and then a DeepX DX-M1 in the same M.2 slot, which is what makes the two sets of curves comparable.</p>
   <div class="meta">
-    <span>16–19 Nov 2026</span><span>Host: AMD Strix Halo</span><span>Card: Hailo-8 M.2, ResNet-50, async depth 4</span><span>Firmware: mb-probe-ra6m5 0.4.0</span>
+    <span>16–19 Nov 2026</span><span>Host: AMD EPYC ROMED8-2T</span><span>Cards: Hailo-8 M.2 (depth 8) &middot; DeepX DX-M1 (depth 4)</span><span>ResNet-50 async &middot; Firmware: mb-probe-ra6m5 0.4.0</span>
   </div>
 </header>
 
 <section>
   <div class="head"><h2>Key findings</h2></div>
   <div class="findings">
-    <div class="finding"><div class="num">104 °C</div><p>Hailo-8 die with the fan off under sustained load. With the fan at 100 % it settles at 48 °C.</p></div>
-    <div class="finding"><div class="num">−12 <small>% fps</small></div><p>Thermal throttle at 103.7 °C: the core clock dropped from 400 to 350 MHz and frame rate from about 1190 to 1045 fps.</p></div>
-    <div class="finding"><div class="num">+25 <small>% power</small></div><p>The same 1190 fps cost 4.42 W at 103 °C against 3.53 W at 48 °C. A hot die burns more power for the same work.</p></div>
-    <div class="finding"><div class="num">337 → 267 <small>fps/W</small></div><p>Efficiency at 48 °C against 103 °C: cooling the card is worth 26 % more frames per watt.</p></div>
-    <div class="finding"><div class="num">~25 <small>% duty</small></div><p>Roughly where the fan starts to matter: at 20 % duty the card stopped throttling, and from 25 % the die cooled quickly.</p></div>
+    <div class="finding"><div class="num">28.6 <small>% duty</small></div><p>All the fan the card needs. The throttle released in a single sample &mdash; 1&nbsp;201 &rarr; 1&nbsp;359&nbsp;fps at 99&nbsp;&deg;C &mdash; and never returned over the next 70 minutes. Everything above this is margin.</p></div>
+    <div class="finding"><div class="num">107 &rarr; 63 <small>&deg;C</small></div><p>Hailo-8 die temperature across the ramp: 30 minutes of fan-off soak against the last 20 minutes above 87&nbsp;% duty. The floor arrives at 75&nbsp;% duty; the top quarter of the ramp changes nothing.</p></div>
+    <div class="finding"><div class="num">0.77 <small>W leakage</small></div><p>The <em>same</em> 1&nbsp;372&nbsp;fps costs 5.19&nbsp;W at 100&nbsp;&deg;C and 4.41&nbsp;W at 63&nbsp;&deg;C &mdash; 20.6&nbsp;mW/&deg;C, 15&nbsp;% of card power, for identical work.</p></div>
+    <div class="finding"><div class="num">246 &rarr; 311 <small>fps/W</small></div><p>Hot against cooled, at depth 8: cooling is worth 27&nbsp;% more frames per watt. Both the frame rate and the power move in your favour.</p></div>
+    <div class="finding"><div class="num">&minus;18 <small>vs &minus;8 % fps</small></div><p>What each card loses to its own soak plateau: the Hailo-8 in discrete clock steps (400&rarr;350&rarr;300&nbsp;MHz, 39&nbsp;% of samples), the DX-M1 in a fast shallow dither. Both recover fully below 30&nbsp;% duty.</p></div>
+    <div class="finding"><div class="num">63 &amp; 64 <small>&deg;C</small></div><p>Where both cards end up with the fan at full, from plateaus 18&nbsp;&deg;C apart (107 and 89). Two different heatsinks, two different power levels, one floor &mdash; and it is the rig's, not either card's.</p></div>
+    <div class="finding"><div class="num">9.9 <small>vs 41 %</small></div><p>The DX-M1 <em>does</em> throttle, and its clock column hides it. An instantaneous 1&nbsp;Hz read catches 800&nbsp;MHz in a tenth of the samples; the frame rate says the card is there four times as often. Judge throttling from fps, never from the clock.</p></div>
+    <div class="finding"><div class="num">11.9 &rarr; 7.3 <small>&deg;C/W</small></div><p>The DX-M1 on the same rig, fan off against fan full &mdash; against the Hailo's 17.9 &rarr; 8.9 in the same slot with the same fan. The DX-M1's heatsink is far better in still air and the two converge under forced air.</p></div>
   </div>
 </section>
 
@@ -120,70 +124,220 @@ footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule);
   </table></div>
   <ul class="prose">
     <li><b>In the app:</b> fan speed and duty are drawn on the Airflow graph for now, scaled to share its axis (rpm ÷ 1000, duty ÷ 10). <b>Telemetry → Fan</b> sets the duty, starts from whatever the board reports so opening the app never stops a running fan, and logs every change.</li>
-    <li><b>Flashing</b> takes no button press: <code>tools/flash-ra6m5.sh</code> builds and uploads. Two boards exist, both mapped to the Hailo by USB serial number.</li>
+    <li><b>Flashing</b> takes no button press: <code>tools/flash-ra6m5.sh</code> builds and uploads. Two boards exist, mapped by USB serial number &mdash; so a mapping follows the <em>board</em> and has to be re-pointed when the card in front of it changes.</li>
     <li><b>Power readings agree with the card's own sensor.</b> The INA228 reads 1.7 % above the Hailo-8's on-board INA231 at idle and 3.3 % above it under load, and voltage × current matches the power register to within 0.0002 %.</li>
   </ul>
 </section>
 
 <section>
-  <div class="head"><h2>The cooling session, 19 Nov</h2>
-    <p class="prose muted">About 34 minutes of ResNet-50 on the Hailo-8 while the fan duty was changed by hand. Efficiency is the app's own fps/W: frame rate divided by the INA228 rail power. Two long stretches with the fan off let the die heat until it throttled; a final sweep from 0 to 100 % in roughly 5 % steps shows how quickly each setting pulls it back. Hover or tap any panel to read every value at that moment.</p></div>
-  <div class="chart-card" id="timeline">
-    <div class="readout" id="tl-readout"><span>Move over the charts to read values</span></div>
-    <div id="tl-panels" style="display:grid;gap:6px"></div>
+  <div class="head"><h2>The Hailo-8 run</h2>
+    <p class="prose muted">125 minutes of ResNet-50 at async <b>depth 8</b>, driven entirely by <code>config/automation-thermal-hailo.conf</code>: 30 minutes with the fan off, then 5&nbsp;% rising one point a minute to 100&nbsp;%. The fan schedule lives in the plan file, so the run is reproducible and the ramp is in the log rather than in somebody's hands. The bottom panel carries the duty the EMC2101 applied on its left axis and the airflow the FS3000 measured on its right, so the air arriving at the card can be read directly against the setting that produced it. Hover or tap any panel to read every value at that moment.</p></div>
+  <div class="chart-card" id="timeline2">
+    <div class="readout" id="tl2-readout"><span>Move over the charts to read values</span></div>
+    <div id="tl2-panels" style="display:grid;gap:6px"></div>
   </div>
-  <p class="prose small muted">The first two minutes were a quick check: fan stepped to 100 %, a short run, the fan switched off and back on. The long run starts at 10:46:37.</p>
+  <ul class="prose">
+    <li><b>The soak behaved exactly as the plan assumed.</b> The die reached its plateau by about 8 minutes and held <b>107.1&nbsp;&deg;C</b> (105.9&ndash;108.1) for the rest of the half hour. The plateau is an <em>oscillation</em>, not a level: the frame rate cycles between 1&nbsp;029 and 1&nbsp;201&nbsp;fps as the clock steps between 300 and 350&nbsp;MHz, so a single sample of it means nothing.</li>
+    <li><b>The throttle released at 28.6&nbsp;% duty</b>, 53:48 into the run, in one sample: 1&nbsp;201&nbsp;&rarr;&nbsp;1&nbsp;359&nbsp;fps with the die at 99&nbsp;&deg;C. Over the remaining 70 minutes the frame rate never fell below 1&nbsp;359 again.</li>
+    <li><b>The last quarter of the ramp is dead travel.</b> Fan speed and airflow saturate at 74.6&nbsp;% duty (4&nbsp;611&nbsp;rpm, 3.36&nbsp;m/s) and the die bottoms out at 63.2&nbsp;&deg;C at the same point. The 24 duty steps above it changed neither.</li>
+    <li><b>62 of about 95 one-point requests actually moved the fan.</b> The EMC2101 quantises duty to 64 levels, 1.587&nbsp;% apart, so 5&ndash;100&nbsp;% spans just 61 distinct levels &mdash; and the 7&nbsp;% and 10&nbsp;% requests are visible in the log as exact no-ops against 6&nbsp;% and 9&nbsp;%. Always read the board's <code>FAN_DUTY</code> readback, never the percent requested.</li>
+    <li><b>The fan kicks before it can hold, and the airflow trace shows it.</b> The first 4.8&nbsp;% step produced two moving samples, peaking at 1&nbsp;102&nbsp;rpm and 0.385&nbsp;m/s &mdash; the EMC2101's spin-up drive breaking static friction &mdash; then stalled; 6.3&nbsp;% never turned it at all (120 samples, 0&nbsp;rpm). At <b>7.9&nbsp;% it oscillates</b>: a kick to ~2&thinsp;500&nbsp;rpm and 2.0&nbsp;m/s, a six-second decay, then stall, on a ~10-second cycle &mdash; <b>25 of that level's 60 samples are at rest</b>. Continuous rotation starts at <b>9.5&nbsp;%</b> (364&nbsp;rpm, 0.16&nbsp;m/s) and the clean monotonic part of the curve at 11.1&nbsp;%.</li>
+  </ul>
+  <p class="prose small muted">Each duty step was held for one minute, which is roughly one thermal time constant for this card, so the die lags the fan by about a step through the ramp. The two figures quoted as equilibrium &mdash; the 30-minute soak and the final 20 minutes &mdash; are genuinely flat; the intermediate steps are not.</p>
+</section>
+
+<section>
+  <div class="head"><h2>The DeepX DX-M1 run</h2>
+    <p class="prose muted">The same 125-minute schedule from <code>config/automation-thermal-deepx.conf</code>, with the Hailo-8 taken out of the machine and a <b>DeepX DX-M1</b> put in <em>the same M.2 slot</em> &mdash; same probe board (serial &hellip;<code>3BA5</code>), same fan in the same place, same USB port, same ambient. The two schedules were written to be identical for exactly this reason, so what differs between the runs is the card and nothing else. ResNet-50 async at depth 4, this card's saturation point. Panels are the same as above, with duty and airflow sharing the bottom one.</p></div>
+  <div class="chart-card" id="timeline3">
+    <div class="readout" id="tl3-readout"><span>Move over the charts to read values</span></div>
+    <div id="tl3-panels" style="display:grid;gap:6px"></div>
+  </div>
+  <ul class="prose">
+    <li><b>The soak question the plan header raised is settled.</b> That header warned that 30 minutes took the card about 6 minutes past the longest run ever recorded on it, so the last stretch was unmeasured. It is flat: the die reached <b>89.0&nbsp;&deg;C</b> by about 20 minutes and held 88.0&ndash;89.0 for the final five, with the plateau arriving near 1&thinsp;200&nbsp;s rather than the 1&thinsp;000 estimated from the shorter run.</li>
+    <li><b>It throttles &mdash; which this project had recorded as not happening.</b> At the plateau the frame rate settles at <b>979&nbsp;fps against 1&thinsp;083 while still warming</b>, a 9.6&nbsp;% loss held for the whole half hour and recovered in full once the fan arrives. The earlier conclusion came from a 23.7-minute run that never sat at the plateau long enough. See the next section for why the clock column does not show it.</li>
+    <li><b>Cooling returns the frames.</b> The frame rate climbs out of the throttle from 20.6&nbsp;% duty and is back to its full 1&thinsp;070 by 28.6&nbsp;%, then flat for the remaining 70 minutes. The recovery is gradual where the Hailo's was a single-sample step &mdash; a shallow dither coming off rather than a discrete clock state clearing.</li>
+    <li><b>The die floor is 64&nbsp;&deg;C and it is reached at 79&nbsp;% duty.</b> Over the 21 minutes from there to the end of the ramp the reading is 64&nbsp;&deg;C in 1&thinsp;254 of 1&thinsp;259 samples, with five at 63. <code>dxrt-cli</code> reports whole degrees, so that floor is partly the sensor's resolution &mdash; but the top fifth of the ramp demonstrably changes nothing, the same dead travel session 2 showed.</li>
+    <li><b>Leakage is a quarter the share it is on the Hailo.</b> Normalised to equal frame rate, power falls 0.19&nbsp;W across 17.3&nbsp;&deg;C &mdash; <b>10.8&nbsp;mW/&deg;C, 3.4&nbsp;%</b> of card power, against the Hailo's 20.6&nbsp;mW/&deg;C and 15&nbsp;%. On a 5.5&nbsp;W card the thermal case for cooling is about frames, not watts.</li>
+    <li><b>The fan cannot hold its lowest useful setting.</b> At 7.9&nbsp;% duty the tachometer shows a repeating ~10-second cycle &mdash; kicked to 2&thinsp;500&nbsp;rpm by the spin-up drive, decaying to 85&nbsp;rpm, kicked again. It only settles into steady (if slow) rotation at 9.5&nbsp;%, at 364&nbsp;rpm. <b>The Hailo run did the same thing at the same duty</b> &mdash; 25 of 60 samples at rest in both, mean airflow 0.416 against 0.419&nbsp;m/s &mdash; so this is static friction, and it is reproducible rather than a quirk of one run.</li>
+  </ul>
+  <p class="prose small muted">The 5-minute cool-down after the load stops, fan still at 100&nbsp;%: from 64&nbsp;&deg;C at the last loaded sample to 46 / 41 / 37 / 36&nbsp;&deg;C at +90 / +180 / +270 / +300&nbsp;s, with rail power dropping 5.48&nbsp;&rarr;&nbsp;1.05&nbsp;W &mdash; that idle figure being the floor this card never goes below. The sample one second after the load stops still reads 5.42&nbsp;W, because the INA228's one-second average there mostly covers the run: the first-sample artifact noted in the footer, mirrored at the other end.</p>
 </section>
 
 <section>
   <div class="head"><h2>Throttling</h2>
-    <p class="prose muted">The Hailo-8 throttled only once, and only after its die sat above 103 °C for more than a minute. On the second fan-off stretch, the clock went from 400 to 350 MHz at 11:03:38 with the die at 103.7 °C, and the frame rate fell by the same 12.5 %. It came back at 11:07:06, once the fan at 20 % duty had brought the die down to 99 °C. On the first fan-off stretch the die reached 101.6 °C and the fan went back on just before the throttle point.</p></div>
+    <p class="prose muted">The Hailo-8 throttles by stepping its core clock down in discrete levels, and at depth 8 it uses three of them. The frame rate follows the clock almost exactly, so the clock column and the frame rate tell the same story &mdash; which, as the DX-M1 shows below, is not something to take for granted.</p></div>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>Core clock</th><th class="n">Share of the run</th><th class="n">Frame rate there</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">400 MHz</td><td class="n">60.9 %</td><td class="n">1&nbsp;372</td></tr>
+      <tr><td class="mono">350 MHz</td><td class="n">26.6 %</td><td class="n">1&nbsp;201</td></tr>
+      <tr><td class="mono">300 MHz</td><td class="n">12.6 %</td><td class="n">1&nbsp;029</td></tr>
+    </tbody>
+  </table></div>
+  <ul class="prose">
+    <li><b>The throttled plateau is an oscillation, not a level.</b> The clock steps between 300 and 350&nbsp;MHz and the frame rate cycles 1&thinsp;029&ndash;1&thinsp;201 with it, averaging 1&thinsp;123 &mdash; <b>18&nbsp;% below the 1&thinsp;372 the same card holds once cooled</b>. A single sample of that plateau means nothing.</li>
+    <li><b>Depth matters for where the wall is, not for whether there is one.</b> The 300&nbsp;MHz step is reached only at depth 8; a depth-4 run on this card tops out at 350. That is not depth 4 being &ldquo;more thermally robust&rdquo; &mdash; it never runs fast enough to reach the wall, and the die gets just as hot.</li>
+  </ul>
+  <h3 class="prose" style="margin-top:4px">The DX-M1 throttles too, and its clock column will not tell you</h3>
+  <p class="prose muted">This project recorded for two weeks that the DX-M1 &ldquo;does not throttle at all&rdquo;. This run disproves it, and the reason the claim survived is a sampling artifact worth keeping. The card reports a fixed 1&thinsp;000&nbsp;MHz; the host reads that clock with <code>dxrt-cli</code>, which returns an <em>instantaneous</em> value, while the frame rate in the same row is a full one-second average. The two disagree:</p>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>Evidence, over the 1&thinsp;312&nbsp;s the card sat at 88&ndash;89&nbsp;&deg;C</th><th class="n">Says the card is at 800 MHz</th></tr></thead>
+    <tbody>
+      <tr><td>Clock column <code>_C0/_C1/_C2</code> &mdash; instantaneous, 1&nbsp;Hz</td><td class="n">9.9 % of samples (130 of 1&thinsp;312)</td></tr>
+      <tr><td>Frame rate &mdash; 979 against 1&thinsp;083&nbsp;fps, a 1&nbsp;s average</td><td class="n"><b>~41 % of the time</b></td></tr>
+      <tr><td>Only samples reporting a flat 1&thinsp;000&nbsp;MHz on all three cores</td><td class="n">still 8.1 % slow</td></tr>
+    </tbody>
+  </table></div>
+  <ul class="prose">
+    <li><b>Almost all of the loss hides inside samples that claim full clock.</b> Restricting to rows where every core reports 1&thinsp;000&nbsp;MHz still leaves the card 8.1&nbsp;% slower hot than cold &mdash; so the dither is faster than one second and a point read cannot resolve it. The 130 samples that do catch 800&nbsp;MHz are every one a lone one-second blip.</li>
+    <li><b>Use the frame rate as the throttle indicator on this card.</b> The clock column is honest about the instant it samples and misleading about the interval, which is the opposite of what a thermal investigation needs.</li>
+    <li><b>And never conclude &ldquo;no throttle&rdquo; from a run that stayed below the knee.</b> The original 23.7-minute run was not wrong about its own data &mdash; fps really did sit at 1&thinsp;030&ndash;1&thinsp;090 for its whole length. It just stopped a few minutes after the die arrived at the plateau, and the throttle needs to be <em>sat at</em>, not merely reached.</li>
+  </ul>
+  <p class="prose small muted">The dither also makes the DX-M1's plateau an oscillation, like the Hailo's, so a single sample of it means as little here as there &mdash; for a different underlying reason, and with a tenth of the amplitude.</p>
 </section>
 
 <section>
   <div class="head"><h2>Hot silicon costs power</h2>
-    <p class="prose muted">Every one-second sample where the card ran at full clock and 1165–1215 fps. The work is the same at every point, yet the rail power climbs steadily with die temperature, from 3.4 W near 35 °C to 4.4 W above 100 °C. Any fps/W figure for this card depends on how well it is cooled.</p></div>
-  <div class="chart-card">
-    <div class="panel-label"><span><i class="sw" style="background:var(--s2)"></i>INA228 rail power at constant ~1190 fps, against Hailo-8 die temperature</span></div>
-    <div id="scatter"></div>
+    <p class="prose muted">Rail power against die temperature, each card on its own axis. The work is constant within each run, yet power climbs steadily with temperature &mdash; this is leakage, and it is a property of the silicon rather than of the configuration. Measured on the Hailo-8's identical 1&thinsp;372&nbsp;fps samples it comes to <b>20.6 mW/&deg;C</b>, or 0.77&nbsp;W across the run's 37&nbsp;&deg;C span: <b>15&nbsp;% of the card's power, bought back purely by cooling it</b>. Any fps/W figure for either card is meaningless without its die temperature.</p></div>
+  <div class="two">
+    <div class="chart-card">
+      <div class="panel-label"><span>Hailo-8 &nbsp;<i class="sw" style="background:var(--s1)"></i>depth 8 (~1&thinsp;372 fps cooled)</span></div>
+      <div id="scatter"></div>
+    </div>
+    <div class="chart-card">
+      <div class="panel-label"><span>DeepX DX-M1 &nbsp;<i class="sw" style="background:var(--s4)"></i>depth 4 (~1&thinsp;067 fps cooled)</span></div>
+      <div id="scatter3"></div>
+    </div>
   </div>
+  <p class="prose muted" style="margin-top:10px">The DX-M1 has the same slope and a far smaller <em>share</em>. Normalised to equal frame rate its power falls 0.19&nbsp;W over 17.3&nbsp;&deg;C &mdash; <b>10.8&nbsp;mW/&deg;C</b>, half the Hailo's rate and, on a 5.5&nbsp;W card instead of a 4.4&nbsp;W one, <b>3.4&nbsp;% of card power against 15&nbsp;%</b>. Normalising matters here: the DX-M1's raw power barely moves across the ramp (5.44&nbsp;W hot, 5.46&nbsp;W cold) because it is <em>also</em> recovering 9&nbsp;% of its frame rate as it cools, and the extra work very nearly cancels the leakage saved. Read those two numbers side by side without accounting for the frame rate and the card looks temperature-independent, which it is not.</p>
 </section>
 
 <section>
   <div class="head"><h2>Power efficiency</h2>
-    <p class="prose muted">Frames per watt for every one-second sample of the run, against die temperature. At full clock the frame rate stays near 1190 fps, so efficiency falls only because power rises: from about 343 fps/W with a cool die (37 °C) to 267 fps/W above 103 °C. Throttling does not recover it. At 350 MHz the card drew less power but lost frames in proportion, landing at 264 fps/W.</p></div>
-  <div class="chart-card">
-    <div class="panel-label"><span><i class="sw" style="background:var(--s3)"></i>full clock, 400 MHz</span><span><i class="sw" style="background:var(--s2)"></i>throttled, 350 MHz</span></div>
-    <div id="eff-scatter"></div>
-  </div>
+    <p class="prose muted">Frames per watt for every sample of each run, against die temperature. At full clock the frame rate is flat, so efficiency falls only because power rises &mdash; the Hailo-8 from 322 fps/W at 47 &deg;C to 246 above 105 &deg;C. <b>Throttling does not recover it</b>: a throttled card draws less power but loses frames in at least the same proportion, so it lands on or below the same curve. There is no efficiency to be had by letting either card get hot.</p></div>
+  <div class="chart-card"><div class="panel-label"><span>Hailo-8, depth 8 &nbsp;<i class="sw" style="background:var(--s3)"></i>400 MHz</span><span><i class="sw" style="background:var(--s2)"></i>throttled</span></div><div id="eff-scatter2"></div></div>
+  <p class="prose muted" style="margin-top:10px">The DX-M1 needs its own axis, because its efficiency band (173&ndash;203&nbsp;fps/W) does not overlap the Hailo's at all &mdash; it is a 5.5&nbsp;W card doing about 1&thinsp;070&nbsp;fps where the Hailo does 1&thinsp;372 on 4.4&nbsp;W. <b>The Hailo-8 is 60&nbsp;% more efficient at this model on this rig when both are cooled</b> (311 against 195&nbsp;fps/W) and 37&nbsp;% more when both are left to soak (246 against 180) &mdash; the gap narrows because the Hailo has the more to lose from heat. The shape is the same and the slope is shallower: <b>179.8&nbsp;&rarr;&nbsp;195.4&nbsp;fps/W, +8.6&nbsp;%</b> for cooling, against the Hailo's +27&nbsp;%. Note the flagged points are only the samples whose clock column happened to catch the dither; per the previous section, roughly four times as many are really throttled, and they are scattered through the cloud rather than separated from it.</p>
+  <div class="chart-card" style="margin-top:10px"><div class="panel-label"><span>DeepX DX-M1, depth 4 &nbsp;<i class="sw" style="background:var(--s4)"></i>1&thinsp;000 MHz reported</span><span><i class="sw" style="background:var(--s2)"></i>clock caught at 800 MHz</span></div><div id="eff-scatter3"></div></div>
   <div class="tbl-wrap"><table>
     <thead><tr><th>Condition</th><th class="n">Die °C</th><th class="n">fps</th><th class="n">Rail W</th><th class="n">fps/W</th><th class="n">mJ/frame</th></tr></thead>
     <tbody>
-      <tr><td>Fan at 100 %, settled (11:14:30–11:15:30)</td><td class="n">48.4</td><td class="n">1192</td><td class="n">3.53</td><td class="n">337</td><td class="n">2.97</td></tr>
-      <tr><td>Fan off, just before throttling (11:02:30–11:03:30)</td><td class="n">103.2</td><td class="n">1183</td><td class="n">4.42</td><td class="n">267</td><td class="n">3.74</td></tr>
-      <tr><td>Fan off, throttled to 350 MHz (11:04–11:05)</td><td class="n">103.0</td><td class="n">1046</td><td class="n">3.96</td><td class="n">264</td><td class="n">3.79</td></tr>
+      <tr><td colspan="6" class="mono" style="color:var(--fg-2)">Hailo-8 &mdash; depth 8</td></tr>
+      <tr><td>Fan &ge;87 %, settled 20 min (15:04&ndash;15:17)</td><td class="n">63.2</td><td class="n">1372</td><td class="n">4.41</td><td class="n">311</td><td class="n">3.22</td></tr>
+      <tr><td>Fan off, 30-minute soak plateau</td><td class="n">107.1</td><td class="n">1123</td><td class="n">4.59</td><td class="n">246</td><td class="n">4.09</td></tr>
+      <tr><td>Full rate at both extremes (identical 1&thinsp;372 fps)</td><td class="n">63.1 / 100.5</td><td class="n">1372</td><td class="n">4.41 / 5.19</td><td class="n">311 / 265</td><td class="n">3.22 / 3.78</td></tr>
+      <tr><td colspan="6" class="mono" style="color:var(--fg-2)">DeepX DX-M1 &mdash; same rig, depth 4</td></tr>
+      <tr><td>Fan &ge;79 %, settled 21 min (17:45&ndash;18:06)</td><td class="n">64.0</td><td class="n">1067</td><td class="n">5.46</td><td class="n">195</td><td class="n">5.12</td></tr>
+      <tr><td>Fan off, 30-minute soak plateau (throttled)</td><td class="n">89.0</td><td class="n">979</td><td class="n">5.44</td><td class="n">180</td><td class="n">5.56</td></tr>
+      <tr><td>Warming, before the throttle bit (t 300&ndash;600 s)</td><td class="n">78.3</td><td class="n">1083</td><td class="n">5.69</td><td class="n">190</td><td class="n">5.25</td></tr>
     </tbody>
   </table></div>
-  <p class="prose small muted">Earlier figures for this card on this rig (347 fps/W on 16 Nov) were taken with a cool die. Quote fps/W for the Hailo-8 together with its die temperature or fan setting.</p>
+  <p class="prose">The two cards are drawn on <b>one shared fps/W axis</b> in <a href="#" onclick="document.getElementById('ov-eff').scrollIntoView({behavior:'smooth',block:'center'});return false;">the overlay section below</a>, which is where the direct comparison between them belongs.</p>
+  <p class="prose small muted">Earlier figures for the Hailo-8 on this rig (347 fps/W on 16 Nov) were taken with a cool die. Always quote fps/W together with die temperature or fan setting, and with the depth. The third row of the DX-M1 block is the useful one for a datasheet comparison: 1&thinsp;083&nbsp;fps at 190&nbsp;fps/W is that card unthrottled, and without a fan it is only reachable while the die is still on its way up.</p>
 </section>
 
 <section>
   <div class="head"><h2>The fan</h2>
-    <p class="prose muted">Noctua NF-A4x10 5V PWM. Speed and airflow are the mean of the last 10 seconds at each setting. The duty column is the value the EMC2101 actually applied (it has 64 steps, so a 20 % request reads back as 20.6 %).</p></div>
+    <p class="prose muted">Noctua NF-A4x10 5V PWM, the same fan in the same position for both runs. Each point is the mean of a full held minute at each of 60 levels. The duty axis is the value the EMC2101 actually <em>applied</em> &mdash; it has 64 steps, so a 20 % request reads back as 20.6 %. The two curves are plotted together as a <b>control</b>: the runs are a day apart with the card swapped between them, so any difference here would undermine every comparison in the report.</p></div>
   <div class="two">
-    <div class="chart-card"><div class="panel-label"><span><i class="sw" style="background:var(--s5)"></i>Fan speed (rpm) against duty (%)</span></div><div id="fan-rpm"></div></div>
-    <div class="chart-card"><div class="panel-label"><span><i class="sw" style="background:var(--s4)"></i>Airflow (m/s) against duty (%)</span></div><div id="fan-af"></div></div>
+    <div class="chart-card"><div class="panel-label"><span>Fan speed (rpm) against duty (%) &nbsp;<i class="sw" style="background:var(--s5)"></i>Hailo-8 run</span><span><i class="sw" style="background:var(--s1)"></i>DX-M1 run</span></div><div id="fan-rpm"></div></div>
+    <div class="chart-card"><div class="panel-label"><span>Airflow (m/s) against duty (%) &nbsp;<i class="sw" style="background:var(--s4)"></i>Hailo-8 run</span><span><i class="sw" style="background:var(--s1)"></i>DX-M1 run</span></div><div id="fan-af"></div></div>
   </div>
   <ul class="prose">
-    <li><b>The fan starts at about 10 % duty</b> (440 rpm), but the airflow sensor reads almost nothing below about 15 %.</li>
-    <li><b>Speed rises in a straight line up to 70 % duty</b> (about 65 rpm per percent), then flattens at about 4 750 rpm. Settings above 75 % buy almost nothing.</li>
-    <li><b>Top speed crept up through the session</b>, from 4 110 rpm on the first spin-up to about 4 750 rpm by the end, probably as the bearings warmed. Earlier spot checks (4 190–4 380 rpm) were taken before it had settled.</li>
+    <li><b>The two curves are indistinguishable.</b> Over the <b>56 duty levels both runs reached above 11&nbsp;%, the mean difference in airflow is 0.011&nbsp;m/s &mdash; 0.4&nbsp;%, and no step is more than 0.04&nbsp;m/s apart</b>. A day apart, with the card pulled and replaced in between. <b>The fan and the airflow sensor are a known quantity, reproducible to better than a percent</b>, which is what licenses attributing everything that follows to the card.</li>
+    <li><b>Rotation needs more duty than the fan controller's first step.</b> The spin-up drive moves it briefly at 4.8&nbsp;% and it stalls; 6.3&nbsp;% does not turn it at all; 7.9&nbsp;% turns it only in bursts. Continuous rotation starts at <b>9.5&nbsp;%</b> and the clean monotonic part of the curve at 11.1&nbsp;%. Do not treat a non-zero duty as a turning fan &mdash; read the tachometer.</li>
+    <li><b>Speed rises almost linearly to about 70 % duty</b> (roughly 65 rpm per point), then flattens: 4&thinsp;611&nbsp;rpm and 3.36&nbsp;m/s from 74.6&nbsp;% upward in the Hailo run, 4&thinsp;618&nbsp;rpm in the DX-M1 run. <b>Settings above 75 % buy nothing measurable</b> &mdash; held &plusmn;20 and &plusmn;4&nbsp;rpm respectively over the last 40 minutes of each.</li>
+    <li><b>Even where the fan will not hold, it fails identically in both runs.</b> Level for level: 4.8&nbsp;% kicks and stalls (58 of 60 samples at rest in both), 6.3&nbsp;% never turns (120 samples, 0&nbsp;rpm, in both), 7.9&nbsp;% oscillates with <b>25 of 60 samples at rest in each run</b> and mean airflow <b>0.419 against 0.416&nbsp;m/s</b>, and both settle into continuous rotation at 9.5&nbsp;%, at 375 and 372&nbsp;rpm. An earlier reading of this called the stall region the one unrepeatable part of the fan's behaviour; at full 1&nbsp;Hz resolution it is the opposite &mdash; it reproduces as closely as the rest of the curve. Treat anything below 9.5&nbsp;% as duty the fan will not hold, and read the tachometer rather than the duty.</li>
+    <li><b>Why the 7.9&nbsp;% row of both tables below reads <em>higher</em> than 9.5&nbsp;%.</b> 637&nbsp;rpm and 0.42&nbsp;m/s against 375&nbsp;rpm and 0.16 &mdash; not a non-monotonic fan, but a minute-long mean of kick-and-stall against a minute of steady rotation. Both runs show the same inversion at the same level, which is itself the point: a mean over an unstable duty level is not an operating point.</li>
   </ul>
-  <div class="tbl-wrap"><table id="sweep-table">
-    <thead><tr><th class="n">Duty %</th><th class="n">Held, s</th><th class="n">Fan rpm</th><th class="n">Airflow m/s</th><th class="n">Die °C at start</th><th class="n">Die °C at end</th><th class="n">Rail W</th><th class="n">fps</th><th class="n">fps/W</th></tr></thead>
+  <h3 class="prose" style="margin-top:4px">Hailo-8 &mdash; every level the hardware reached</h3>
+  <div class="tbl-wrap tall"><table id="sweep-table2">
+    <thead><tr><th class="n">Duty %</th><th class="n">Held, s</th><th class="n">Fan rpm</th><th class="n">Airflow m/s</th><th class="n">Die &deg;C at start</th><th class="n">Die &deg;C at end</th><th class="n">Rail W</th><th class="n">fps</th><th class="n">fps/W</th></tr></thead>
     <tbody></tbody>
   </table></div>
-  <p class="prose small muted">The die was still cooling when each step ended, so the end temperatures are not equilibrium values. The one true equilibrium in the log is the last two minutes at 100 %: 48 °C.</p>
+  <h3 class="prose" style="margin-top:4px">DeepX DX-M1 &mdash; the same ramp</h3>
+  <div class="tbl-wrap tall"><table id="sweep-table3">
+    <thead><tr><th class="n">Duty %</th><th class="n">Held, s</th><th class="n">Fan rpm</th><th class="n">Airflow m/s</th><th class="n">Die &deg;C at start</th><th class="n">Die &deg;C at end</th><th class="n">Rail W</th><th class="n">fps</th><th class="n">fps/W</th></tr></thead>
+    <tbody></tbody>
+  </table></div>
+  <p class="prose small muted">60 rows again, from the same 95 requests &mdash; the collisions land on the same levels, as they must. Die temperatures here are whole degrees, so a 1 &deg;C step between rows is the sensor's resolution rather than a real jump.</p>
+  <p class="prose small muted">60 rows for about 95 one-point requests, because consecutive percents collide on the EMC2101's 64 levels. Each was held one minute &mdash; roughly one thermal time constant for this card &mdash; so these end temperatures are not equilibrium values; the die trails the fan by about a step all the way up. The equilibrium figures are the 30-minute soak (107.1 &deg;C) and the final 20 minutes (63.2 &deg;C).</p>
+</section>
+
+<section>
+  <div class="head"><h2>The two cards overlaid</h2>
+    <p class="prose muted">Both plans run the same 125 minutes with the same fan schedule, so the time axes line up sample for sample and the two runs can be drawn on one set of axes. Everything below is the same two logs as above, plotted against <b>time into the run</b> &mdash; 30 minutes with the fan off, then the 95-minute ramp. The fan duty needs no trace of its own: it rises one point a minute from minute 30, so <b>requested duty in percent is simply minutes-into-the-run minus 30</b>, identically in both runs. The third chart uses the duty the EMC2101 actually applied, which is why its points are unevenly spaced.</p></div>
+
+  <div class="chart-card">
+    <div class="panel-label"><span>Die temperature (&deg;C) against time into the run &nbsp;<i class="sw" style="background:var(--s2)"></i>Hailo-8, depth 8</span><span><i class="sw" style="background:var(--s1)"></i>DeepX DX-M1, depth 4</span></div>
+    <div id="ov-temp"></div>
+  </div>
+  <ul class="prose">
+    <li><b>They start 18&nbsp;&deg;C apart and finish 0.8&nbsp;&deg;C apart.</b> Fan off, the Hailo settles at 107.1&nbsp;&deg;C and the DX-M1 at 89.0. Fan full, they land at <b>63.2 and 64.0</b>. The two traces converge as the ramp climbs and then run together for the last half hour &mdash; the single most useful picture in this report, and the basis for the section that follows.</li>
+    <li><b>The DX-M1 takes 2.5&times; as long to get there.</b> It reaches 99&nbsp;% of its plateau at <b>980&nbsp;s</b> against the Hailo's <b>386&nbsp;s</b>. That ratio is why the shared schedule uses a 30-minute soak: it is set by the slower card, and a soak sized for the Hailo would have started the DX-M1's ramp while its die was still drifting upward.</li>
+    <li><b>The Hailo falls faster than it rose.</b> Its trace drops almost vertically as the fan comes up between 20 and 30&nbsp;% duty, while the DX-M1's declines gently across the whole ramp &mdash; the same difference in thermal time constant, seen from the other direction.</li>
+  </ul>
+
+  <div class="chart-card" style="margin-top:14px">
+    <div class="panel-label"><span>Frame rate, as % of each card's own cooled rate &nbsp;<i class="sw" style="background:var(--s2)"></i>Hailo-8 (100 % = 1&thinsp;372 fps)</span><span><i class="sw" style="background:var(--s1)"></i>DX-M1 (100 % = 1&thinsp;067 fps)</span></div>
+    <div id="ov-fps"></div>
+  </div>
+  <ul class="prose">
+    <li><b>Normalising is what makes this comparable</b> &mdash; the cards differ by 300&nbsp;fps in absolute terms, so each trace is shown against its own fully-cooled rate. What is being compared is how much of itself each card loses to heat.</li>
+    <li><b>The Hailo loses twice as much and loses it in steps.</b> It sits at <b>81.8&nbsp;%</b> through the soak, visibly oscillating as the clock steps between 300 and 350&nbsp;MHz; the DX-M1 sits at <b>91.7&nbsp;%</b> on a much flatter line. Two throttle designs: discrete clock levels against a fast shallow dither.</li>
+    <li><b>Both recover fully, and at almost the same place.</b> The Hailo is back to full rate from <b>28.6&nbsp;% duty</b> (die at 101&nbsp;&deg;C), the DX-M1 from <b>25.4&nbsp;%</b> (die at 86&nbsp;&deg;C) &mdash; roughly 1.1&nbsp;m/s of airflow in both cases. Neither card needs more than about a third of this fan to stop throttling, which is the practical finding for anyone sizing cooling for either.</li>
+    <li><b>Everything above ~30&nbsp;% duty is margin for both.</b> Two cards with different heatsinks, different power and different throttle mechanisms agree on that, which makes it the most transferable number here.</li>
+  </ul>
+
+  <div class="chart-card" style="margin-top:14px">
+    <div class="panel-label"><span>Power efficiency (fps/W) against time into the run &nbsp;<i class="sw" style="background:var(--s2)"></i>Hailo-8, depth 8</span><span><i class="sw" style="background:var(--s1)"></i>DeepX DX-M1, depth 4</span></div>
+    <div id="ov-eff"></div>
+  </div>
+  <div class="chart-card" style="margin-top:10px">
+    <div class="panel-label"><span>The same thing against die temperature, every sample &nbsp;<i class="sw" style="background:var(--s2)"></i>Hailo-8</span><span><i class="sw" style="background:var(--s1)"></i>DeepX DX-M1</span></div>
+    <div id="ov-eff-t"></div>
+  </div>
+  <ul class="prose">
+    <li><b>This is the comparison the whole rig exists to make</b>, and unlike frame rate it needs no normalising: fps/W is frames per joule, so the two cards can share one axis directly. Same model, same host, same slot, same shunt, same fan.</li>
+    <li><b>The two bands do not overlap anywhere.</b> Over all 7&thinsp;498 benchmarked samples of each run, spanning 43&ndash;108&nbsp;&deg;C, the DX-M1 ranges <b>172.8&ndash;203.2&nbsp;fps/W</b> and the Hailo-8 <b>213.5&ndash;323.5</b> &mdash; the DX-M1's best sample still falls <b>10.4&nbsp;fps/W short of the Hailo's worst</b>. The Hailo is the more efficient card at every operating point either one reached, and nothing in 125 minutes of either run reverses that.</li>
+    <li><b>Cooled, the gap is 1.59&times;; soaked, 1.36&times;.</b> Hailo 310.9 against DX-M1 195.4&nbsp;fps/W with the fan at full; 245.4 against 179.8 at the fan-off plateau. In energy terms the Hailo does the same frame for <b>3.22&nbsp;mJ against 5.12</b> &mdash; 63&nbsp;% of the energy &mdash; and 4.07 against 5.56 when both are left to cook.</li>
+    <li><b>The better card is also the one with more to gain from air.</b> Cooling is worth <b>+26.7&nbsp;%</b> to the Hailo's efficiency and only <b>+8.6&nbsp;%</b> to the DX-M1's, because the Hailo loses on both terms at once &mdash; 18&nbsp;% of its frame rate to clock throttling <em>and</em> 15&nbsp;% of its power to leakage, where the DX-M1 loses 8&nbsp;% and 3.4&nbsp;%. So <b>poor cooling narrows the gap between these cards</b>: neglect the airflow and you give away most of the Hailo's advantage.</li>
+    <li><b>The shapes differ as much as the levels.</b> On the time plot the Hailo's trace is visibly noisy through the soak &mdash; the clock oscillating between 300 and 350&nbsp;MHz moves fps and power together &mdash; then steps up sharply as the fan passes 20&ndash;30&nbsp;% duty. The DX-M1 climbs gently and almost monotonically across the whole ramp. Against temperature both are near-linear, with the Hailo's slope about 3&times; the DX-M1's.</li>
+  </ul>
+  <p class="prose small muted">The first running sample of each run is excluded: the INA228's one-second average there still covers mostly idle and reports a fps/W several times too high &mdash; the artifact noted in the footer. Samples outside the benchmark are excluded too, since fps/W on an idle rail is not an efficiency.</p>
+
+  <div class="chart-card" style="margin-top:14px">
+    <div class="panel-label"><span>Thermal resistance (&deg;C/W above local ambient) against applied fan duty &nbsp;<i class="sw" style="background:var(--s2)"></i>Hailo-8</span><span><i class="sw" style="background:var(--s1)"></i>DeepX DX-M1</span></div>
+    <div id="ov-tr"></div>
+  </div>
+  <ul class="prose">
+    <li><b>This is the chart the next section's table summarises.</b> Thermal resistance normalises away the two cards' different power draws, so the gap here is genuinely about moving heat rather than about how much heat there is. The DX-M1's curve sits below the Hailo's everywhere.</li>
+    <li><b>Both curves flatten at the same duty the fan does.</b> Airflow saturates at 74.6&nbsp;% and so do these: the Hailo stops improving at 8.9&nbsp;&deg;C/W and the DX-M1 at 7.3, and the remaining quarter of the ramp moves neither. The dead travel is the fan's, not the cards'.</li>
+    <li><b>The curves narrow but do not cross.</b> 34&nbsp;% apart in still air, 18&nbsp;% apart at full fan. Converging toward a common floor while keeping their order is what a shared external bottleneck looks like &mdash; with the caveat set out below.</li>
+  </ul>
+  <p class="prose small muted">Each point is the mean of the last 20 seconds of a held duty level, so these are not full equilibria; the fan-off values at the left are, being the end of a 30-minute soak. Both curves use the same definition as the table below &mdash; hottest die sensor minus the EMC2101's reading, divided by INA228 rail power.</p>
+</section>
+
+<section>
+  <div class="head"><h2>Where the cooling limit sits</h2>
+    <p class="prose muted">With the fan and the airflow sensor proved reproducible to 0.4&nbsp;%, the two runs can be read as one experiment with the card as its only variable. Thermal resistance below is the card die above the EMC2101's reading on the probe board (air near the card), divided by INA228 rail power &mdash; <b>&deg;C of die above local ambient per watt dissipated</b>. Using a local ambient rather than a room temperature is what makes two runs on different days comparable.</p></div>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>Thermal resistance, same rig, card swapped</th><th class="n">Hailo-8</th><th class="n">DeepX DX-M1</th><th class="n">Difference</th></tr></thead>
+    <tbody>
+      <tr><td>Fan <b>off</b>, settled &mdash; still air</td><td class="n">17.9 &deg;C/W <span class="muted">(107.1 &deg;C, 4.57 W)</span></td><td class="n">11.9 &deg;C/W <span class="muted">(89.0 &deg;C, 5.44 W)</span></td><td class="n"><b>DX-M1 34 % lower</b></td></tr>
+      <tr><td>Fan at ~40 %</td><td class="n">13.3 &deg;C/W</td><td class="n">9.3 &deg;C/W</td><td class="n">30 % lower</td></tr>
+      <tr><td>Fan <b>full</b>, settled 20 min</td><td class="n">8.9 &deg;C/W <span class="muted">(63.2 &deg;C)</span></td><td class="n">7.3 &deg;C/W <span class="muted">(64.0 &deg;C)</span></td><td class="n">18 % lower</td></tr>
+      <tr><td>What the fan removes</td><td class="n">9.0 &deg;C/W <span class="muted">(2.02&times;)</span></td><td class="n">4.5 &deg;C/W <span class="muted">(1.62&times;)</span></td><td class="n">&mdash;</td></tr>
+    </tbody>
+  </table></div>
+  <ul class="prose">
+    <li><b>In still air the cards differ by a third, and that is the heatsink.</b> The DX-M1 sheds 11.9&nbsp;&deg;C/W against the Hailo's 17.9 with no air moving at all &mdash; so it reaches only 89&nbsp;&deg;C while dissipating <em>more</em> power (5.44&nbsp;W against 4.57). With the rig held fixed this is as close to a property of the card alone as anything here gets.</li>
+    <li><b>Under forced air they converge, and the floor is suspiciously flat.</b> The gap narrows from 34&nbsp;% to 18&nbsp;%, and the two cards settle within <b>0.8&nbsp;&deg;C of each other &mdash; 63.2 and 64.0</b> &mdash; having started 18&nbsp;&deg;C apart. Two different heatsinks dissipating different power arriving at the same temperature is what you would expect if the limit under forced air belongs to the <em>rig</em> &mdash; how much of the fan's air reaches the slot &mdash; rather than to either card.</li>
+    <li><b>So the fan is worth less on the better-cooled card.</b> It buys the Hailo 2.02&times; and the DX-M1 only 1.62&times;, because the DX-M1 starts closer to the floor the rig imposes. The card with the worse heatsink has more to gain from air, and still cannot passively reach what the better one does.</li>
+    <li><b>Both pay for being hot, in different currencies.</b> Against its own cooled rate the Hailo loses <b>18&nbsp;%</b> of its frame rate and 15&nbsp;% of its power to leakage; the DX-M1 loses <b>8&nbsp;%</b> of its frame rate and 3.4&nbsp;% to leakage. Neither is a card to run without air if either number matters.</li>
+    <li><b>What this does not establish.</b> The convergence is <em>consistent</em> with a badly coupled fan, and it is not proof: the two runs differ by card, so a shared floor could in principle be two unrelated heatsinks happening to land together. Separating &ldquo;the rig limits both&rdquo; from &ldquo;these two cards coincide&rdquo; needs one card measured against a changed air path &mdash; move the fan, or add a second, and re-run one of these plans unchanged. That is the next experiment, and the schedule being a file makes it a cheap one.</li>
+  </ul>
+  <p class="prose small muted">The two cards' die sensors are not the same instrument &mdash; the Hailo reports tenths from TS0/TS1, the DX-M1 whole degrees from three sensors via <code>dxrt-cli</code> &mdash; so every figure here is taken as the hottest sensor on each card, averaged over a deliberately flat 5-to-20-minute window. What is genuinely uncontrolled is where each vendor puts its sensor inside the package: these are die-to-local-air numbers for two different packages, not two heatsinks on one thermal test chip.</p>
 </section>
 
 <section>
@@ -191,104 +345,151 @@ footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule);
   <ul class="prose">
     <li><b>Re-plugging the sensor chain needs a <code>rescan</code>.</b> The firmware looks for sensors only at power-up, so sensors connected later stay absent until the host sends <code>rescan</code>.</li>
     <li><b>Restart the app after re-flashing or unplugging the board.</b> The app does not reconnect, so readings go blank three seconds after the board drops off.</li>
+    <li><b>Nothing else may hold the serial port when the app starts.</b> The app sends <code>info</code> and gives the board three seconds to answer; a shell or script reading the same <code>/dev/ttyACM*</code> makes that fail, and the startup note then says <code>no answer to <code>info</code> within 3 s</code> &mdash; no shunt, no airflow and, worse, <b>no fan</b>, so an automated ramp runs its whole length doing nothing. Check that note before trusting a long run. The board exposes two CDC nodes and only the first answers.</li>
+    <li><b>Re-map the shunt after moving the card.</b> The RA6M5 is keyed by USB serial in <code>config/ina228.conf</code>, so the mapping follows the <em>board</em>, not the card it is wired to. Swap the M.2 card without editing that line and the shunt folds onto a card that is no longer present &mdash; which <code>accel_present()</code> then hides &mdash; while the card that <em>is</em> there silently reports no power at all, and every fps/W in the run is blank.</li>
+    <li><b>Hold each step about three time constants if you want equilibrium.</b> One minute per step reads as a clean curve and is not one: the die lags the fan by roughly a step throughout. It is fine for finding where the throttle clears, and wrong for a thermal-resistance number &mdash; take those from a deliberately flat stretch.</li>
+    <li><b>Check the startup note before committing two hours.</b> It is the one line that says which card the shunt folded onto, which sensors answered, and which accelerators are hidden. Session 3 nearly ran without power telemetry for exactly this reason: the board was still mapped to the Hailo that had been removed, <code>accel_present()</code> hid that absent card, the shunt folded onto it, and the DX-M1's watts would have been blank for the whole run with no error anywhere. The note said <code>INA228 -&gt; DeepX</code> once it was fixed, and that is cheap to read.</li>
+    <li><b>An instantaneous sample is not an interval measurement.</b> The DX-M1's clock column is read per tick and reports the clock at that instant; the frame rate in the same row averages a whole second. When a card dithers faster than the sample rate the two tell different stories, and the point read is the one that lies &mdash; it found 800&nbsp;MHz in 9.9&nbsp;% of samples where the frame rate implies 41&nbsp;%. Prefer the averaged quantity for anything about <em>how much of the time</em>, and be suspicious of a per-tick reading that disagrees with a rate.</li>
+    <li><b>A null result from a short run is not a null result.</b> &ldquo;The DX-M1 does not throttle&rdquo; stood on a 23.7-minute run that was perfectly accurate about itself and stopped minutes after the die reached its plateau. The throttle needed the plateau to be <em>sat at</em> for half an hour before it appeared. Before recording an absence, check the run was long enough for the thing to have shown up.</li>
+    <li><b>Put the fan schedule in the plan file, not in a side script.</b> The ramp is part of the experiment, so it belongs where the rest of the run is specified and where the log can be read back against it. <code>fan</code>, <code>fan.start</code>, <code>fan.step</code>, <code>fan.every</code>, <code>fan.after</code> and <code>fan.max</code> now do this; a plan that says nothing about the fan deliberately leaves it alone, since the firmware keeps its duty across host disconnects.</li>
   </ul>
 </section>
 
 <section>
   <div class="head"><h2>Still open</h2></div>
   <ul class="prose">
-    <li><b>Fit the thermocouple.</b> The MAX31855K is detected and reads its own die temperature, but it reports an open circuit because no thermocouple is connected, so its column is empty in this log.</li>
+    <li><b>Fit the thermocouple &mdash; it is now the instrument this work needs.</b> The MAX31855K is detected and reads its cold junction, but reports an open circuit with no probe attached, so its column is empty in both logs (0 valid readings of 7&thinsp;979 in each). Bonded to the Hailo's heatsink it would measure air actually arriving at the card, which is precisely the quantity the previous section has to <em>infer</em> from die temperature and rail power. It is the cheapest way to turn &ldquo;the airflow sensor cannot see the difference&rdquo; into a direct reading.</li>
     <li><b>A second airflow sensor, if needed.</b> The FS3000's address is fixed and the board has one I2C bus, so a second sensor would need an I2C mux (TCA9548A).</li>
     <li><b>The per-second minimum and maximum</b> that the board sends are not used by the app yet.</li>
-    <li><b>Possible app work:</b> a fan graph of its own, and a fan duty that automation plans can set for each step.</li>
+    <li><b>A fan graph of its own.</b> Fan rpm and duty are still drawn on the Airflow graph, scaled to share its axis; separating them is a MainWindow-only change.</li>
+    <li><b>Per-metric suffixes in the INA228 fold</b>, so the per-second minimum and maximum the board already sends could reach the host without colliding with the folded <code>&lt;Card&gt; INA228 &lt;FAMILY&gt;</code> column names.</li>
+    <li><b>Move the fan, then re-run one of these plans unchanged &mdash; this is the experiment with the most to give.</b> Both cards converge on a 7&ndash;9 &deg;C/W floor and land within 0.8 &deg;C of each other from 18 &deg;C apart, which points at the air path rather than either heatsink, but two cards cannot separate &ldquo;the rig limits both&rdquo; from &ldquo;these two coincide&rdquo;. One card against a changed air path can. A second fan is the obvious variant, and nothing above suggests duty over 75 % is worth anything.</li>
+    <li><b>Resolve the DX-M1's dither directly.</b> The 41 % figure is inferred from the frame rate on the assumption that throughput is linear in clock. Sampling <code>dxrt-cli</code> far faster than 1 Hz during a soak would measure the duty cycle instead of inferring it, and would confirm 800 MHz is the only step it uses.</li>
+    <li><b>Run the remaining two cards through the same plan.</b> The schedule is now a file, and the MemryX MX3 and Axelera Metis have never been characterised this way. The MX3 would need care &mdash; it wedges at async depth 8 and this plan's equivalent saturation point is exactly there.</li>
   </ul>
 </section>
 
 <footer>
-  <span>Source log: <code>docs/data/ra6m5-fan-thermal-session-20261119.csv</code> (copy of <code>logs/mb-benchmark-20261119-104252.csv</code>, 2 012 rows at 1 Hz, 10:42:54–11:16:27). The timeline above plots every second sample.</span>
-  <span>Card temperature is the Hailo-8's on-die sensor TS0; power is the RA6M5's INA228 on the card's 3.3 V rail.</span>
+  <span><b>Hailo-8 run</b> (<code>data2.js</code>): <code>docs/data/ra6m5-thermal-hailo8-20261119.csv</code> (copy of <code>logs/mb-benchmark-20261119-130856.csv</code>, 7&thinsp;979 rows at 1 Hz, 13:08:57&ndash;15:22:06, host <code>abbeefepyc-ROMED8-2T</code>, plan <code>config/automation-thermal-hailo.conf</code>). Its timeline plots every eighth sample; the tables and scatters are computed from every row except the first of the run, where the INA228's one-second average still covers mostly idle and reports 1&thinsp;315 fps at 2.12 W &mdash; 621 fps/W, an artifact rather than a measurement.</span>
+  <span><b>DeepX DX-M1 run</b> (<code>data3.js</code>): <code>docs/data/ra6m5-thermal-deepx-20261119.csv</code> (copy of <code>logs/mb-benchmark-20261119-155806.csv</code>, 7&thinsp;979 rows at 1 Hz, 15:58:07&ndash;18:11:15, host <code>abbeefepyc-ROMED8-2T</code>, plan <code>config/automation-thermal-deepx.conf</code>). Same treatment: timeline every eighth sample, tables and scatters from every row but the first of the run, which reports 629 fps at 1.34 W &mdash; 468 fps/W, the same first-sample artifact.</span>
+  <span>Card temperature is the hottest on-die sensor each card reports &mdash; TS0/TS1 on the Hailo-8, T0/T1/T2 on the DX-M1; power is the RA6M5's INA228 on the card's 3.3 V rail; &ldquo;air near the card&rdquo; is the EMC2101's own die temperature on the probe board. Both runs are on the same rig with the same probe board and fan, the card swapped between them.</span>
 </footer>
 </div>
 
 <div class="tip" id="tip" hidden></div>
 
-<script src="data.js"></script>
+<script src="data2.js"></script>
+<script src="data3.js"></script>
+<script src="overlay.js"></script>
 <script>
 (function () {
-  const S = SESSION.series, NS = 'http://www.w3.org/2000/svg';
+  const NS = 'http://www.w3.org/2000/svg';
   const css = n => `var(--${n})`;
   const el = (tag, attrs = {}, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; };
-  const t0 = new Date(SESSION.start);
-  const clock = s => { const d = new Date(t0.getTime() + s * 1000); return d.toTimeString().slice(0, 8); };
   const fmt = (v, d) => v == null ? '—' : v.toFixed(d);
   const tip = document.getElementById('tip');
   function showTip(html, ev) { tip.innerHTML = html; tip.hidden = false; const x = Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8); tip.style.left = x + 'px'; tip.style.top = (ev.clientY - tip.offsetHeight - 12) + 'px'; }
   function hideTip() { tip.hidden = true; }
 
   /* ---------- timeline: four panels, one shared time axis ---------- */
-  const W = 940, L = 52, R = 14, PW = W - L - R;
-  const tmax = S.t[S.t.length - 1];
-  const X = t => L + (t / tmax) * PW;
-  const panels = [
+  /* R carries the right-hand airflow axis on the fan panel; it is the same on every
+     panel so the shared time axis stays aligned column for column. */
+  const W = 940, L = 52, R = 30, PW = W - L - R;
+
+  const PANELS2 = [
     { title: 'Die temperature (°C)', h: 170, lo: 20, hi: 110, ticks: [20, 40, 60, 80, 100], series: [
       { k: 'ts0', name: 'Hailo-8 die', c: 's1' }, { k: 'it', name: 'INA228 chip', c: 's2' }, { k: 'emc', name: 'EMC2101 chip (air near board)', c: 's3' }],
-      notes: [{ t: 1255, v: 103.7, text: 'throttle 400→350 MHz' }] },
-    { title: 'Hailo-8 frame rate (fps)', h: 110, lo: 0, hi: 1300, ticks: [0, 400, 800, 1200], series: [{ k: 'fps', name: 'Hailo-8', c: 's1' }] },
+      notes: [{ t: 3408, v: 99.4, text: 'throttle clears, 28.6 % duty' }] },
+    { title: 'Hailo-8 frame rate (fps)', h: 110, lo: 0, hi: 1500, ticks: [0, 500, 1000, 1500], series: [{ k: 'fps', name: 'Hailo-8', c: 's1' }] },
     { title: 'Efficiency (fps/W)', h: 110, lo: 0, hi: 400, ticks: [0, 100, 200, 300, 400], series: [{ k: 'eff', name: 'Hailo-8', c: 's3' }] },
-    { title: 'Card rail power (W)', h: 110, lo: 0, hi: 5, ticks: [0, 1, 2, 3, 4, 5], series: [{ k: 'pi', name: 'INA228 rail', c: 's2' }] },
-    { title: 'Fan duty (%)', h: 100, lo: 0, hi: 100, ticks: [0, 50, 100], series: [{ k: 'duty', name: 'fan duty', c: 's5' }], axis: true },
+    { title: 'Card rail power (W)', h: 110, lo: 0, hi: 6, ticks: [0, 2, 4, 6], series: [{ k: 'pi', name: 'INA228 rail', c: 's2' }] },
+    { title: 'Fan duty (%) and airflow (m/s)', h: 130, lo: 0, hi: 100, ticks: [0, 50, 100],
+      ry: { lo: 0, hi: 4, ticks: [0, 1, 2, 3, 4] }, series: [
+      { k: 'duty', name: 'applied duty (%), left axis', c: 's5' },
+      { k: 'af', name: 'airflow (m/s), right axis', c: 's4', r: true }], axis: true },
   ];
-  const host = document.getElementById('tl-panels'), cursors = [];
-  panels.forEach(p => {
-    const box = document.createElement('div'); box.style.display = 'grid'; box.style.gap = '2px';
-    const lab = document.createElement('div'); lab.className = 'panel-label';
-    lab.innerHTML = p.title + (p.series.length > 1 ? ' ' + p.series.map(s => `<span><i class="sw" style="background:${css(s.c)}"></i>${s.name}</span>`).join('') : '');
-    box.appendChild(lab);
-    const H = p.h + (p.axis ? 22 : 6), T = 6;
-    const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'chart', role: 'img', 'aria-label': p.title });
-    const Y = v => T + (1 - (v - p.lo) / (p.hi - p.lo)) * (p.h - T);
-    const g = el('g', { class: 'grid' }, svg);
-    p.ticks.forEach(v => { el('line', { x1: L, x2: W - R, y1: Y(v), y2: Y(v) }, g); const tx = el('text', { x: L - 8, y: Y(v) + 4, 'text-anchor': 'end' }, svg); tx.textContent = v; });
-    // vertical time grid every 5 min of clock time
-    const firstMark = Math.ceil((t0.getMinutes() * 60 + t0.getSeconds()) / 300) * 300 - (t0.getMinutes() * 60 + t0.getSeconds());
-    for (let s = firstMark; s <= tmax; s += 300) {
-      el('line', { x1: X(s), x2: X(s), y1: T, y2: p.h }, g);
-      if (p.axis) { const tx = el('text', { x: X(s), y: p.h + 16, 'text-anchor': 'middle' }, svg); tx.textContent = clock(s).slice(0, 5); }
-    }
-    p.series.forEach(s => {
-      let d = '', pen = false;
-      S.t.forEach((t, i) => { const v = S[s.k][i]; if (v == null) { pen = false; return; } d += (pen ? 'L' : 'M') + X(t).toFixed(1) + ' ' + Y(Math.min(v, p.hi)).toFixed(1); pen = true; });
-      el('path', { d, fill: 'none', stroke: css(s.c), 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, svg);
+
+  const PANELS3 = [
+    { title: 'Die temperature (°C)', h: 170, lo: 20, hi: 110, ticks: [20, 40, 60, 80, 100], series: [
+      { k: 'ts0', name: 'DX-M1 die (hottest of 3)', c: 's1' }, { k: 'it', name: 'INA228 chip', c: 's2' }, { k: 'emc', name: 'EMC2101 chip (air near board)', c: 's3' }],
+      notes: [{ t: 3408, v: 86.0, text: 'frame rate back to full, 28.6 % duty' }] },
+    { title: 'DeepX DX-M1 frame rate (fps)', h: 110, lo: 0, hi: 1500, ticks: [0, 500, 1000, 1500], series: [{ k: 'fps', name: 'DX-M1', c: 's1' }] },
+    { title: 'Efficiency (fps/W)', h: 110, lo: 0, hi: 250, ticks: [0, 50, 100, 150, 200, 250], series: [{ k: 'eff', name: 'DX-M1', c: 's3' }] },
+    { title: 'Card rail power (W)', h: 110, lo: 0, hi: 6, ticks: [0, 2, 4, 6], series: [{ k: 'pi', name: 'INA228 rail', c: 's2' }] },
+    { title: 'Reported core clock (MHz)', h: 100, lo: 700, hi: 1050, ticks: [700, 800, 900, 1000], series: [{ k: 'clk', name: 'lowest of 3 cores', c: 's4' }] },
+    { title: 'Fan duty (%) and airflow (m/s)', h: 130, lo: 0, hi: 100, ticks: [0, 50, 100],
+      ry: { lo: 0, hi: 4, ticks: [0, 1, 2, 3, 4] }, series: [
+      { k: 'duty', name: 'applied duty (%), left axis', c: 's5' },
+      { k: 'af', name: 'airflow (m/s), right axis', c: 's4', r: true }], axis: true },
+  ];
+
+  function timeline(SESS, panels, hostId, readoutId, openAt) {
+    const S = SESS.series;
+    const t0 = new Date(SESS.start);
+    const clock = s => { const d = new Date(t0.getTime() + s * 1000); return d.toTimeString().slice(0, 8); };
+    const tmax = S.t[S.t.length - 1];
+    const X = t => L + (t / tmax) * PW;
+    const host = document.getElementById(hostId), cursors = [];
+    panels.forEach(p => {
+      const box = document.createElement('div'); box.style.display = 'grid'; box.style.gap = '2px';
+      const lab = document.createElement('div'); lab.className = 'panel-label';
+      lab.innerHTML = p.title + (p.series.length > 1 ? ' ' + p.series.map(s => `<span><i class="sw" style="background:${css(s.c)}"></i>${s.name}</span>`).join('') : '');
+      box.appendChild(lab);
+      const H = p.h + (p.axis ? 22 : 6), T = 6;
+      const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'chart', role: 'img', 'aria-label': p.title });
+      const Y = v => T + (1 - (v - p.lo) / (p.hi - p.lo)) * (p.h - T);
+      /* a panel may carry a right-hand axis (p.ry); a series marked r reads it */
+      const Yr = p.ry ? v => T + (1 - (v - p.ry.lo) / (p.ry.hi - p.ry.lo)) * (p.h - T) : null;
+      const scaleOf = s => s.r ? { Y: Yr, hi: p.ry.hi } : { Y, hi: p.hi };
+      const g = el('g', { class: 'grid' }, svg);
+      p.ticks.forEach(v => { el('line', { x1: L, x2: W - R, y1: Y(v), y2: Y(v) }, g); const tx = el('text', { x: L - 8, y: Y(v) + 4, 'text-anchor': 'end' }, svg); tx.textContent = v; });
+      if (p.ry) p.ry.ticks.forEach(v => { const tx = el('text', { x: W - R + 8, y: Yr(v) + 4, 'text-anchor': 'start' }, svg); tx.textContent = v; });
+      // vertical time grid every 5 min of clock time
+      const firstMark = Math.ceil((t0.getMinutes() * 60 + t0.getSeconds()) / 300) * 300 - (t0.getMinutes() * 60 + t0.getSeconds());
+      for (let s = firstMark; s <= tmax; s += 300) {
+        el('line', { x1: X(s), x2: X(s), y1: T, y2: p.h }, g);
+        if (p.axis) { const tx = el('text', { x: X(s), y: p.h + 16, 'text-anchor': 'middle' }, svg); tx.textContent = clock(s).slice(0, 5); }
+      }
+      p.series.forEach(s => {
+        let d = '', pen = false; const sc = scaleOf(s);
+        S.t.forEach((t, i) => { const v = S[s.k][i]; if (v == null) { pen = false; return; } d += (pen ? 'L' : 'M') + X(t).toFixed(1) + ' ' + sc.Y(Math.min(v, sc.hi)).toFixed(1); pen = true; });
+        el('path', { d, fill: 'none', stroke: css(s.c), 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, svg);
+      });
+      (p.notes || []).forEach(n => { el('circle', { cx: X(n.t), cy: Y(n.v), r: 4, fill: 'none', stroke: css('fg-2'), 'stroke-width': 1.5 }, svg); const tx = el('text', { x: X(n.t) - 8, y: Y(n.v) - 8, 'text-anchor': 'end', class: 'note' }, svg); tx.textContent = n.text; });
+      const cur = el('line', { y1: T, y2: p.h, stroke: css('fg-3'), 'stroke-width': 1, visibility: 'hidden' }, svg);
+      const dots = p.series.map(s => el('circle', { r: 4, fill: css(s.c), stroke: css('surface'), 'stroke-width': 2, visibility: 'hidden' }, svg));
+      cursors.push({ svg, cur, dots, p, scales: p.series.map(scaleOf) });
+      el('rect', { x: L, y: 0, width: PW, height: H, fill: 'transparent' }, svg);
+      box.appendChild(svg); host.appendChild(box);
     });
-    (p.notes || []).forEach(n => { el('circle', { cx: X(n.t), cy: Y(n.v), r: 4, fill: 'none', stroke: css('fg-2'), 'stroke-width': 1.5 }, svg); const tx = el('text', { x: X(n.t) - 8, y: Y(n.v) - 8, 'text-anchor': 'end', class: 'note' }, svg); tx.textContent = n.text; });
-    const cur = el('line', { y1: T, y2: p.h, stroke: css('fg-3'), 'stroke-width': 1, visibility: 'hidden' }, svg);
-    const dots = p.series.map(s => el('circle', { r: 4, fill: css(s.c), stroke: css('surface'), 'stroke-width': 2, visibility: 'hidden' }, svg));
-    cursors.push({ svg, cur, dots, p, Y });
-    el('rect', { x: L, y: 0, width: PW, height: H, fill: 'transparent' }, svg);
-    box.appendChild(svg); host.appendChild(box);
-  });
-  const readout = document.getElementById('tl-readout');
-  function setCursor(i) {
-    const t = S.t[i], x = X(t);
-    cursors.forEach(c => { c.cur.setAttribute('x1', x); c.cur.setAttribute('x2', x); c.cur.setAttribute('visibility', 'visible');
-      c.p.series.forEach((s, j) => { const v = S[s.k][i]; const d = c.dots[j]; if (v == null) { d.setAttribute('visibility', 'hidden'); return; } d.setAttribute('cx', x); d.setAttribute('cy', c.Y(Math.min(v, c.p.hi))); d.setAttribute('visibility', 'visible'); }); });
-    readout.innerHTML = `<span><b>${clock(t)}</b></span>` +
-      `<span><i class="sw" style="background:${css('s1')}"></i>die <b>${fmt(S.ts0[i], 1)} °C</b></span>` +
-      `<span><i class="sw" style="background:${css('s1')}"></i><b>${fmt(S.fps[i], 0)} fps</b> @ ${fmt(S.clk[i], 0)} MHz</span>` +
-      `<span><i class="sw" style="background:${css('s3')}"></i><b>${fmt(S.eff[i], 0)} fps/W</b></span>` +
-      `<span><i class="sw" style="background:${css('s2')}"></i>rail <b>${fmt(S.pi[i], 2)} W</b> at ${fmt(S.v[i], 3)} V</span>` +
-      `<span><i class="sw" style="background:${css('s5')}"></i>fan <b>${fmt(S.duty[i], 1)} %</b>, ${fmt(S.rpm[i], 0)} rpm</span>` +
-      `<span><i class="sw" style="background:${css('s4')}"></i>air <b>${fmt(S.af[i], 2)} m/s</b></span>`;
+    const readout = document.getElementById(readoutId);
+    function setCursor(i) {
+      const t = S.t[i], x = X(t);
+      cursors.forEach(c => { c.cur.setAttribute('x1', x); c.cur.setAttribute('x2', x); c.cur.setAttribute('visibility', 'visible');
+        c.p.series.forEach((s, j) => { const v = S[s.k][i]; const d = c.dots[j]; const sc = c.scales[j];
+          if (v == null) { d.setAttribute('visibility', 'hidden'); return; }
+          d.setAttribute('cx', x); d.setAttribute('cy', sc.Y(Math.min(v, sc.hi))); d.setAttribute('visibility', 'visible'); }); });
+      readout.innerHTML = `<span><b>${clock(t)}</b></span>` +
+        `<span><i class="sw" style="background:${css('s1')}"></i>die <b>${fmt(S.ts0[i], 1)} °C</b></span>` +
+        `<span><i class="sw" style="background:${css('s1')}"></i><b>${fmt(S.fps[i], 0)} fps</b> @ ${fmt(S.clk[i], 0)} MHz</span>` +
+        `<span><i class="sw" style="background:${css('s3')}"></i><b>${fmt(S.eff[i], 0)} fps/W</b></span>` +
+        `<span><i class="sw" style="background:${css('s2')}"></i>rail <b>${fmt(S.pi[i], 2)} W</b> at ${fmt(S.v[i], 3)} V</span>` +
+        `<span><i class="sw" style="background:${css('s5')}"></i>fan <b>${fmt(S.duty[i], 1)} %</b>, ${fmt(S.rpm[i], 0)} rpm</span>` +
+        `<span><i class="sw" style="background:${css('s4')}"></i>air <b>${fmt(S.af[i], 2)} m/s</b></span>`;
+    }
+    function onMove(ev) {
+      const svg = ev.currentTarget, r = svg.getBoundingClientRect();
+      const vx = (ev.clientX - r.left) / r.width * W; const t = Math.max(0, Math.min(tmax, (vx - L) / PW * tmax));
+      let lo = 0, hi = S.t.length - 1; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (S.t[m] < t) lo = m; else hi = m; }
+      setCursor(t - S.t[lo] < S.t[hi] - t ? lo : hi);
+    }
+    cursors.forEach(c => { c.svg.addEventListener('pointermove', onMove); c.svg.addEventListener('pointerdown', onMove); });
+    // open on the throttle moment so the readout is populated at rest
+    setCursor(Math.max(0, S.t.findIndex(t => t >= openAt)));
   }
-  function onMove(ev) {
-    const svg = ev.currentTarget, r = svg.getBoundingClientRect();
-    const vx = (ev.clientX - r.left) / r.width * W; const t = Math.max(0, Math.min(tmax, (vx - L) / PW * tmax));
-    let lo = 0, hi = S.t.length - 1; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (S.t[m] < t) lo = m; else hi = m; }
-    setCursor(t - S.t[lo] < S.t[hi] - t ? lo : hi);
-  }
-  cursors.forEach(c => { c.svg.addEventListener('pointermove', onMove); c.svg.addEventListener('pointerdown', onMove); });
-  // open on the throttle moment so the readout is populated at rest
-  setCursor(S.t.findIndex(t => t >= 1260));
+
+  timeline(SESSION2, PANELS2, 'tl2-panels', 'tl2-readout', 3408);
+  timeline(SESSION3, PANELS3, 'tl3-panels', 'tl3-readout', 3408);
 
   /* ---------- generic x/y chart for scatter and fan curves ---------- */
   function xy(hostId, o) {
@@ -301,7 +502,12 @@ footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule);
     const xl = el('text', { x: l + pw / 2, y: H2 - 2, 'text-anchor': 'middle' }, svg); xl.textContent = o.xname;
     if (o.line) { el('path', { d: o.pts.map((p, i) => (i ? 'L' : 'M') + Xs(p[0]).toFixed(1) + ' ' + Ys(p[1]).toFixed(1)).join(''), fill: 'none', stroke: css(o.c), 'stroke-width': 2, 'stroke-linejoin': 'round' }, svg); }
     const marks = o.pts.map(p => el('circle', { cx: Xs(p[0]), cy: Ys(p[1]), r: o.r || 4, fill: css(o.c), 'fill-opacity': o.alpha || 1, stroke: o.line ? css('surface') : 'none', 'stroke-width': o.line ? 2 : 0 }, svg));
-    if (o.extra) { o.extra.pts.forEach(p => el('circle', { cx: Xs(p[0]), cy: Ys(p[1]), r: o.r || 4, fill: css(o.extra.c), 'fill-opacity': 0.85 }, svg)); o.pts = o.pts.concat(o.extra.pts); }
+    if (o.extra) {
+      const extras = Array.isArray(o.extra) ? o.extra : [o.extra];
+      extras.forEach(ex => {
+        if (ex.line) { el('path', { d: ex.pts.map((p, i) => (i ? 'L' : 'M') + Xs(p[0]).toFixed(1) + ' ' + Ys(p[1]).toFixed(1)).join(''), fill: 'none', stroke: css(ex.c), 'stroke-width': 2, 'stroke-dasharray': ex.dash || '5 3', 'stroke-linejoin': 'round' }, svg); }
+        ex.pts.forEach(p => el('circle', { cx: Xs(p[0]), cy: Ys(p[1]), r: o.r || 4, fill: css(ex.c), 'fill-opacity': 0.85, stroke: ex.line ? css('surface') : 'none', 'stroke-width': ex.line ? 2 : 0 }, svg));
+        o.pts = o.pts.concat(ex.pts); }); }
     const hl = el('circle', { r: 6, fill: 'none', stroke: css('fg'), 'stroke-width': 1.5, visibility: 'hidden' }, svg);
     const hit = el('rect', { x: l, y: t, width: pw, height: ph, fill: 'transparent' }, svg);
     const move = ev => { const rc = svg.getBoundingClientRect(); const mx = (ev.clientX - rc.left) / rc.width * W2, my = (ev.clientY - rc.top) / rc.height * H2;
@@ -312,18 +518,102 @@ footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule);
     hit.addEventListener('pointerleave', () => { hl.setAttribute('visibility', 'hidden'); hideTip(); });
     document.getElementById(hostId).appendChild(svg);
   }
-  xy('scatter', { label: 'Rail power against die temperature', pts: SESSION.scatter, x0: 30, x1: 110, y0: 3, y1: 4.6, xt: [30, 50, 70, 90, 110], yt: [3, 3.4, 3.8, 4.2, 4.6], yf: v => v.toFixed(1) + ' W', xname: 'Hailo-8 die temperature (°C)', c: 's2', r: 3, alpha: 0.75,
+  xy('scatter', { label: 'Rail power against die temperature, Hailo-8',
+    pts: SESSION2.scatter.map(p => [p[0], p[1], 2]),
+    x0: 45, x1: 110, y0: 4.2, y1: 5.4, xt: [45, 60, 75, 90, 105], yt: [4.2, 4.5, 4.8, 5.1, 5.4], yf: v => v.toFixed(1) + ' W', xname: 'Hailo-8 die temperature (°C)', c: 's1', r: 3, alpha: 0.75,
     tip: p => `${p[0].toFixed(1)} °C · ${p[1].toFixed(2)} W` });
-  { const pts = SESSION.eff_scatter;
-    xy('eff-scatter', { label: 'Efficiency against die temperature', pts: pts.filter(p => !p[2]), extra: { pts: pts.filter(p => p[2]), c: 's2' }, x0: 30, x1: 110, y0: 240, y1: 360, xt: [30, 50, 70, 90, 110], yt: [240, 270, 300, 330, 360], xname: 'Hailo-8 die temperature (°C)', c: 's3', r: 3, alpha: 0.75,
+  { const pts = SESSION2.eff_scatter;
+    xy('eff-scatter2', { label: 'Efficiency against die temperature, Hailo-8', pts: pts.filter(p => !p[2]), extra: { pts: pts.filter(p => p[2]), c: 's2' }, x0: 45, x1: 110, y0: 210, y1: 330, xt: [45, 60, 75, 90, 105], yt: [210, 240, 270, 300, 330], xname: 'Hailo-8 die temperature (°C)', c: 's3', r: 3, alpha: 0.75,
       tip: p => `${p[0].toFixed(1)} °C · ${Math.round(p[1])} fps/W${p[2] ? ' · throttled' : ''}` }); }
-  const sw = SESSION.sweep;
-  xy('fan-rpm', { label: 'Fan speed against duty', line: true, pts: sw.map(s => [s.duty, s.rpm]), x0: 0, x1: 100, y0: 0, y1: 5000, xt: [0, 25, 50, 75, 100], yt: [0, 1000, 2000, 3000, 4000, 5000], xname: 'duty (%)', c: 's5', tip: p => `${p[0].toFixed(1)} % · ${Math.round(p[1])} rpm` });
-  xy('fan-af', { label: 'Airflow against duty', line: true, pts: sw.map(s => [s.duty, s.af]), x0: 0, x1: 100, y0: 0, y1: 4, xt: [0, 25, 50, 75, 100], yt: [0, 1, 2, 3, 4], xname: 'duty (%)', c: 's4', tip: p => `${p[0].toFixed(1)} % · ${p[1].toFixed(2)} m/s` });
+  xy('scatter3', { label: 'Rail power against die temperature, DeepX DX-M1',
+    pts: SESSION3.scatter.map(p => [p[0], p[1], 3]),
+    x0: 40, x1: 95, y0: 5.1, y1: 5.9, xt: [40, 55, 70, 85], yt: [5.1, 5.3, 5.5, 5.7, 5.9], yf: v => v.toFixed(1) + ' W', xname: 'DX-M1 die temperature (°C)', c: 's4', r: 3, alpha: 0.75,
+    tip: p => `${p[0].toFixed(0)} °C · ${p[1].toFixed(2)} W` });
+  { const pts = SESSION3.eff_scatter;
+    xy('eff-scatter3', { label: 'Efficiency against die temperature, DeepX DX-M1', pts: pts.filter(p => !p[2]), extra: { pts: pts.filter(p => p[2]), c: 's2' }, x0: 40, x1: 95, y0: 170, y1: 210, xt: [40, 55, 70, 85], yt: [170, 180, 190, 200, 210], xname: 'DX-M1 die temperature (°C)', c: 's4', r: 3, alpha: 0.75,
+      tip: p => `${p[0].toFixed(0)} °C · ${Math.round(p[1])} fps/W${p[2] ? ' · clock caught at 800 MHz' : ''}` }); }
+  const sw2 = SESSION2.sweep, sw3 = SESSION3.sweep;
+  xy('fan-rpm', { label: 'Fan speed against duty, both runs', line: true,
+    pts: sw2.map(s => [s.duty, s.rpm, 2]), extra: [{ pts: sw3.map(s => [s.duty, s.rpm, 3]), c: 's1', line: true, dash: '2 3' }],
+    x0: 0, x1: 100, y0: 0, y1: 5000, xt: [0, 25, 50, 75, 100], yt: [0, 1000, 2000, 3000, 4000, 5000], xname: 'duty (%)', c: 's5',
+    tip: p => `${p[2] === 2 ? 'Hailo-8' : 'DX-M1'} run · ${p[0].toFixed(1)} % · ${Math.round(p[1])} rpm` });
+  xy('fan-af', { label: 'Airflow against duty, both runs', line: true,
+    pts: sw2.map(s => [s.duty, s.af, 2]), extra: [{ pts: sw3.map(s => [s.duty, s.af, 3]), c: 's1', line: true, dash: '2 3' }],
+    x0: 0, x1: 100, y0: 0, y1: 4, xt: [0, 25, 50, 75, 100], yt: [0, 1, 2, 3, 4], xname: 'duty (%)', c: 's4',
+    tip: p => `${p[2] === 2 ? 'Hailo-8' : 'DX-M1'} run · ${p[0].toFixed(1)} % · ${p[1].toFixed(2)} m/s` });
 
-  const tb = document.querySelector('#sweep-table tbody');
-  sw.forEach(s => { const tr = document.createElement('tr');
-    tr.innerHTML = [fmt(s.duty, 1), s.secs, Math.round(s.rpm).toLocaleString('en-US'), fmt(s.af, 2), fmt(s.t_start, 1), fmt(s.t_end, 1), fmt(s.p, 2), Math.round(s.fps), Math.round(s.fps / s.p)].map(v => `<td class="n">${v}</td>`).join('');
-    tb.appendChild(tr); });
+  /* ---------- lines(): several named series on one x/y plot ---------- */
+  function lines(hostId, o) {
+    const W2 = 940, H2 = o.h || 300, l = 54, r = 16, t = 12, b = 38, pw = W2 - l - r, ph = H2 - t - b;
+    const svg = el('svg', { viewBox: `0 0 ${W2} ${H2}`, class: 'chart', role: 'img', 'aria-label': o.label });
+    const Xs = v => l + (v - o.x0) / (o.x1 - o.x0) * pw, Ys = v => t + (1 - (v - o.y0) / (o.y1 - o.y0)) * ph;
+    const g = el('g', { class: 'grid' }, svg);
+    o.yt.forEach(v => { el('line', { x1: l, x2: W2 - r, y1: Ys(v), y2: Ys(v) }, g);
+      const tx = el('text', { x: l - 7, y: Ys(v) + 4, 'text-anchor': 'end' }, svg); tx.textContent = o.yf ? o.yf(v) : v; });
+    o.xt.forEach(v => { el('line', { x1: Xs(v), x2: Xs(v), y1: t, y2: t + ph }, g);
+      const tx = el('text', { x: Xs(v), y: H2 - b + 18, 'text-anchor': 'middle' }, svg); tx.textContent = o.xf ? o.xf(v) : v; });
+    const xl = el('text', { x: l + pw / 2, y: H2 - 2, 'text-anchor': 'middle' }, svg); xl.textContent = o.xname;
+    o.series.forEach(ser => {
+      let d = '', pen = false;
+      ser.y.forEach((v, i) => {
+        if (v == null || o.x[i] == null) { pen = false; return; }
+        d += (pen ? 'L' : 'M') + Xs(o.x[i]).toFixed(1) + ' ' + Ys(v).toFixed(1); pen = true; });
+      if (d) el('path', { d, fill: 'none', stroke: css(ser.c), 'stroke-width': ser.w || 1.8,
+        'stroke-dasharray': ser.dash || 'none', 'stroke-opacity': ser.alpha || 1, 'stroke-linejoin': 'round' }, svg);
+    });
+    const hl = el('line', { y1: t, y2: t + ph, stroke: css('fg-3'), 'stroke-width': 1, visibility: 'hidden' }, svg);
+    const hit = el('rect', { x: l, y: t, width: pw, height: ph, fill: 'transparent' }, svg);
+    const move = ev => { const rc = svg.getBoundingClientRect();
+      const mx = (ev.clientX - rc.left) / rc.width * W2;
+      const xv = o.x0 + (mx - l) / pw * (o.x1 - o.x0);
+      let best = -1, bd = 1e9;
+      o.x.forEach((v, i) => { if (v == null) return; const dd = Math.abs(v - xv); if (dd < bd) { bd = dd; best = i; } });
+      if (best < 0) return;
+      hl.setAttribute('x1', Xs(o.x[best])); hl.setAttribute('x2', Xs(o.x[best])); hl.setAttribute('visibility', 'visible');
+      const rows = o.series.map(ser => ser.y[best] == null ? null
+        : `<i class="sw" style="background:var(--${ser.c})"></i>${ser.name} <b>${o.tf ? o.tf(ser.y[best]) : ser.y[best]}</b>`).filter(Boolean);
+      showTip(`<b>${o.xtip ? o.xtip(o.x[best]) : o.x[best]}</b><br>` + rows.join('<br>'), ev); };
+    hit.addEventListener('pointermove', move); hit.addEventListener('pointerdown', move);
+    hit.addEventListener('pointerleave', () => { hl.setAttribute('visibility', 'hidden'); hideTip(); });
+    document.getElementById(hostId).appendChild(svg);
+  }
+
+  { const O = OVERLAY, mins = O.t.map(v => v / 60);
+    const XT = [0, 15, 30, 45, 60, 75, 90, 105, 120], xn = 'minutes into the run (fan off for the first 30)';
+    const xtip = v => v.toFixed(1) + ' min';
+    lines('ov-temp', { label: 'Die temperature against time, both cards', h: 320, x: mins,
+      x0: 0, x1: 133, y0: 20, y1: 110, xt: XT, yt: [20, 40, 60, 80, 100], yf: v => v + ' °C',
+      xname: xn, xtip, tf: v => v.toFixed(1),
+      series: [{ y: O.h_die, name: 'Hailo-8 die', c: 's2' }, { y: O.d_die, name: 'DX-M1 die', c: 's1' }] });
+    lines('ov-fps', { label: 'Normalised frame rate against time, both cards', h: 280, x: mins,
+      x0: 0, x1: 133, y0: 70, y1: 105, xt: XT, yt: [70, 80, 90, 100], yf: v => v + ' %',
+      xname: xn, xtip, tf: v => v.toFixed(1) + ' %',
+      series: [{ y: O.h_pct, name: 'Hailo-8, % of 1372 fps', c: 's2' }, { y: O.d_pct, name: 'DX-M1, % of 1067 fps', c: 's1' }] });
+    lines('ov-eff', { label: 'Power efficiency against time, both cards', h: 300, x: mins,
+      x0: 0, x1: 133, y0: 170, y1: 330, xt: XT, yt: [170, 200, 230, 260, 290, 320], yf: v => v + ' fps/W',
+      xname: xn, xtip, tf: v => v.toFixed(1) + ' fps/W',
+      series: [{ y: O.h_eff, name: 'Hailo-8', c: 's2' }, { y: O.d_eff, name: 'DX-M1', c: 's1' }] });
+    /* duty 0 is the end of the 30-minute fan-off soak: the one true equilibrium on this chart */
+    lines('ov-tr', { label: 'Thermal resistance against applied fan duty, both cards', h: 280,
+      x: [0].concat(O.h_lvl.map(v => v.duty)),
+      x0: 0, x1: 100, y0: 6, y1: 20, xt: [0, 20, 40, 60, 80, 100], yt: [6, 8, 10, 12, 14, 16, 18, 20],
+      yf: v => v + ' °C/W', xname: 'applied fan duty (%)  ·  0 = end of the fan-off soak', xtip: v => v === 0 ? 'fan off, settled' : v.toFixed(1) + ' % duty', tf: v => v.toFixed(2),
+      series: [{ y: [O.ref.h.tr].concat(O.h_lvl.map(v => v.tr)), name: 'Hailo-8', c: 's2', w: 2 },
+               { y: [O.ref.d.tr].concat(O.d_lvl.map(v => v.tr)), name: 'DX-M1', c: 's1', w: 2 }] }); }
+  xy('ov-eff-t', { label: 'Power efficiency against die temperature, both cards',
+    pts: SESSION2.eff_scatter.map(p => [p[0], p[1], 'Hailo-8']),
+    extra: [{ pts: SESSION3.eff_scatter.map(p => [p[0], p[1], 'DX-M1']), c: 's1' }],
+    x0: 40, x1: 110, y0: 170, y1: 330, xt: [40, 55, 70, 85, 100], yt: [170, 200, 230, 260, 290, 320],
+    xname: 'die temperature (°C)', c: 's2', r: 3, alpha: 0.7,
+    tip: p => `${p[2]} · ${p[0].toFixed(1)} °C · ${Math.round(p[1])} fps/W` });
+
+  function fillSweep(sel, rows) {
+    const tb = document.querySelector(sel);
+    rows.forEach(s => { const tr = document.createElement('tr');
+      tr.innerHTML = [fmt(s.duty, 1), s.secs, Math.round(s.rpm).toLocaleString('en-US'), fmt(s.af, 2), fmt(s.t_start, 1), fmt(s.t_end, 1), fmt(s.p, 2), Math.round(s.fps), Math.round(s.fps / s.p)].map(v => `<td class="n">${v}</td>`).join('');
+      tb.appendChild(tr); });
+  }
+  fillSweep('#sweep-table2 tbody', sw2);
+  fillSweep('#sweep-table3 tbody', sw3);
 })();
 </script>

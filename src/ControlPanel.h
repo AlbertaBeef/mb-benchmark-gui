@@ -124,6 +124,12 @@ public:
     // what the graph shows.
     void set_fan_present(bool present);
     void set_fan_duty_readback(double pct);
+    // Set the duty as if the user had typed it: the spin moves and the normal
+    // handler sends `fan <percent>`, so there is one path to the hardware and
+    // the panel always shows what the board was last told. Automation uses it.
+    // It also ends the readback sync, for the reason a user change does — from
+    // here on the plan owns the duty, not the board's own idea of it.
+    void set_fan_duty(double pct);
     sigc::signal<void(double)>& signal_fan_duty_changed() { return sig_fan_duty_; }
 
     // Per-accelerator settings from the Accelerators section's rows.

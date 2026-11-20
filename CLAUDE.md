@@ -315,7 +315,64 @@ Three layers, cleanly separated. Keep it that way.
 
   **Every per-card control is settable per step**, written `<vendor>.<knob>`
   (`hailo.api`, `axelera.cores`, `qualcomm.perf`), plus an `accelerators =`
-  whitelist. `[automation]` holds the defaults and a step overlays them field by
+  whitelist.
+
+  **The RA6M5 fan is settable too, and it is the one plan key that is not
+  per-card** (2026-11-19) — one fan cools whatever is in front of it, so it
+  sits beside `benchmark`/`idle` rather than under a `<vendor>.` prefix.
+  `fan = <pct>` is the duty held from the start of a run; `fan.start` /
+  `fan.step` / `fan.every` add a ramp that takes over `fan.after` into the run
+  and stops at `fan.max`. **Intervals are minutes, like every other duration
+  in a plan** — mixing seconds in would have been the obvious units bug.
+  `FanPlan::at(t)` computes the duty from `t` rather than accumulating, so a
+  ramp cannot drift and a missed tick cannot lose a step. Four things are
+  deliberate:
+  - **A plan that says nothing about the fan does not touch it.** The firmware
+    keeps its duty across host disconnects, so a default of 0 would stop a fan
+    the user had running. `FanPlan::states_anything()` is that gate.
+  - **It drives the panel's spin, not `Probes` directly**, the same reason
+    every other setting goes through the widgets: one path to the hardware, and
+    the Telemetry row keeps showing what the board was last told.
+  - **It is applied at the start of a run and on change only** — one I2C write
+    per step, not one per tick — and each change is logged with the time into
+    the run, since the ramp appears nowhere else in the CSV.
+  - **Duty is quantised to 1/63 (1.587 %) by the EMC2101**, so consecutive 1 %
+    requests can land on the same level (`fan 6` and `fan 7` both apply 6.3 %,
+    verified on hardware). **Read `<port>_FAN_DUTY`, the board's own readback,
+    never the requested percent.** A plan asking for the fan on a host with no
+    such board logs that once and carries on.
+
+  `config/automation-thermal-{hailo,deepx}.conf` are the plans this was built
+  for: one continuous run, 30 min with the fan off, then 5 % rising 1 %/min to
+  100 %. **The two schedules are deliberately identical**, so a difference
+  between the cards' curves is the card and not the timing; the soak is set by
+  whichever settles slower, which is the DX-M1 by about 6x. The headers show
+  the working, measured from `logs/` — **the Hailo throttles at 180-240 s and
+  plateaus at 105-108 C by 300 s, while the DX-M1 flattens at 89 C near
+  1200 s.** Both plans have now been run end to end (2026-11-19); the soak
+  margin question is settled — the DX-M1 was flat at 89.0 C for the last 5
+  minutes of its 30 min. Two consequences worth keeping: the throttled Hailo
+  plateau is an *oscillation* (fps cycling 925-1080), so a single sample of it
+  means nothing; and the DX-M1 plateau is an oscillation too, for a reason the
+  clock column hides — see below.
+
+  **THE DX-M1 DOES THROTTLE, and `_C<n>` is the wrong instrument to see it
+  with.** This file and the plan header both said it did not, on the strength
+  of a 23.7-minute run whose fps never dropped. The 125-minute run disproves
+  it: at the 89 C plateau the frame rate settles at **979 fps against 1083
+  while warming** — a 9.6 % loss that persists for the whole soak and recovers
+  completely once the fan arrives. What makes it easy to miss is the sampling:
+  `dxrt-cli` reports an **instantaneous** clock, and it catches 1000 -> 800 MHz
+  in only **9.9 %** of the samples in that window (130 of 1312, every one a
+  lone 1 s blip at 88-89 C), while the frame rate — a full 1 s average —
+  implies the card is at 800 MHz about **41 %** of the time. Restricting to
+  samples that report a flat 1000 MHz on all three cores *still* shows **8.1 %**
+  of the loss, so essentially all of it hides inside samples claiming full
+  clock. The dither is sub-second and a 1 Hz point read cannot resolve it.
+  **Use the frame rate, not the clock, to decide whether this card is
+  throttling** — and never conclude "no throttle" from a run that stayed below
+  the knee. It stops the moment the fan takes the die under ~88 C, i.e. from
+  20.6 % duty. `[automation]` holds the defaults and a step overlays them field by
   field — `AccelSettings::overlay()`, where every field has a `kUnset` sentinel
   so a step can change one knob without restating the rest. Step options are
   **named, not positional**: with a dozen knobs a positional list would be

@@ -1054,6 +1054,7 @@ void MainWindow::tick_automation() {
             return;
         }
         auto_phase_s_ += 1.0;
+        apply_automation_fan(auto_phase_s_);
         if (auto_phase_s_ >= auto_plan_.bench_for(auto_step_)) {
             log_.note("automation: step " + std::to_string(auto_step_ + 1) +
                       " reached its benchmark duration — stopping");
@@ -1094,7 +1095,9 @@ void MainWindow::tick_automation() {
             auto_owns_run_ = engine_.active();
             auto_first_ = false;
             auto_phase_s_ = 0.0;
+            auto_fan_last_ = -1.0;   // re-assert for this step, even if unchanged
             if (auto_owns_run_) {
+                apply_automation_fan(0.0);
                 log_.note("automation: step " + std::to_string(auto_step_ + 1) +
                           "/" + std::to_string(auto_plan_.steps.size()) + " " +
                           st.id + " for " +
@@ -1123,6 +1126,43 @@ void MainWindow::tick_automation() {
         "<small>" + Glib::Markup::escape_text(auto_plan_.path) +
         "</small>");
     log_.note("automation: no step in the plan is runnable — stopping");
+}
+
+// Drive the fan from the plan. `t` is seconds into the current run.
+//
+// Goes through the control panel rather than straight to Probes, for the reason
+// every other automation setting does: the panel keeps showing what is actually
+// in force, and there stays exactly one path from a duty to the board.
+//
+// A plan that says nothing about the fan must not touch it — the firmware keeps
+// its duty across host disconnects, so silently zeroing it would stop a fan the
+// user had running.
+void MainWindow::apply_automation_fan(double t) {
+    if (!auto_plan_.enabled) return;
+    const FanPlan& f = auto_plan_.settings_for(auto_step_).fan;
+    if (!f.states_anything()) return;
+
+    if (!probes_.has_fan_control()) {
+        if (!auto_fan_warned_) {
+            auto_fan_warned_ = true;
+            log_.note("automation: the plan sets the fan, but no probe board "
+                      "with a fan was found — fan settings ignored");
+        }
+        return;
+    }
+
+    const double want = f.at(t);
+    if (want == FanPlan::kUnset) return;
+    // Only on change: one I2C write per step, not one per tick.
+    if (auto_fan_last_ >= 0.0 && std::fabs(want - auto_fan_last_) < 1e-9) return;
+    auto_fan_last_ = want;
+    // The panel's handler is what sends `fan <percent>` and logs the applied
+    // duty, so nothing is logged twice here beyond why it moved.
+    controls_->set_fan_duty(want);
+    char b[128];
+    std::snprintf(b, sizeof b, "automation: fan -> %.0f %% at %s into the run",
+                  want, fmt_mmss(static_cast<int>(t + 0.5)).c_str());
+    log_.note(b);
 }
 
 // The plan has finished. Optionally hold for `end`, then close the app.

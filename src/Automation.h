@@ -40,8 +40,52 @@ struct AccelSettings {
     void overlay(const AccelSettings& o);
 };
 
+// Fan duty for an RA6M5 probe board's EMC2101, with an optional ramp.
+//
+// Not per-accelerator: there is one fan and it cools whatever is in front of
+// it, so this sits beside `benchmark`/`idle` as a plan-and-step setting rather
+// than under a `<vendor>.` prefix.
+//
+// `duty` is held from the moment a run starts. The ramp, if stated, takes over
+// `after` seconds in and steps every `every` seconds until it reaches `max` —
+// which is a thermal experiment's natural shape: hold one condition until the
+// card settles, then walk the cooling and watch it respond.
+//
+// Durations are seconds here and MINUTES in the file, like every other
+// duration in a plan; load_automation_plan() converts.
+//
+// Two things the caller should know. The EMC2101 has 64 duty levels, so a
+// requested percent is rounded to the nearest 1/63 (1.587 %) and consecutive
+// 1 % requests can land on the same level — the board reports what it actually
+// applied, and that readback is what the CSV's FAN_DUTY column carries, so
+// read the applied value and not the request. And the firmware keeps its duty
+// across host disconnects, so a plan that never mentions the fan leaves it
+// exactly as it was.
+struct FanPlan {
+    static constexpr double kUnset = -1.0;
+    double duty  = kUnset;   // % held from the start of a run
+    double start = kUnset;   // ramp: the first duty it applies
+    double step  = kUnset;   // added at every interval; may be negative
+    double every = kUnset;   // seconds between increments
+    double after = kUnset;   // seconds into the run before the ramp begins
+    double max   = kUnset;   // the duty the ramp stops at (a floor if step < 0)
+
+    // A ramp needs all three of start/step/every; anything less is a constant.
+    bool ramps() const {
+        return start != kUnset && step != kUnset && every != kUnset;
+    }
+    // Whether this plan says anything about the fan at all. A plan that says
+    // nothing must not touch it.
+    bool states_anything() const { return duty != kUnset || ramps(); }
+    // The duty wanted `t` seconds into a run, or kUnset for "say nothing".
+    double at(double t) const;
+
+    void overlay(const FanPlan& o);
+};
+
 struct AutomationSettings {
     AccelSettings accel[kAccelCount];
+    FanPlan fan;
     void overlay(const AutomationSettings& o);
 };
 
