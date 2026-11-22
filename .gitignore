@@ -23,5 +23,20 @@ logs/
 *.csv
 *.png
 
+# ...but NOTHING UNDER docs/ IS INCIDENTAL. That tree is curated by hand: the
+# session CSVs kept as evidence, the generated report data, and the report
+# pages themselves. The four blanket patterns above would swallow all three
+# kinds, and the failure is silent in the way that matters: `git add` on an
+# ignored path stages NOTHING, printing a hint and exiting 1, which is easy to
+# miss inside a batch of other adds. That is exactly how the two 353-minute
+# session logs were left out of 31c2df5 while appearing to have been added,
+# and why docs/reports/.../index.html and the 19 Nov CSVs are in the repo only
+# because somebody remembered `-f`.
+#
+# Re-included as a whole subtree rather than extension by extension, so the
+# next report format is not a fourth instance of the same trap. This must stay
+# BELOW the patterns it overrides and ABOVE __pycache__/, which still applies.
+!docs/**
+
 # Python bytecode from tools/.
 __pycache__/
