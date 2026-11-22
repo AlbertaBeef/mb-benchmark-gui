@@ -349,7 +349,12 @@ MainWindow::MainWindow(AutomationPlan plan)
         // A setting that changes what the airflow and temperature columns
         // measure, so it goes in the log; the readback in FAN_DUTY confirms it.
         char b[64];
-        std::snprintf(b, sizeof b, "fan duty set to %.0f %%", pct);
+        // ONE DECIMAL, matching exactly what Probes::set_fan_duty() puts on the
+        // wire (`fan %.1f`). The EMC2101's 64 levels are 1.5873 % apart, so a
+        // plan that steps one level at a time asks for 9.5238 / 11.1111 /
+        // 12.6984 — which %.0f logged as 10 / 11 / 13, with repeats, making the
+        // ladder unreadable in the message column. Don't round this back.
+        std::snprintf(b, sizeof b, "fan duty set to %.1f %%", pct);
         if (!probes_.set_fan_duty(pct)) std::strcat(b, " — no board accepted it");
         log_.note(b);
     });
@@ -1160,7 +1165,9 @@ void MainWindow::apply_automation_fan(double t) {
     // duty, so nothing is logged twice here beyond why it moved.
     controls_->set_fan_duty(want);
     char b[128];
-    std::snprintf(b, sizeof b, "automation: fan -> %.0f %% at %s into the run",
+    // One decimal — see the fan-duty handler: a one-level ramp asks for
+    // fractional percentages and %.0f collapses them onto each other.
+    std::snprintf(b, sizeof b, "automation: fan -> %.1f %% at %s into the run",
                   want, fmt_mmss(static_cast<int>(t + 0.5)).c_str());
     log_.note(b);
 }
