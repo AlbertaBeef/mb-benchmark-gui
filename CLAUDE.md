@@ -1429,9 +1429,11 @@ of fan-off idle (`fan.idle = 0`).
 - **What losing the thermocouple costs is the ESTIMATE, not the temperature.**
   `die_est − die` over each settled window: closed **+0.343 ± 0.077**, |max|
   0.560, and it **never once** read the die cooler than it was (0 of 600).
-  Open: **+0.221 ± 0.591**, |max| 1.402, under-reading on **303 of 600** — a
-  third of the hold spent believing there was more margin than there was, and
-  undetectable from the board. The sd is **7.6× worse** because the open
+  Open: **+0.221 ± 0.591**, |max| 1.402, under-reading on **303 of 600 — half
+  the hold** spent believing there was more margin than there was, and
+  undetectable from the board. (32.5 % over the whole arm, because the approach
+  is dominated by `die_est` tracking the setpoint by construction; the settled
+  half is the figure that means something.) The sd is **7.6× worse** because the open
   estimate is computed *from* the applied duty, so every 1.587 % EMC2101 step
   swings it; the closed one is anchored to a measurement and does not move.
   Open loop's smaller *mean* is two model errors partly cancelling — luck, not
