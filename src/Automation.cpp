@@ -138,13 +138,79 @@ bool apply_accel_key(AutomationSettings& s, const std::string& vendor,
 // `fan` and `fan.<knob>`. Kept apart from apply_accel_key() because the fan is
 // not a card: "fan" has no dot at all, and "fan.start" has one whose left half
 // is not a vendor, so both would fall through to "unknown accelerator".
+const char* const kRampVsLoop =
+    "a fan ramp and fan.mode's control loop would both drive the fan; "
+    "use one or the other";
+
 bool apply_fan_key(FanPlan& f, const std::string& knob, const std::string& val,
                    std::string& why) {
     const std::string k = lower(knob);
+    // The RA6M5's on-board control loop. `fan.mode` is what turns it on; the
+    // board then owns the duty, so the ramp knobs and a fixed duty are refused
+    // alongside it rather than silently losing to whichever wrote last.
+    if (k == "mode") {
+        const std::string v = lower(val);
+        if (v == "off") f.mode = FanPlan::kModeOff;
+        else if (v == "on") f.mode = FanPlan::kModeOn;
+        else { why = "fan.mode must be off or on, got '" + val + "'"; return false; }
+        if (f.conflicts()) {
+            why = "fan.mode drives the fan from the board, so it cannot be "
+                  "combined with fan/fan.start/fan.step/fan.every "
+                  "(fan.idle is the one that can: it applies only while the "
+                  "loop is not driving)";
+            return false;
+        }
+        return true;
+    }
+    // Which source the loop regulates on. Both may be on: the board prefers the
+    // real sensor and uses the estimate as its fallback.
+    if (k == "tc" || k == "nn") {
+        const std::string v = lower(val);
+        int* dst = (k == "tc") ? &f.tc : &f.nn;
+        if (v == "on" || v == "true" || v == "1") *dst = FanPlan::kFlagOn;
+        else if (v == "off" || v == "false" || v == "0") *dst = FanPlan::kFlagOff;
+        else { why = "fan." + k + " must be on or off, got '" + val + "'"; return false; }
+        return true;
+    }
+    if (k == "target") {
+        // `auto` hands the choice to the board, which holds the measured
+        // per-card bound. Worth having as a word rather than a number: a plan
+        // that names 95 cannot say whether it meant "the Hailo-8's bound" or
+        // "95 degrees", and those stop being the same thing the moment another
+        // card is in the slot.
+        if (lower(val) == "auto") {
+            f.target_auto = FanPlan::kFlagOn;
+            return true;
+        }
+        // The firmware's own range. Refused rather than clamped: a plan whose
+        // value the board quietly changed cannot be read back later.
+        if (!parse_num(val, f.target) || f.target < -40 || f.target > 150) {
+            why = "fan.target must be a temperature -40..150 C or 'auto', got '"
+                  + val + "'";
+            return false;
+        }
+        f.target_auto = FanPlan::kFlagOff;
+        return true;
+    }
+    // The duty whenever no loop is driving — see FanPlan::idle. Exempt from the
+    // conflict check by design, so it is the one fan key that may sit beside
+    // fan.mode.
+    if (k == "idle") {
+        if (!parse_num(val, f.idle) || f.idle < 0 || f.idle > 100) {
+            why = "fan.idle must be a percentage 0..100, got '" + val + "'";
+            return false;
+        }
+        return true;
+    }
     // Bare `fan = N` is the duty to hold.
     if (k.empty() || k == "duty") {
         if (!parse_num(val, f.duty) || f.duty < 0 || f.duty > 100) {
             why = "fan must be a percentage 0..100, got '" + val + "'";
+            return false;
+        }
+        if (f.conflicts()) {
+            why = "fan sets a fixed duty, which fan.mode's control loop would "
+                  "immediately override";
             return false;
         }
         return true;
@@ -155,6 +221,7 @@ bool apply_fan_key(FanPlan& f, const std::string& knob, const std::string& val,
             why = "fan." + k + " must be a percentage 0..100, got '" + val + "'";
             return false;
         }
+        if (f.conflicts()) { why = kRampVsLoop; return false; }
         return true;
     }
     if (k == "step") {
@@ -162,6 +229,7 @@ bool apply_fan_key(FanPlan& f, const std::string& knob, const std::string& val,
             why = "fan.step must be a percentage -100..100, got '" + val + "'";
             return false;
         }
+        if (f.conflicts()) { why = kRampVsLoop; return false; }
         return true;
     }
     // Intervals are minutes in the file like every other duration, so a plan
@@ -176,6 +244,7 @@ bool apply_fan_key(FanPlan& f, const std::string& knob, const std::string& val,
             why = "fan.every must be greater than zero";
             return false;
         }
+        if (f.conflicts()) { why = kRampVsLoop; return false; }
         return true;
     }
     why = "unknown fan setting '" + knob + "'";
@@ -253,6 +322,14 @@ void FanPlan::overlay(const FanPlan& o) {
     if (o.every != kUnset) every = o.every;
     if (o.after != kUnset) after = o.after;
     if (o.max   != kUnset) max   = o.max;
+    if (o.idle  != kUnset) idle  = o.idle;
+    if (o.mode  != kModeUnset) mode = o.mode;
+    if (o.tc    != kFlagUnset) tc   = o.tc;
+    if (o.nn    != kFlagUnset) nn   = o.nn;
+    if (o.target_auto != kFlagUnset) target_auto = o.target_auto;
+    // NaN compares unequal to everything including itself, so the sentinel
+    // test here is isnan() rather than the `!= kUnset` the others use.
+    if (!std::isnan(o.target)) target = o.target;
 }
 
 // The ramp is computed from `t` rather than accumulated, so it cannot drift and
@@ -398,6 +475,17 @@ bool load_automation_plan(const std::string& path, AutomationPlan& out,
 
     if (out.steps.empty()) {
         error = path + ": no model or pipeline steps — nothing to run";
+        return false;
+    }
+    // apply_fan_key() catches a ramp and a loop written in the same block; this
+    // catches the case it cannot see, where the plan's defaults supply one half
+    // and a step supplies the other. A plan that fails to load is fatal at
+    // startup by design, and this is exactly the moment to say so.
+    for (std::size_t i = 0; i < out.steps.size(); ++i) {
+        if (!out.settings_for(i).fan.conflicts()) continue;
+        error = path + ": step " + std::to_string(i + 1) + " (" + out.steps[i].id +
+                ") ends up with both a fan ramp and fan.mode's control loop; "
+                "they would both drive the fan";
         return false;
     }
     out.enabled = true;

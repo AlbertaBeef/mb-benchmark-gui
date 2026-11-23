@@ -28,6 +28,62 @@ struct MetricInfo {
     std::string color_alias;
 };
 
+// The RA6M5 probe board's on-board thermal control loop (firmware >= 0.5.0).
+//
+// The loop runs on the BOARD, not here: it holds the thermocouple, the card's
+// rail watts and board air, so it keeps cooling the card when this process
+// crashes, exits or loses the port. The host's whole job is to configure it and
+// read back what it is doing.
+//
+// `Die` regulates an ESTIMATE, `heatsink + R_int x watts`, because the real die
+// temperature only exists on this side of PCIe. For the Hailo-8 R_int was
+// measured at 1.709 C/W; see docs/reports/ra6m5-thermocouple/.
+// The board's loop has ONE mode since firmware 0.6.0. `FanInput` is gone with
+// it: the setpoint is always the estimated on-die temperature, because
+// "regulate the die" and "regulate the heatsink" were the same control law with
+// the observer moved between the setpoint and the error. See Control.h.
+enum class FanMode : int { Off = 0, On = 1 };
+
+// Where the board's regulated signal came from. This is `ctl.src`, which before
+// 0.6.0 reported die-vs-heatsink. A reader of the log cannot afford to guess
+// whether the loop was closed on a measurement or on an estimate, so it now
+// reports that instead.
+enum class FanSrc : int { Measured = 0, Inferred = 1, None = 2 };
+
+struct FanControlStatus {
+    bool present = false;        // a board with a loop answered
+    FanMode mode = FanMode::Off;
+    FanSrc src = FanSrc::None;
+    int state = 0;               // see state_name()
+    bool tc = false;             // EFFECTIVE, not requested
+    bool nn = false;             // EFFECTIVE: false while the board has no model
+    bool target_auto = true;     // was the setpoint defaulted or chosen
+    double target = 0.0 / 0.0, in = 0.0 / 0.0, die_est = 0.0 / 0.0;
+    double err = 0.0 / 0.0, duty = 0.0 / 0.0;
+    const char* state_name() const {
+        switch (state) {
+            case 1: return "settling";
+            case 2: return "holding";
+            // 3 and 4 split what was one "saturated" state, which was set from
+            // "the output is clamped" — true at both rails and meaning the
+            // opposite thing at each.
+            case 3: return "at the floor";
+            case 4: return "at the ceiling";
+            case 5: return "open loop";
+            case 6: return "degraded";
+            case 7: return "fault";
+            default: return "off";
+        }
+    }
+    const char* src_name() const {
+        switch (src) {
+            case FanSrc::Measured: return "thermocouple";
+            case FanSrc::Inferred: return "inferred";
+            default: return "model only";
+        }
+    }
+};
+
 // A single device's telemetry source.
 class DeviceProbe {
 public:
@@ -47,7 +103,26 @@ public:
 
     // Fan duty, percent. Only a probe that drives a fan overrides this (the
     // RA6M5 board, through its EMC2101); everything else has nothing to set.
+    //
+    // The firmware REFUSES this while its control loop is running, so a caller
+    // that gets false back while a mode is active is being told the truth
+    // rather than failing: two writers on one register is the bug this avoids.
     virtual bool set_fan_duty(double /*pct*/) { return false; }
+
+    // Configure the board's control loop. One call rather than one per setting,
+    // so they are always applied together and in an order that works — the
+    // sources and the setpoint first, `mode` LAST, so the loop never runs a
+    // step with a stale setting. (Before 0.6.0 mode went first, because
+    // selecting Smart installed its own target; with one mode there is nothing
+    // for that ordering to protect.)
+    //
+    // `target` is NaN for "auto": let the board use its own measured per-card
+    // bound rather than naming a number here.
+    virtual bool set_fan_control(FanMode /*m*/, bool /*tc*/, bool /*nn*/,
+                                 double /*target*/) {
+        return false;
+    }
+    virtual FanControlStatus fan_control_status() const { return {}; }
 
     const std::vector<MetricInfo>& temp_metrics() const { return temp_metrics_; }
     const std::vector<double>& temp_values() const { return temp_values_; }
@@ -118,6 +193,16 @@ public:
     // CSV are the real ones.
     const std::vector<MetricInfo>& fan_metrics() const { return fan_metrics_; }
     const std::vector<double>& fan_values() const { return fan_values_; }
+    // The RA6M5's on-board thermal control loop: its mode, its state, the
+    // setpoint and what it is doing about it.
+    //
+    // CSV-ONLY, deliberately — this family has no graph section, exactly like
+    // charge_. Two of its members are enumerations and the rest carry three
+    // different units, and a GraphArea carries one unit and one formatter. The
+    // place these belong is the log, beside the card's real die temperature,
+    // where the board's estimate can be scored against the truth after a run.
+    const std::vector<MetricInfo>& ctl_metrics() const { return ctl_metrics_; }
+    const std::vector<double>& ctl_values() const { return ctl_values_; }
 
 protected:
     std::vector<MetricInfo> temp_metrics_;
@@ -144,6 +229,8 @@ protected:
     std::vector<double> airflow_values_;
     std::vector<MetricInfo> fan_metrics_;
     std::vector<double> fan_values_;
+    std::vector<MetricInfo> ctl_metrics_;
+    std::vector<double> ctl_values_;
     std::string bdf_;
     std::string note_;
     std::string color_alias_;
@@ -220,10 +307,19 @@ public:
     // Fan speed (rpm) and duty (%) from RA6M5 boards; see DeviceProbe.
     const std::vector<MetricInfo>& fan_metrics() const { return fan_metrics_; }
     const std::vector<double>& fan_values() const { return fan_values_; }
+    // The on-board control loop's status. CSV-only — no graph section, like
+    // charge_; see DeviceProbe for why.
+    const std::vector<MetricInfo>& ctl_metrics() const { return ctl_metrics_; }
+    const std::vector<double>& ctl_values() const { return ctl_values_; }
     // Whether any probe can drive a fan, and the command to do it. Applies to
     // every such probe; returns true if at least one accepted it.
     bool has_fan_control() const;
     bool set_fan_duty(double pct);
+    // Whether any board runs a control loop, how to configure it, and what it
+    // is doing. `fan_control_status()` returns the first board that answers.
+    bool has_fan_loop() const;
+    bool set_fan_control(FanMode m, bool tc, bool nn, double target);
+    FanControlStatus fan_control_status() const;
 
     int device_count() const { return static_cast<int>(devices_.size()); }
 
@@ -258,6 +354,8 @@ private:
     std::vector<double> airflow_values_;
     std::vector<MetricInfo> fan_metrics_;
     std::vector<double> fan_values_;
+    std::vector<MetricInfo> ctl_metrics_;
+    std::vector<double> ctl_values_;
     // devices_ indices, emission order for every folded family.
     std::vector<size_t> dev_order_;
     std::function<void(const std::string&)> note_sink_;

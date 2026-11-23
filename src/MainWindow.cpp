@@ -35,6 +35,10 @@
 
 namespace {
 
+// "Let the board choose its own setpoint" travels as NaN, so the host never
+// asserts a temperature for a card it cannot identify. See Control.h.
+constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+
 // Legend cells drop the family suffix: on the Power graph every cell is watts,
 // so "ATX12V POWER" says it twice and costs ~45 px of row width doing it.
 // Each family has its own graph, so the suffix is redundant *by construction*
@@ -269,6 +273,10 @@ MainWindow::MainWindow(AutomationPlan plan)
         // must stay last in the telem insert below, which mirrors this order.
         add(probes_.airflow_metrics());
         add(probes_.fan_metrics());   // after airflow, for the same reason
+        // The RA6M5's control loop. CSV-only: it has no graph section, like
+        // charge. Appended last for the same positional reason as the two
+        // above, and mirrored at the end of the telem insert in on_tick().
+        add(probes_.ctl_metrics());
         const std::string path = Logger::default_path();
         if (!path.empty() && log_.open(path, cols))
             notes.push_back("logging to " + path);
@@ -358,6 +366,27 @@ MainWindow::MainWindow(AutomationPlan plan)
         if (!probes_.set_fan_duty(pct)) std::strcat(b, " — no board accepted it");
         log_.note(b);
     });
+    controls_->signal_fan_control_changed().connect(
+        [this](FanMode m, bool tc, bool nn, double target) {
+            // Logged for the same reason the duty is: it changes what the
+            // temperature columns are measuring, and the ctl.* columns are the
+            // confirmation. The board's own readback is what the panel shows.
+            char b[224];
+            if (m == FanMode::Off) {
+                std::snprintf(b, sizeof b, "fan control loop off");
+            } else {
+                char tgt[32];
+                if (std::isnan(target)) std::snprintf(tgt, sizeof tgt, "auto");
+                else std::snprintf(tgt, sizeof tgt, "%.1f °C", target);
+                std::snprintf(b, sizeof b,
+                              "fan control loop on, estimated die target %s "
+                              "(thermocouple %s, learned estimate %s)",
+                              tgt, tc ? "on" : "off", nn ? "on" : "off");
+            }
+            if (!probes_.set_fan_control(m, tc, nn, target))
+                std::strcat(b, " — no board accepted it");
+            log_.note(b);
+        });
     controls_->signal_legends_changed().connect([this] {
         const bool vis = controls_->legends_shown();
         for (Gtk::Widget* g : legend_grids_)
@@ -680,6 +709,7 @@ MainWindow::MainWindow(AutomationPlan plan)
         controls_->set_ina228_present(ina228);
         controls_->set_powerz_present(powerz);
         controls_->set_fan_present(probes_.has_fan_control());
+        controls_->set_fan_loop_present(probes_.has_fan_loop());
     }
 
     apply_range_mode();
@@ -1075,6 +1105,9 @@ void MainWindow::tick_automation() {
     // there than it wants between every later run.
     const double idle = auto_first_ ? auto_plan_.start_seconds
                                     : auto_plan_.idle_for(auto_step_);
+    // Nothing is loaded and no loop is driving, so `fan.idle` is what holds the
+    // fan here. This is the only place the start pause gets a fan setting.
+    apply_automation_idle_fan();
     if (auto_phase_s_ < idle) {
         const int left = static_cast<int>(idle - auto_phase_s_ + 0.5);
         controls_->set_status(
@@ -1101,6 +1134,8 @@ void MainWindow::tick_automation() {
             auto_first_ = false;
             auto_phase_s_ = 0.0;
             auto_fan_last_ = -1.0;   // re-assert for this step, even if unchanged
+            auto_fan_mode_ = -1;
+            auto_fan_idle_ = -1.0;   // so the next idle re-applies fan.idle
             if (auto_owns_run_) {
                 apply_automation_fan(0.0);
                 log_.note("automation: step " + std::to_string(auto_step_ + 1) +
@@ -1142,6 +1177,46 @@ void MainWindow::tick_automation() {
 // A plan that says nothing about the fan must not touch it — the firmware keeps
 // its duty across host disconnects, so silently zeroing it would stop a fan the
 // user had running.
+// The duty to hold while NO loop is driving — the start pause, the idles
+// between steps, and the `end` hold. `fan.idle` is the only fan key allowed
+// beside `fan.mode`, because it is the complement of the loop rather than a
+// rival to it. Without it, "turn the fan off, wait half an hour, then hand it to
+// the board" cannot be written at all: a bare `fan` is refused alongside
+// `fan.mode` (correctly — the loop would override it), and `apply_automation_fan`
+// only ever runs while a benchmark is active, so the start pause is never
+// reached by any existing key.
+void MainWindow::apply_automation_idle_fan() {
+    if (!auto_plan_.enabled) return;
+    const FanPlan& f = auto_plan_.settings_for(auto_step_).fan;
+    if (f.idle == FanPlan::kUnset) return;
+    // The "no board" case is already warned about once by apply_automation_fan.
+    if (!probes_.has_fan_control()) return;
+    if (auto_fan_idle_ >= 0.0 && std::fabs(f.idle - auto_fan_idle_) < 1e-9) return;
+
+    // The loop owns the register while it is on and the firmware refuses a
+    // manual duty then, so hand it back before asking for one.
+    //
+    // Conditioned on what the BOARD says, not just on what automation set.
+    // `auto_fan_mode_` starts at -1, so keying off it alone meant a session
+    // that found the loop already running — the firmware keeps its mode across
+    // host disconnects, by design — never sent the handover, and `fan 0` was
+    // then refused with nothing but a note to show for it. The opening
+    // fan-off baseline would silently not have happened.
+    if (probes_.has_fan_loop() &&
+        (auto_fan_mode_ > 0 ||
+         probes_.fan_control_status().mode != FanMode::Off)) {
+        controls_->set_fan_control(FanMode::Off, true, false, kNaN);
+        auto_fan_mode_ = 0;
+    }
+    auto_fan_idle_ = f.idle;
+    auto_fan_last_ = -1.0;      // the loop has moved the duty since we last set it
+    controls_->set_fan_duty(f.idle);
+    char b[128];
+    std::snprintf(b, sizeof b,
+                  "automation: fan -> %.1f %% with nothing loaded", f.idle);
+    log_.note(b);
+}
+
 void MainWindow::apply_automation_fan(double t) {
     if (!auto_plan_.enabled) return;
     const FanPlan& f = auto_plan_.settings_for(auto_step_).fan;
@@ -1154,6 +1229,55 @@ void MainWindow::apply_automation_fan(double t) {
                       "with a fan was found — fan settings ignored");
         }
         return;
+    }
+
+    // A plan asking for the on-board loop hands the fan over once per step and
+    // then leaves it alone: the board owns the duty from there, which is the
+    // whole point of it running there. No per-tick write, and no ramp — the
+    // loader refuses a plan that asks for both.
+    if (f.mode != FanPlan::kModeUnset && f.mode != FanPlan::kModeOff) {
+        if (!probes_.has_fan_loop()) {
+            if (!auto_fan_warned_) {
+                auto_fan_warned_ = true;
+                log_.note("automation: the plan sets fan.mode, but the board's "
+                          "firmware has no control loop (needs 0.6.0) — ignored");
+            }
+            return;
+        }
+        // The sources are part of the handover, so a step that changes only
+        // fan.tc / fan.nn has to re-send even though the mode did not move.
+        const int sig = f.mode * 100 + (f.tc == FanPlan::kFlagOff ? 0 : 1) * 10
+                                     + (f.nn == FanPlan::kFlagOn ? 1 : 0);
+        if (auto_fan_mode_ == sig) return;      // already handed over
+        auto_fan_mode_ = sig;
+        // Unstated means the board's own defaults: the thermocouple on, the
+        // learned substitute off, and the measured per-card bound as the
+        // setpoint. NaN is how "auto" reaches set_fan_control().
+        const bool tc = f.tc != FanPlan::kFlagOff;
+        const bool nn = f.nn == FanPlan::kFlagOn;
+        const double target = (f.target_auto == FanPlan::kFlagOn) ? kNaN : f.target;
+        controls_->set_fan_control(FanMode::On, tc, nn, target);
+        char b[224];
+        char tgt[32];
+        if (std::isnan(target)) std::snprintf(tgt, sizeof tgt, "auto");
+        else std::snprintf(tgt, sizeof tgt, "%.1f °C", target);
+        std::snprintf(b, sizeof b,
+                      "automation: fan control loop on, regulating the estimated "
+                      "die at %s (thermocouple %s, learned estimate %s)",
+                      tgt, tc ? "on" : "off", nn ? "on" : "off");
+        log_.note(b);
+        return;
+    }
+
+    // An explicit `fan.mode = off` hands the fan back before anything else
+    // touches it, so a step that turns the loop off does not leave the board
+    // holding the last duty the loop commanded.
+    if (f.mode == FanPlan::kModeOff && auto_fan_mode_ != 0) {
+        auto_fan_mode_ = 0;
+        if (probes_.has_fan_loop()) {
+            controls_->set_fan_control(FanMode::Off, true, false, kNaN);
+            log_.note("automation: fan control loop off");
+        }
     }
 
     const double want = f.at(t);
@@ -1189,6 +1313,11 @@ void MainWindow::tick_automation_end() {
         auto_end_s_ = 0.0;
         return;
     }
+    // The `end` hold is spent still logging, and a plan may want it spent with
+    // the fan in a known state — for a thermal study it is the closing half of
+    // a bracket whose opening half was the start pause, so the two are only
+    // comparable if the fan is doing the same thing in both.
+    apply_automation_idle_fan();
     if (engine_.stopping()) {
         auto_stopping_s_ += 1.0;
         if (!auto_stalled_ && auto_stopping_s_ >= kAutoStallSeconds) {
@@ -1645,6 +1774,12 @@ bool MainWindow::on_tick() {
             }
     }
 
+    // What the board's control loop is doing. Read-only and every tick: the
+    // panel shows the loop's own state rather than what it was last told, so a
+    // loop that saturates or faults says so without anyone asking.
+    if (probes_.has_fan_loop())
+        controls_->set_fan_loop_status(probes_.fan_control_status());
+
     const auto& pv = probes_.power_values();
     if (!pv.empty() && static_cast<int>(pv.size()) == power_graph_->series_count()) {
         power_graph_->push(pv);
@@ -1857,6 +1992,8 @@ bool MainWindow::on_tick() {
         telem.insert(telem.end(), afv.begin(), afv.end());
         const auto& fnv = probes_.fan_values();
         telem.insert(telem.end(), fnv.begin(), fnv.end());
+        const auto& ctv = probes_.ctl_values();
+        telem.insert(telem.end(), ctv.begin(), ctv.end());
 
         Logger::Row row;
         row.telemetry = &telem;

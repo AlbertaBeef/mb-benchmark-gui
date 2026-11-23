@@ -771,6 +771,103 @@ ControlPanel::ControlPanel(const Catalog& catalog)
             box->append(*fan_row_);
         }
 
+        // The board's own thermal control loop (firmware >= 0.5.0). A second
+        // row rather than more widgets on the first, because this is a
+        // different kind of thing: the duty spin says what the fan does, these
+        // say what decides it.
+        {
+            fan_ctl_row_ = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
+            auto* lbl = Gtk::make_managed<Gtk::Label>("Fan control");
+            lbl->set_xalign(0.0);
+            lbl->set_width_chars(12);
+            lbl->set_valign(Gtk::Align::START);
+            fan_ctl_row_->append(*lbl);
+
+            auto* stack = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 6);
+            auto* top = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+            fan_ctl_mode_.append("Off");
+            fan_ctl_mode_.append("On");
+            fan_ctl_mode_.set_active(0);
+            fan_ctl_mode_.set_tooltip_text(
+                "Closed-loop fan control running ON THE RA6M5, not here — so it "
+                "keeps cooling the card if this app exits or the USB link "
+                "drops.\n\n"
+                "It always regulates the ESTIMATED ON-DIE temperature: the real "
+                "one is only visible over PCIe, so the board forms it as the "
+                "heatsink thermocouple plus R_int × card watts (1.709 °C/W "
+                "measured for the Hailo-8).\n\n"
+                "Off: the duty above is yours.");
+            top->append(fan_ctl_mode_);
+
+            // The two sources for the one signal the loop needs. Check buttons
+            // rather than a combo because they are not exclusive: with both on
+            // the board prefers the real sensor and keeps the estimate as its
+            // fallback for losing it, which is the configuration worth running.
+            fan_ctl_tc_.set_label("Thermocouple");
+            fan_ctl_tc_.set_active(true);
+            fan_ctl_tc_.set_tooltip_text(
+                "Use the physical heatsink thermocouple. With it the loop is "
+                "closed and a PI trims the feedforward.\n\n"
+                "Without it the loop runs OPEN: the duty comes from inverting "
+                "the measured fan curve for the load, with no temperature "
+                "feedback at all, so model error goes straight into the die.");
+            top->append(fan_ctl_tc_);
+
+            fan_ctl_nn_.set_label("NN");
+            fan_ctl_nn_.set_active(false);
+            fan_ctl_nn_.set_tooltip_text(
+                "Substitute a learned estimate of the thermocouple when the "
+                "real one is unavailable, closing the loop on that instead of "
+                "running open. Greyed when the board's firmware carries no "
+                "model.\n\n"
+                "The thermocouple wins when both are on: a real sensor is never "
+                "overridden by an estimate of itself.");
+            top->append(fan_ctl_nn_);
+
+            fan_ctl_auto_.set_label("Auto");
+            fan_ctl_auto_.set_active(true);
+            fan_ctl_auto_.set_tooltip_text(
+                "Let the board use its own measured setpoint — 95 °C die for "
+                "the Hailo-8, the temperature that gave 0.00 % throttling over "
+                "13 247 samples.\n\n"
+                "Untick to name a number instead. The distinction is recorded, "
+                "because \"the card's bound\" and \"95 degrees\" stop being the "
+                "same thing the moment another card is in the slot.");
+            top->append(fan_ctl_auto_);
+
+            fan_ctl_target_.set_adjustment(Gtk::Adjustment::create(95, 20, 120, 1, 5));
+            fan_ctl_target_.set_numeric(true);
+            fan_ctl_target_.set_tooltip_text(
+                "Setpoint in °C, as an estimated on-die temperature.");
+            top->append(fan_ctl_target_);
+            auto* unit = Gtk::make_managed<Gtk::Label>("°C");
+            unit->add_css_class("dim-label");
+            top->append(*unit);
+            stack->append(*top);
+
+            fan_ctl_status_.set_xalign(0.0);
+            fan_ctl_status_.add_css_class("dim-label");
+            fan_ctl_status_.set_wrap(true);
+            stack->append(fan_ctl_status_);
+            fan_ctl_row_->append(*stack);
+            fan_ctl_row_->set_visible(false);
+
+            // The board takes the whole configuration in one go, so every widget
+            // leads to one emission. There is no per-mode default to install
+            // any more — with one mode there is nothing to switch between, and
+            // the setpoint's own default moved into the Auto box.
+            auto push = [this] {
+                if (fan_ctl_syncing_) return;
+                emit_fan_control();
+            };
+            conns_.push_back(fan_ctl_mode_.signal_changed().connect(push));
+            conns_.push_back(fan_ctl_tc_.signal_toggled().connect(push));
+            conns_.push_back(fan_ctl_nn_.signal_toggled().connect(push));
+            conns_.push_back(fan_ctl_auto_.signal_toggled().connect(push));
+            conns_.push_back(fan_ctl_target_.signal_value_changed().connect(push));
+            box->append(*fan_ctl_row_);
+        }
+
         frame->set_child(*box);
         append(*frame);
     }
@@ -1127,10 +1224,25 @@ void ControlPanel::set_fan_present(bool present) {
 void ControlPanel::set_fan_duty(double pct) {
     if (std::isnan(pct)) return;
     fan_synced_ = true;          // the plan owns it now; stop taking readbacks
-    // Deliberately NOT guarded by fan_syncing_: the value_changed handler must
-    // fire, because that is what reaches the board. set_value() is idempotent,
-    // so an unchanged duty costs nothing and sends nothing.
+    // SUPPRESS the widget's handler and emit once, explicitly, so the send does
+    // not depend on the VALUE having changed.
+    //
+    // This used to rely on signal_value_changed, on the argument that
+    // set_value() is idempotent so an unchanged duty "costs nothing and sends
+    // nothing". That is true of the widget and false of the hardware: the two
+    // disagree whenever something else moved the board's duty — the control
+    // loop does exactly that, and the firmware keeps its duty across host
+    // disconnects. The spin's adjustment starts at 0, so `fan.idle = 0` set the
+    // widget to a value it already held, fired nothing, and left the board at
+    // whatever the loop had last commanded. Observed 2026-11-23: the opening
+    // fan-off baseline silently did not happen, with "fan -> 0.0 %" in the log
+    // to say it had. An automation path must ASSERT the duty, not diff it.
+    fan_syncing_ = true;
     fan_duty_.set_value(pct);
+    fan_syncing_ = false;
+    // The adjustment clamps to 0..100, so emit what the widget settled on
+    // rather than what was asked for — same value the handler path sends.
+    sig_fan_duty_.emit(fan_duty_.get_value());
 }
 
 void ControlPanel::set_fan_duty_readback(double pct) {
@@ -1139,6 +1251,98 @@ void ControlPanel::set_fan_duty_readback(double pct) {
     fan_syncing_ = true;
     fan_duty_.set_value(pct);
     fan_syncing_ = false;
+}
+
+void ControlPanel::set_fan_loop_present(bool present) {
+    if (fan_ctl_row_) fan_ctl_row_->set_visible(present);
+}
+
+// `apply_fan_mode_defaults()` is GONE, and the bug it fixed cannot recur.
+// Smart mode carried its own 95 °C setpoint, and selecting it did not put that
+// in the widgets: emit_fan_control() then read the target spin and the greyed
+// but still-populated input combo and sent those instead, so a real session ran
+// "Smart" on the heatsink at 65 °C with nothing on screen to say so. Greying a
+// widget stops the user changing it; it does not stop the code reading it.
+//
+// With one mode there is no per-mode default to install, and the setpoint's own
+// default moved into the Auto box — which is a widget the user can see, rather
+// than a value the code substitutes behind one.
+
+void ControlPanel::emit_fan_control() {
+    const bool on = fan_ctl_mode_.get_active_row_number() == 1;
+    const auto mode = on ? FanMode::On : FanMode::Off;
+    const bool use_auto = fan_ctl_auto_.get_active();
+    // The duty spin is the user's only while nothing else is driving the fan.
+    // The firmware refuses `fan <pct>` with the loop on, so a live spin would
+    // be a control that silently does nothing.
+    fan_duty_.set_sensitive(!on);
+    fan_ctl_tc_.set_sensitive(on);
+    // The NN box is greyed with no model for the same reason: the firmware
+    // accepts the request and then tells us it is not honouring it.
+    fan_ctl_nn_.set_sensitive(on && fan_ctl_nn_available_);
+    fan_ctl_auto_.set_sensitive(on);
+    fan_ctl_target_.set_sensitive(on && !use_auto);
+    // NaN is how "auto" reaches the board: it names its own measured bound
+    // rather than this host asserting a number for a card it cannot identify.
+    const double target = use_auto ? std::numeric_limits<double>::quiet_NaN()
+                                   : fan_ctl_target_.get_value();
+    sig_fan_ctl_.emit(mode, fan_ctl_tc_.get_active(),
+                      fan_ctl_nn_.get_active(), target);
+}
+
+// Automation's path in. Everything happens under the sync guard so the widget
+// changes produce exactly one emission at the end, rather than several partial
+// configurations on the wire.
+void ControlPanel::set_fan_control(FanMode m, bool tc, bool nn, double target) {
+    fan_ctl_syncing_ = true;
+    fan_ctl_mode_.set_active(m == FanMode::On ? 1 : 0);
+    fan_ctl_tc_.set_active(tc);
+    fan_ctl_nn_.set_active(nn);
+    fan_ctl_auto_.set_active(std::isnan(target));
+    if (!std::isnan(target)) fan_ctl_target_.set_value(target);
+    fan_ctl_syncing_ = false;
+    emit_fan_control();
+}
+
+// What the board says it is doing. Read-only: this must never write back, or
+// the panel and the board would chase each other once a tick.
+void ControlPanel::set_fan_loop_status(const FanControlStatus& s) {
+    if (!fan_ctl_row_) return;
+    if (!s.present) {
+        fan_ctl_status_.set_text("board not reporting");
+        return;
+    }
+    // Whether the board has a model is the board's to say, not ours — so the
+    // NN box's sensitivity follows this rather than a compile-time guess. The
+    // board reports `nn` effective, so "requested but no model" shows up as the
+    // degraded state with the box unticked.
+    const bool had = fan_ctl_nn_available_;
+    fan_ctl_nn_available_ = s.nn || s.state == 6;
+    if (had != fan_ctl_nn_available_) {
+        fan_ctl_nn_.set_sensitive(s.mode == FanMode::On && fan_ctl_nn_available_);
+    }
+
+    char b[256];
+    if (s.mode == FanMode::Off) {
+        std::snprintf(b, sizeof b, "off — the duty above is in force");
+    } else if (s.state == 7) {
+        std::snprintf(b, sizeof b,
+                      "FAULT — sensor lost, fan forced to full (%.0f %%)",
+                      std::isnan(s.duty) ? 100.0 : s.duty);
+    } else if (s.src == FanSrc::None) {
+        // Open loop: there is no measurement, so quoting an error would invent
+        // one. The duty and what it was computed from is all there is to say.
+        std::snprintf(b, sizeof b,
+                      "%s — model only, no feedback · target %.1f °C%s, fan %.1f %%",
+                      s.state_name(), s.target, s.target_auto ? " (auto)" : "",
+                      s.duty);
+    } else {
+        std::snprintf(b, sizeof b,
+                      "%s — die %.1f °C vs %.1f target%s (%s), fan %.1f %%",
+                      s.state_name(), s.in, s.target,
+                      s.target_auto ? " auto" : "", s.src_name(), s.duty);
+    }
+    fan_ctl_status_.set_text(b);
 }
 
 bool ControlPanel::pmd2_shown(const std::string& measurement) const {

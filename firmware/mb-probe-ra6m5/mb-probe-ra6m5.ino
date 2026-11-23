@@ -12,12 +12,25 @@
 //     OK <cmd> | E <message>
 //   host -> device:
 //     info | period <ms> | reset_acc | rescan | fan <percent>
+//     ctl | ctl.mode off|on | ctl.tc on|off | ctl.nn on|off
+//     ctl.target <C>|auto | ctl.rint <C/W> | ctl.kp <v> | ctl.ki <v>
+//     ctl.min <%> | ctl.max <%>
 //
 // Reboot into the DFU bootloader with the 1200-baud touch (open the port at
 // 1200 baud, drop DTR) — the core implements it; tools/flash-ra6m5.sh uses it.
 //
 // Sensors today: INA228 (0x40-0x4F), FS3000-1005 (0x28), EMC2101 fan
-// controller (0x4C, duty only on the host's `fan` command), MAX31855K thermocouple on SPI (CS = D0).
+// controller (0x4C), MAX31855K thermocouple on SPI (CS = D0).
+//
+// Since 0.5.0 the fan can also be driven by a closed loop running HERE rather
+// than on the host — see Control.h for why, and for the provenance of every
+// constant in it. While the loop is on the host's `fan` command is refused:
+// two writers on one register is a bug to design out, not to debug later.
+//
+// 0.6.0 collapses that loop to ONE mode. The setpoint is always the estimated
+// on-die temperature; power is mandatory and the thermocouple is substitutable,
+// with `ctl.src` reporting which of the three sources the loop actually used.
+// Control.h has the reduction that showed the old modes were one control law.
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -25,19 +38,28 @@
 #include "Fs3000.h"
 #include "Emc2101.h"
 #include "Max31855.h"
+#include "Control.h"
 
 static const char* kFwName = "mb-probe-ra6m5";
-static const char* kFwVersion = "0.4.0";
-static const int kProtocol = 1;
+// 0.5.0 added the on-board control loop and its ctl.* channels, additively.
+// 0.6.0 bumps kProtocol to 2: no channel is removed, but `ctl.src` now reports
+// the regulated signal's PROVENANCE (measured / inferred / none) where it used
+// to report die-vs-heatsink, and `ctl.mode` has two values rather than three.
+// A host reading an 0.6.0 board with 0.5.0 assumptions would misread both, so
+// the version has to say so.
+static const char* kFwVersion = "0.6.0";
+static const int kProtocol = 2;
 
 static Ina228 ina;
 static Fs3000 fs;
 static Emc2101 emc;
 static Max31855 tcx;
+static Control ctl;
 
 static uint32_t period_ms = 1000;
 static uint32_t seq = 0;
 static uint32_t last_report = 0, last_ina = 0, last_fs = 0, last_emc = 0, last_tc = 0;
+static uint32_t last_ctl = 0;
 static bool led = false;
 
 // ---------------------------------------------------------------- output ---
@@ -151,6 +173,29 @@ static void print_info() {
         declare("max31855.n", "count");
         declare("max31855.err", "count");
     }
+    // The control channels are declared whenever the loop COULD run, never
+    // because it happens to be running. The host fixes its metric list and its
+    // CSV header from this handshake and never reconnects, so a channel that
+    // appeared later — when someone switched the loop on — would be a column
+    // that board can never grow. They read `nan` while the mode is off.
+    if (emc.present && tcx.present) {
+        declare("ctl.mode", "enum");    // 0 off, 1 on
+        declare("ctl.src", "enum");     // 0 measured, 1 inferred, 2 none
+        declare("ctl.state", "enum");   // 0 off 1 settling 2 holding 3 floor
+                                        // 4 ceiling 5 open 6 degraded 7 fault
+        declare("ctl.tc", "bool");      // EFFECTIVE, not requested
+        declare("ctl.nn", "bool");      // EFFECTIVE: 0 while no model is loaded
+        declare("ctl.auto", "bool");    // was the setpoint defaulted or chosen
+        declare("ctl.target", "C");
+        declare("ctl.in", "C");         // the quantity actually regulated
+        declare("ctl.die_est", "C");    // the board's model of the die
+        declare("ctl.err", "C");        // in - target; positive means too hot
+        declare("ctl.duty", "%");
+        declare("ctl.ff", "%");         // feedforward alone
+        declare("ctl.integ", "%");
+        declare("ctl.sat", "count");
+    }
+    if (emc.present && tcx.present) ctl.print_status();
     Serial.println("I end");
 }
 
@@ -209,6 +254,29 @@ static void report(uint32_t now) {
         kv("max31855.err", (long)tcx.errors);
         tcx.reset_stats();
     }
+    // Declared whenever the loop could run, so emitted on exactly the same
+    // condition — every declared key must appear in every D line.
+    if (emc.present && tcx.present) {
+        kv("ctl.mode", (long)ctl.mode);
+        kv("ctl.src", (long)ctl.src);
+        kv("ctl.state", (long)ctl.state);
+        // The EFFECTIVE flags, not what was asked for. `ctl.nn` reads 0 while
+        // no model is compiled in, so a run configured for the inferred source
+        // cannot be mistaken in the log for one that got it — the state says
+        // `degraded` and this says 0.
+        kv("ctl.tc", (long)(ctl.src == Control::kMeasured));
+        kv("ctl.nn", (long)(ctl.src == Control::kInferred));
+        kv("ctl.auto", (long)ctl.target_auto);
+        kv("ctl.target", ctl.mode == Control::kOff ? NAN : ctl.target, 2);
+        kv("ctl.in", ctl.in_c, 3);
+        kv("ctl.die_est", ctl.die_est, 3);
+        kv("ctl.err", ctl.err, 3);
+        kv("ctl.duty", ctl.duty, 1);
+        kv("ctl.ff", ctl.ff, 1);
+        kv("ctl.integ", ctl.mode == Control::kOff ? NAN : ctl.integ, 2);
+        kv("ctl.sat", (long)ctl.sat);
+        ctl.reset_stats();
+    }
     Serial.println();
 }
 
@@ -222,6 +290,102 @@ static void scan_sensors() {
     fs.begin();
     emc.begin();
     tcx.begin();
+}
+
+// `ctl.<key> <value>`. Dotted rather than `ctl <key> <value>` so the existing
+// single-space split does the work, and so the names match the automation
+// plan's `fan.<knob>` keys one for one.
+static void handle_ctl(const char* key, const char* arg) {
+    if (!emc.present || !tcx.present) {
+        Serial.println("E ctl: needs both an EMC2101 and a MAX31855");
+        return;
+    }
+    const bool has = arg && *arg;
+    if (!strcmp(key, "mode")) {
+        if (!has) { Serial.println("E ctl.mode needs off|on"); return; }
+        if (!strcmp(arg, "off")) ctl.set_mode(Control::kOff);
+        else if (!strcmp(arg, "on")) ctl.set_mode(Control::kOn);
+        else { Serial.println("E ctl.mode must be off|on"); return; }
+        Serial.print("OK ctl.mode ");
+        Serial.println(arg);
+        return;
+    }
+    // The two sources for the regulated signal. Both may be on: a real sensor
+    // is never overridden by an estimate of itself, so `tc` wins and `nn`
+    // becomes the fallback for losing it. `ctl.src` reports which was used.
+    if (!strcmp(key, "tc") || !strcmp(key, "nn")) {
+        const bool is_nn = key[0] == 'n';
+        if (!has) {
+            Serial.print("E ctl."); Serial.print(key); Serial.println(" needs on|off");
+            return;
+        }
+        bool v;
+        if (!strcmp(arg, "on")) v = true;
+        else if (!strcmp(arg, "off")) v = false;
+        else {
+            Serial.print("E ctl."); Serial.print(key); Serial.println(" must be on|off");
+            return;
+        }
+        if (is_nn) ctl.nn_want = v; else ctl.tc_want = v;
+        Serial.print("OK ctl."); Serial.print(key);
+        Serial.print(' '); Serial.print(arg);
+        // Accepted either way, but say so when it will not take effect — the
+        // host greys its own control from this, and a plan that asked for the
+        // inferred source deserves to know it is not getting it.
+        if (is_nn && v && !ctl.nn_ready()) Serial.print(" (no model compiled in)");
+        Serial.println();
+        return;
+    }
+    // `auto` restores the measured per-card bound; a number pins it and is
+    // recorded as chosen, because the difference is the whole story the moment
+    // a card other than the Hailo-8 is in the slot.
+    if (!strcmp(key, "target")) {
+        if (!has) { Serial.println("E ctl.target needs a temperature or 'auto'"); return; }
+        if (!strcmp(arg, "auto")) {
+            ctl.set_target_auto();
+            Serial.print("OK ctl.target auto ");
+            Serial.println(ctl.target, 2);
+            return;
+        }
+        const double v = atof(arg);
+        if (!(v >= -40.0 && v <= 150.0)) {
+            Serial.println("E ctl.target must be -40.0..150.0 or 'auto'");
+            return;
+        }
+        ctl.set_target(v);
+        Serial.print("OK ctl.target ");
+        Serial.println(v, 4);
+        return;
+    }
+    // The numeric settings. Each carries its own range; a value outside it is
+    // refused rather than clamped, because a plan asking for something the
+    // board quietly changed is a plan that cannot be read back later.
+    struct Num { const char* k; double* p; double lo, hi; };
+    const Num nums[] = {
+        {"rint",   &ctl.rint,     0.0,  20.0},
+        {"kp",     &ctl.kp,       0.0, 100.0},
+        {"ki",     &ctl.ki,       0.0,  10.0},
+        {"min",    &ctl.min_duty, 0.0, 100.0},
+        {"max",    &ctl.max_duty, 0.0, 100.0},
+    };
+    for (const Num& n : nums) {
+        if (strcmp(key, n.k)) continue;
+        if (!has) { Serial.print("E ctl."); Serial.print(key); Serial.println(" needs a value"); return; }
+        const double v = atof(arg);
+        if (!(v >= n.lo && v <= n.hi)) {
+            Serial.print("E ctl."); Serial.print(key);
+            Serial.print(" must be "); Serial.print(n.lo, 1);
+            Serial.print(".."); Serial.println(n.hi, 1);
+            return;
+        }
+        *n.p = v;
+        if (ctl.min_duty > ctl.max_duty) { const double t = ctl.min_duty; ctl.min_duty = ctl.max_duty; ctl.max_duty = t; }
+        Serial.print("OK ctl."); Serial.print(key);
+        Serial.print(' '); Serial.println(v, 4);
+        return;
+    }
+    Serial.print("E unknown ctl setting: ");
+    Serial.println(key);
 }
 
 static void handle(char* line) {
@@ -240,9 +404,19 @@ static void handle(char* line) {
         // EMC2101 fan duty, 0..100 %, in 1/63 steps. Kept until changed.
         double applied = 0;
         if (!arg || !*arg) { Serial.println("E fan needs a percentage 0..100"); return; }
+        // One writer at a time. Silently losing a manual duty to the next loop
+        // step, or vice versa, is the kind of fault nobody can reproduce.
+        if (ctl.mode != Control::kOff) {
+            Serial.println("E fan: control loop active, set ctl.mode off first");
+            return;
+        }
         if (!emc.set_duty(atof(arg), &applied)) { Serial.println("E fan: no EMC2101 or I2C failure"); return; }
         Serial.print("OK fan ");
         Serial.println(applied, 1);
+    } else if (!strcmp(line, "ctl")) {
+        ctl.print_status();
+    } else if (!strncmp(line, "ctl.", 4)) {
+        handle_ctl(line + 4, arg);
     } else if (!strcmp(line, "emc_regs")) {
         // Read-only register dump for bring-up: "I emc <reg>=<val> ...".
         static const uint8_t regs[] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x10,
@@ -285,7 +459,7 @@ void setup() {
     Wire.begin();
     Wire.setClock(400000);
     scan_sensors();
-    last_report = last_ina = last_fs = last_emc = last_tc = millis();
+    last_report = last_ina = last_fs = last_emc = last_tc = last_ctl = millis();
 }
 
 void loop() {
@@ -295,6 +469,13 @@ void loop() {
     if (now - last_fs >= Fs3000::kSamplePeriodMs) { last_fs = now; fs.sample(); }
     if (now - last_emc >= Emc2101::kSamplePeriodMs) { last_emc = now; emc.sample(); }
     if (now - last_tc >= Max31855::kSamplePeriodMs) { last_tc = now; tcx.sample(); }
+    // DELIBERATELY OUTSIDE the `if (Serial)` branch below: the loop must keep
+    // cooling the card when the host has crashed, exited or been unplugged.
+    // That is the whole reason it lives on the board rather than on the host.
+    if (now - last_ctl >= Control::kPeriodMs) {
+        last_ctl = now;
+        ctl.step(emc, tcx, ina, now);
+    }
     if (now - last_report >= period_ms) {
         last_report += period_ms;
         if (now - last_report >= period_ms) last_report = now;  // fell behind: re-origin
@@ -302,7 +483,8 @@ void loop() {
         // statistics just roll over, so a reader that connects gets a clean
         // first period rather than an hour of accumulated samples.
         if (Serial) report(now);
-        else { ina.reset_stats(); fs.reset_stats(); emc.reset_stats(); tcx.reset_stats(); }
+        else { ina.reset_stats(); fs.reset_stats(); emc.reset_stats(); tcx.reset_stats();
+               ctl.reset_stats(); }
         digitalWrite(LED_BUILTIN, led = !led);  // STAT heartbeat
     }
 }

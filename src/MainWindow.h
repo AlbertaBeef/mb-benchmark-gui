@@ -55,6 +55,7 @@ private:
     // Called at the start of a run and once per tick inside it, so a ramp is
     // driven by the same clock as everything else automation does.
     void apply_automation_fan(double t);
+    void apply_automation_idle_fan();
     void on_about();
 
     // --- telemetry sections (one row per device, as in mb-powermon-gui) ---
@@ -183,6 +184,13 @@ private:
     // repeat' rule the notes follow, and it keeps one I2C write per step
     // instead of one per tick.
     double auto_fan_last_ = -1.0;
+    // `fan.idle`, last applied. Separate from auto_fan_last_ because the two
+    // alternate: the loop owns the duty during a step, this owns it between.
+    double auto_fan_idle_ = -1.0;
+    // Last control-loop mode handed to the board. The loop is configured
+    // once per step, not per tick: once it is running the board owns the
+    // duty, so there is nothing to re-send.
+    int auto_fan_mode_ = -1;   // FanPlan::kModeUnset
     // Warned once that the plan wants the fan but no board has one.
     bool auto_fan_warned_ = false;
     // Set when automation has asked to close. on_tick() bails out immediately

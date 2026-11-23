@@ -1,0 +1,773 @@
+<title>Doing Without The Thermocouple</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column (lab notebook) that widens for the instrument charts; teal from the app's own header bar. */
+:root {
+  --bg: #f6f8f7;
+  --surface: #fcfcfb;
+  --fg: #101716;
+  --fg-2: #4b5755;
+  --fg-3: #74807e;
+  --rule: #d9e1df;
+  --grid: #e6ecea;
+  --accent: #0f766e;
+  --accent-soft: #e0f0ed;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4;
+  --warn: #b45309;
+  --font-display: "Instrument Sans", "IBM Plex Sans", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0e1312; --surface: #161c1b; --fg: #edf2f1; --fg-2: #b6c2c0; --fg-3: #8a9694;
+  --rule: #2a3533; --grid: #232c2b; --accent: #2bb3a4; --accent-soft: #15302d;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --warn: #f59e0b;
+  color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #0e1312; --surface: #161c1b; --fg: #edf2f1; --fg-2: #b6c2c0; --fg-3: #8a9694;
+  --rule: #2a3533; --grid: #232c2b; --accent: #2bb3a4; --accent-soft: #15302d;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --warn: #f59e0b;
+  color-scheme: dark }
+
+body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 16px; line-height: 1.6; }
+.wrap { max-width: 980px; margin: 0 auto; padding-block: 40px 72px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.prose { max-width: 68ch; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; line-height: 1.2; margin: 0; }
+h1 { font-size: clamp(30px, 5vw, 42px); font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 24px; font-weight: 600; }
+h3 { font-size: 17px; font-weight: 600; }
+p { margin: 0; }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+.meta { font-family: var(--font-mono); font-size: 13px; color: var(--fg-2); display: flex; flex-wrap: wrap; gap: 6px 20px; }
+header { display: grid; gap: 14px; padding-bottom: 28px; border-bottom: 1px solid var(--rule); }
+header .lede { font-size: 18px; color: var(--fg-2); max-width: 62ch; }
+section { display: grid; gap: 16px; padding-top: 44px; }
+section > .head { display: grid; gap: 6px; }
+code, .mono { font-family: var(--font-mono); font-size: 0.88em; }
+code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+ul { margin: 0; padding-left: 20px; display: grid; gap: 8px; }
+li::marker { color: var(--accent); }
+.muted { color: var(--fg-2); }
+.small { font-size: 14px; }
+
+.findings { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+.finding { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 16px; display: grid; gap: 4px; align-content: start; min-width: 0; }
+.finding .num { font-family: var(--font-display); font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.finding .num small { font-size: 16px; color: var(--fg-2); font-weight: 500; }
+.finding p { font-size: 14px; color: var(--fg-2); line-height: 1.45; }
+
+.tbl-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); }
+.tbl-wrap.tall { max-height: 420px; overflow-y: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--grid); vertical-align: top; }
+th { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-2); font-weight: 500; white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--font-mono); font-size: 13px; white-space: nowrap; }
+td .tag { font-family: var(--font-mono); font-size: 12px; color: var(--accent); white-space: nowrap; }
+
+.chart-card { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 16px 16px 10px; display: grid; gap: 10px; min-width: 0; }
+.chart-card h3 { font-size: 15px; }
+.chart-card .sub { font-size: 13px; color: var(--fg-2); }
+.readout { font-family: var(--font-mono); font-size: 12.5px; color: var(--fg-2); display: flex; flex-wrap: wrap; gap: 4px 16px; min-height: 40px; align-items: center; border-bottom: 1px solid var(--grid); padding-bottom: 8px; font-variant-numeric: tabular-nums; }
+.readout b { color: var(--fg); font-weight: 500; }
+.sw { display: inline-block; width: 10px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 5px; }
+.panel-label { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--fg-2); display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.panel-label span { display: inline-flex; align-items: center; text-transform: none; letter-spacing: 0; }
+svg.chart { display: block; width: 100%; height: auto; overflow: visible; touch-action: pan-y; }
+svg.chart text { font-family: var(--font-mono); font-size: 11px; fill: var(--fg-3); }
+svg.chart .grid line { stroke: var(--grid); stroke-width: 1; }
+svg.chart .note { fill: var(--fg-2); font-size: 11px; }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+.tip { position: fixed; pointer-events: none; background: var(--surface); color: var(--fg); border: 1px solid var(--rule); border-radius: 6px; padding: 6px 9px; font-family: var(--font-mono); font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.12); z-index: 20; white-space: nowrap; }
+footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--fg-2); display: grid; gap: 6px; }
+@media (max-width: 520px) { body { font-size: 15px; } .finding .num { font-size: 24px; } }
+</style><div class="wrap">
+<header>
+  <div class="eyebrow">mb-benchmark-gui · telemetry hardware</div>
+  <h1>Doing without the thermocouple</h1>
+  <p class="lede">Firmware 0.5.0 shipped three fan modes. Reading its own 225-minute run back showed they were <b>one control law with a different constant</b> — the die observer is a setpoint transformation, not a feedback element — so 0.6.0 collapsed them into a single loop with <b>one</b> regulated quantity, the estimated on-die temperature, and made the thermocouple <b>substitutable</b> while power became mandatory. This run asks what that substitution costs. Three arms, same setpoint, same load, differing only in where the loop's one temperature comes from. The open loop held the die <b id="l-delta">—</b> from the closed loop — but the four fan-off brackets that frame the run say that number is <b>well inside the noise</b>, and that the noise is not noise: the card's natural-convection resistance fell <b id="l-drift">—</b> monotonically across the afternoon, and the closing baseline was <b>still falling when the run ended</b>. The useful result is therefore not the agreement. It is the bound on it, and the finding that the loop's own air input moved the <em>wrong way</em> while everything else moved.</p>
+  <div class="meta">
+    <span id="meta-when">—</span><span>Host: AMD EPYC ROMED8-2T</span><span>Hailo-8 M.2 · ResNet-50 async, depth 8</span><span>Firmware: mb-probe-ra6m5 0.6.0, protocol 2</span><span id="meta-n">—</span>
+  </div>
+</header>
+
+<section>
+  <div class="head"><h2>Key findings</h2></div>
+  <div class="findings" id="tiles"></div>
+</section>
+
+<section>
+  <div class="head"><h2>What was asked of it</h2>
+    <p class="prose muted">One plan, one model, one card, one setpoint. The only thing that changes between the three arms is <b>where the loop's single temperature comes from</b> — so a difference between them is the sensor and not the workload.</p></div>
+  <div class="prose" style="display:grid;gap:12px">
+    <p>0.6.0 reports which of three sources the loop actually used, in <code>ctl.src</code>: <b>measured</b> (the physical thermocouple, closed loop with the PI), <b>inferred</b> (a learned estimate of it, also closed loop with the PI), or <b>none</b> (open loop, the static feedforward alone and no PI at all). The control law is identical in the first two; only where <code>tc_</code> comes from changes. That is the architectural claim being tested — <em>a soft sensor is a drop-in for one input, not a second controller</em> — and it is why the three arms differ in two plan keys and nothing else.</p>
+  </div>
+  <div class="tbl-wrap"><table id="plan">
+    <thead><tr><th>Arm</th><th><code>fan.tc</code></th><th><code>fan.nn</code></th><th>Source the loop got</th><th class="n">setpoint</th><th class="n">starts</th><th>What it tests</th></tr></thead>
+    <tbody></tbody></table></div>
+  <p class="prose small muted">30 minutes loaded per arm, with <b>30 minutes of fan-off idle before the first, between each pair, and after the last</b> — <code>fan.idle = 0</code>, the one plan key allowed beside <code>fan.mode</code>. Those four pauses are not padding; see <a href="#believe">how much of this we can believe</a>. The plan is <code>config/automation-thermal-hailo-tc.conf</code> and carries its own reasoning in a header, including what to read afterwards.</p>
+  <p class="prose small muted">Why 90 °C and not the <code>auto</code> 95: arms 2 and 3 have either no feedback or feedback through an estimate, and the Hailo-8's throttle boundary is hysteretic <em>and</em> stochastic — observed anywhere from 98.9 to 104.2 °C. Five degrees of margin lets an open loop be wrong without inviting a throttle into the measurement.</p>
+</section>
+
+<section>
+  <div class="head"><h2>Did each arm run as configured?</h2>
+    <p class="prose muted">This table comes first, not last. The log records what the loop <em>did</em>, never what the plan asked for, so <code>ctl.src</code> and <code>ctl.state</code> are the only evidence an arm was the arm it claims to be — and two of these three agree on every control channel but one.</p></div>
+  <div class="tbl-wrap"><table id="prov">
+    <thead><tr><th>Arm</th><th><code>ctl.src</code></th><th><code>ctl.tc</code></th><th><code>ctl.nn</code></th><th><code>ctl.auto</code></th><th><code>ctl.state</code></th></tr></thead>
+    <tbody></tbody></table></div>
+  <div class="prose" style="display:grid;gap:12px">
+    <p><b>Arms 2 and 3 are separated by <code>ctl.state</code> alone</b> — <code>5 open</code> against <code>6 degraded</code> — and that is deliberate. Arm 3 asked for the learned estimate; there is no model compiled in, so it did not get one. The firmware's rule is <em>never silently arm 2</em>: a run configured for the inferred source that fell through to open loop must be legible as exactly that. Every other channel reads identically in both, including <code>ctl.nn</code>, which reports the <b>effective</b> value and so reads 0 in arm 3.</p>
+    <p class="small"><b>That column had to be fixed on hardware, not in review.</b> As first written, the NaN check on the inferred estimate sat <em>after</em> the if/else rather than inside the inferred branch — and <code>pv_tc</code> is NaN in the <code>none</code> branch too, so the check fired unconditionally and every open-loop step reported <code>degraded</code>. <code>kOpen</code> was unreachable. A staged bench test caught it in one command; nothing in the code read wrong. Had it shipped, this run would have measured arm 2 three times and had no way to say so.</p>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>Closed loop against open loop</h2>
+    <p class="prose muted">Steady state is the <b>last 10 minutes</b> of each 30-minute arm. Samples below <b id="h-floor">—</b> of rail power are dropped from it: the engine's stop sample sits inside that window with the load already gone, and one such row moves the die mean by 0.3 °C.</p></div>
+  <div class="prose" style="display:grid;gap:12px">
+    <p>Everything here is scored against the <b>card's own die sensor</b>, not against <code>ctl.in</code>. The open-loop arms have no <code>ctl.in</code> at all — nothing is measured, so quoting an error would invent one — and the card's sensor is the one instrument common to all three arms.</p>
+  </div>
+  <div class="tbl-wrap"><table id="hold">
+    <thead><tr><th>Arm</th><th>Source</th><th class="n">die − setpoint</th><th class="n">sd</th><th class="n">peak</th><th class="n">reaches</th><th class="n">duty</th><th class="n">rpm</th><th class="n">heatsink</th><th class="n">R<sub>int</sub></th><th class="n">fps</th><th class="n">throttled</th></tr></thead>
+    <tbody></tbody></table></div>
+  <div class="prose" style="display:grid;gap:12px">
+    <p id="h-prose">—</p>
+    <h3>What losing the sensor actually costs</h3>
+    <p>Not the regulated temperature — <b>the estimate</b>. In the closed-loop arm the board's die model is anchored to a live measurement, so the fan's own quantisation does not move it. In open loop the model is computed <em>from</em> the applied duty, so every 1.587 % EMC2101 step swings it directly.</p>
+  </div>
+  <div class="two">
+    <div class="chart-card"><h3>The board's model minus the card's own sensor</h3>
+      <p class="sub">Settled windows only. In open loop <code>die_est</code> tracks the setpoint by construction while the fan is unclamped, so pooling the approach would report a 42 °C "error" that says nothing about the model.</p>
+      <div id="ch-est"></div></div>
+    <div class="chart-card"><h3>Which fan levels each arm actually sat on</h3>
+      <p class="sub">The duty is the board's own readback, never the requested percent. The EMC2101 quantises to 1/63, so the two open arms differ mostly by which side of one level boundary they landed on.</p>
+      <div id="ch-occ"></div></div>
+  </div>
+  <div class="prose" style="display:grid;gap:12px">
+    <p id="h-under">—</p>
+  </div>
+</section>
+
+<section id="believe">
+  <div class="head"><h2>How much of that can we believe?</h2>
+    <p class="prose muted">Arms 2 and 3 both ran open, because there is no model yet. That was foreseen — the plan calls arm 3 <q>a second baseline sample, which is not wasted</q> — and it is the single most load-bearing measurement in the run: <b>no other difference here can be called real below it</b>.</p></div>
+  <div class="tbl-wrap"><table id="rep">
+    <thead><tr><th>Quantity</th><th class="n">arm 2</th><th class="n">arm 3</th><th class="n">difference</th></tr></thead>
+    <tbody></tbody></table></div>
+  <div class="prose" style="display:grid;gap:12px">
+    <p id="r-prose">—</p>
+    <h3>The four fan-off brackets, and why they are 30 minutes each</h3>
+    <p>Before the first arm, between each pair, and after the last, the plan hands the fan register back and holds the duty at 0 with the card at idle — a fixed ~0.86 W and no forced air. Repeated four times across three and a half hours, that is an <b>ambient probe</b>, and it is the only instrument in the run that can tell a plant change from a controller difference. It cost nothing but time, and this run needed it.</p>
+  </div>
+  <div class="tbl-wrap"><table id="brk">
+    <thead><tr><th>#</th><th class="n">clock</th><th class="n">die</th><th class="n">Δ</th><th class="n">heatsink</th><th class="n">Δ</th><th class="n">board air</th><th class="n">Δ</th><th class="n">rail W</th><th class="n">R<sub>amb</sub></th><th class="n">Δ</th><th>flat?</th></tr></thead>
+    <tbody></tbody></table></div>
+  <div class="two">
+    <div class="chart-card"><h3>Die and heatsink at the four unforced baselines</h3>
+      <p class="sub">Same load, same fan (off), same card. Anything that moves here is the environment, not the controller. Dashed line: the opening baseline.</p>
+      <div id="ch-brk"></div></div>
+    <div class="chart-card"><h3>Natural-convection resistance, fan off</h3>
+      <p class="sub">(die − air) / watts at a fixed 0.86 W. One number for "is the card's thermal environment what it was?" — and it fell monotonically all afternoon.</p>
+      <div id="ch-ramb"></div></div>
+  </div>
+  <div class="prose" style="display:grid;gap:12px">
+    <p id="r-amb">—</p>
+    <p id="r-verdict">—</p>
+    <p class="small"><b>The EMC2101 is not an inlet sensor, and this is the first run where that mattered.</b> It is the fan controller's own die temperature — it has self-heating, it reads in 0.25 °C steps, and it sits on the probe board rather than in the airstream. The feedforward uses it as <code>air</code>, which is fine while the loop has a thermocouple to close on. Open loop has nothing to correct it with, so a quarter-degree of unmeasured inlet shift flips one EMC2101 duty level, and one level is most of a degree of die.</p>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>One constant, three failures retired</h2>
+    <p class="prose muted">0.5.0's run produced three different-looking failures from one defect: the tracking error during any approach is <em>model error</em> plus <em>the plant has not got there yet</em>, and nothing separated them — so the PI demanded the fan compensate for the plant's own time constant. 0.6.0 bounds the PI's authority instead of adding more anti-windup, because the integrator was unwinding <em>correctly</em> from a value the loop could never use.</p></div>
+  <div class="prose" style="display:grid;gap:12px">
+    <pre class="mono small" style="overflow-x:auto;background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:12px;margin:0">const double corr = clampd(kp * err + integ, -kTrim, kTrim);   // kTrim = 15 duty points
+const double raw  = base + corr;
+const double out  = clampd(raw, min_duty, max_duty);
+integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back what the window cannot express</pre>
+    <p id="k-prose">—</p>
+  </div>
+  <div class="tbl-wrap"><table id="ktab">
+    <thead><tr><th class="n">t into the arm</th><th class="n">integrator</th><th class="n">applied duty</th><th class="n">feedforward</th><th class="n">error</th></tr></thead>
+    <tbody></tbody></table></div>
+  <div class="prose" style="display:grid;gap:12px">
+    <p class="small"><b>An integrator above 15 is legal, and counting it as windup would be a misreading.</b> The bound is <code>±kTrim − kp·err</code>, not <code>±kTrim</code> — so when the error is −40 the integrator is allowed up to +55, and it is holding exactly the demand the trim window cannot currently express. What is bounded is the <em>sum</em>: the PI may move the feedforward by at most 15 duty points, whatever its internal state. <b id="k-above">—</b> samples of this arm sat above kTrim and not one of them reached the fan.</p>
+    <p id="k-prior">—</p>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>Scoring the board's model of the die</h2>
+    <p class="prose muted">The board cannot read the die. It regulates <code>heatsink + R<sub>int</sub> × watts</code> with R<sub>int</sub> = 1.709 °C/W, and the card's own sensor sits in the same row of the same CSV — so every run tests that figure for free. This one tests it three ways, because the three arms build the estimate differently.</p></div>
+  <div class="tbl-wrap"><table id="esttab">
+    <thead><tr><th>Arm</th><th>Loop</th><th class="n">mean</th><th class="n">sd</th><th class="n">|worst|</th><th class="n">under-reads</th><th class="n">R<sub>int</sub> measured</th><th class="n">predicted bias</th><th class="n">residual</th></tr></thead>
+    <tbody></tbody></table></div>
+  <div class="prose" style="display:grid;gap:12px">
+    <p id="e-prose">—</p>
+    <p class="small"><b>R<sub>int</sub> stays at 1.709, and this run cannot improve on it.</b> All three arms held the same setpoint at the same load, so they land within <b id="e-span">—</b> duty points of each other — one operating point. 0.5.0's four setpoints measured 1.619 °C/W at 32–41 % duty against 1.742 at 58–61 %, i.e. R<sub>int</sub> is a <em>loaded operating-point</em> resistance and not a paste constant; duty and heatsink temperature are confounded across those points too. Separating them needs one setpoint held at two different loads, which no run so far has done.</p>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>The feedforward, spot-checked</h2>
+    <p class="prose muted">The duty the loop asks for first comes from inverting a nine-point R<sub>conv</sub> table seeded from the 22 November fan ladder. This run re-measures it at <b>one</b> duty, so it is a spot check and not a recalibration — but it is a spot check taken with the plant at rest rather than five minutes into a tread.</p></div>
+  <div class="chart-card"><h3>Seeded curve against the point this run re-measured</h3>
+    <p class="sub">Line: the table in <code>Control.h</code>. Points: (heatsink − air) / rail watts in each arm's settled window.</p>
+    <div id="ch-curve"></div></div>
+  <div class="tbl-wrap"><table id="curvetbl">
+    <thead><tr><th class="n">duty</th><th class="n">measured R<sub>conv</sub></th><th class="n">seeded</th><th class="n">difference</th><th class="n">error</th></tr></thead>
+    <tbody></tbody></table></div>
+  <p class="prose" style="margin-top:4px" id="c-prose">—</p>
+</section>
+
+<section>
+  <div class="head"><h2>Throughput, and the margin that was never spent</h2>
+    <p class="prose muted">The board cannot see the core clock or the frame rate — those are PCIe-side, host-only. So the loop holds a die temperature <em>believed</em> safe; it cannot detect throttling and react. The host logs both, which is what lets any setpoint be audited after the fact.</p></div>
+  <div class="prose" style="display:grid;gap:12px">
+    <p id="t-prose">—</p>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>The whole run</h2>
+    <p class="prose muted">Move the pointer across any panel. Everything is the host's 1 Hz log; the loop itself runs at 250 ms on the board, so what is drawn here is one sample in four.</p></div>
+  <div class="readout" id="tl-read"></div>
+  <div id="tl-panels" style="display:grid;gap:10px"></div>
+</section>
+
+<section>
+  <div class="head"><h2>The log</h2>
+    <p class="prose muted">Every automation transition, verbatim from the CSV's <code>message</code> column. The plan's durations appear nowhere else in the file, so a timed stop would otherwise be indistinguishable from a card dying.</p></div>
+  <div class="tbl-wrap" style="max-height:420px;overflow:auto"><table id="events">
+    <thead><tr><th class="n">clock</th><th class="n">into run</th><th>message</th></tr></thead>
+    <tbody></tbody></table></div>
+</section>
+
+<footer>
+  <div>Generated from <code id="f-src">—</code> by <code>tools/ra6m5-report-loop.py</code>. Every number on this page is read from that file at load time; nothing is typed in.</div>
+  <div><b>The exceptions, named:</b> the 0.5.0 comparison figures (+103.4 preseed, 9.4 min at the ceiling, 10.3 °C deficit, −29.7 points of P, +3.5 °C overshoot) come from the 22 November run, <code>logs/mb-benchmark-20261122-221548.csv</code>; the seeded R<sub>conv</sub> table is the 22 November fan ladder; the 98.9–104.2 °C throttle band is from the two-card thermal study; and R<sub>int</sub>'s 1.619/1.742 duty dependence is 0.5.0's four setpoints.</div>
+  <div>Earlier reports on this board: <a href="../ra6m5-exploration/">two cards up a fan ladder</a> · <a href="../ra6m5-thermocouple/">the heat path split in two</a>.</div>
+</footer>
+<div id="tip" class="tip" hidden></div>
+</div>
+<script src="data.js"></script>
+<script>
+(function () {
+  const NS = 'http://www.w3.org/2000/svg';
+  const css = n => `var(--${n})`;
+  const el = (tag, attrs = {}, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; };
+  const fmt = (v, d) => v == null ? "—" : v.toFixed(d);
+  const tip = document.getElementById('tip');
+  function showTip(html, ev) { tip.innerHTML = html; tip.hidden = false; const x = Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8); tip.style.left = x + 'px'; tip.style.top = (ev.clientY - tip.offsetHeight - 12) + 'px'; }
+  function hideTip() { tip.hidden = true; }
+  /* ---------- generic x/y chart ---------- */
+  function xy(hostId, o) {
+    const W2 = 460, H2 = 260, l = 50, r = 12, t = 10, b = 34, pw = W2 - l - r, ph = H2 - t - b;
+    const svg = el('svg', { viewBox: `0 0 ${W2} ${H2}`, class: 'chart', role: 'img', 'aria-label': o.label });
+    const Xs = v => l + (v - o.x0) / (o.x1 - o.x0) * pw, Ys = v => t + (1 - (v - o.y0) / (o.y1 - o.y0)) * ph;
+    const g = el('g', { class: 'grid' }, svg);
+    o.yt.forEach(v => { el('line', { x1: l, x2: W2 - r, y1: Ys(v), y2: Ys(v) }, g); const tx = el('text', { x: l - 7, y: Ys(v) + 4, 'text-anchor': 'end' }, svg); tx.textContent = o.yf ? o.yf(v) : v; });
+    o.xt.forEach(v => { const tx = el('text', { x: Xs(v), y: H2 - b + 18, 'text-anchor': 'middle' }, svg); tx.textContent = o.xf ? o.xf(v) : v; });
+    const xl = el('text', { x: l + pw / 2, y: H2 - 2, 'text-anchor': 'middle' }, svg); xl.textContent = o.xname;
+    if (o.line) el('path', { d: o.pts.map((p, i) => (i ? 'L' : 'M') + Xs(p[0]).toFixed(1) + ' ' + Ys(p[1]).toFixed(1)).join(''), fill: 'none', stroke: css(o.c), 'stroke-width': 2, 'stroke-linejoin': 'round' }, svg);
+    o.pts.forEach(p => el('circle', { cx: Xs(p[0]), cy: Ys(p[1]), r: o.r || 4, fill: css(o.c), 'fill-opacity': o.alpha || 1, stroke: o.line ? css('surface') : 'none', 'stroke-width': o.line ? 2 : 0 }, svg));
+    const hl = el('circle', { r: 6, fill: 'none', stroke: css('fg'), 'stroke-width': 1.5, visibility: 'hidden' }, svg);
+    const hit = el('rect', { x: l, y: t, width: pw, height: ph, fill: 'transparent' }, svg);
+    const move = ev => { const rc = svg.getBoundingClientRect(); const mx = (ev.clientX - rc.left) / rc.width * W2, my = (ev.clientY - rc.top) / rc.height * H2;
+      let best = -1, bd = 1e9; o.pts.forEach((p, i) => { const d = (Xs(p[0]) - mx) ** 2 + (Ys(p[1]) - my) ** 2; if (d < bd) { bd = d; best = i; } });
+      if (best < 0 || bd > 900) { hl.setAttribute('visibility', 'hidden'); hideTip(); return; }
+      const p = o.pts[best]; hl.setAttribute('cx', Xs(p[0])); hl.setAttribute('cy', Ys(p[1])); hl.setAttribute('visibility', 'visible'); showTip(o.tip(p), ev); };
+    hit.addEventListener('pointermove', move); hit.addEventListener('pointerdown', move);
+    hit.addEventListener('pointerleave', () => { hl.setAttribute('visibility', 'hidden'); hideTip(); });
+    document.getElementById(hostId).appendChild(svg);
+  }
+
+  /* ---------- lines(): named series on one plot, optional right axis / log y ---------- */
+  function lines(hostId, o) {
+    const W2 = o.w || 940, H2 = o.h || 300, l = 56, r = o.ry ? 46 : 16, t = 12, b = 40, pw = W2 - l - r, ph = H2 - t - b;
+    const svg = el('svg', { viewBox: `0 0 ${W2} ${H2}`, class: 'chart', role: 'img', 'aria-label': o.label });
+    const Xs = v => l + (v - o.x0) / (o.x1 - o.x0) * pw;
+    /* a log y axis is what makes two exponentials with the same time constant
+       read as two parallel straight lines, which is the whole point of the
+       cool-down chart; on a linear axis the comparison is invisible. */
+    const lg = o.logy, L0 = lg ? Math.log(o.y0) : 0, L1 = lg ? Math.log(o.y1) : 0;
+    const Ys = v => lg ? t + (1 - (Math.log(v) - L0) / (L1 - L0)) * ph
+                       : t + (1 - (v - o.y0) / (o.y1 - o.y0)) * ph;
+    const Yr = o.ry ? v => t + (1 - (v - o.ry.lo) / (o.ry.hi - o.ry.lo)) * ph : null;
+    const g = el('g', { class: 'grid' }, svg);
+    o.yt.forEach(v => { el('line', { x1: l, x2: W2 - r, y1: Ys(v), y2: Ys(v) }, g);
+      const tx = el('text', { x: l - 7, y: Ys(v) + 4, 'text-anchor': 'end' }, svg); tx.textContent = o.yf ? o.yf(v) : v; });
+    if (o.ry) o.ry.ticks.forEach(v => { const tx = el('text', { x: W2 - r + 8, y: Yr(v) + 4, 'text-anchor': 'start' }, svg); tx.textContent = o.ry.f ? o.ry.f(v) : v; });
+    o.xt.forEach(v => { el('line', { x1: Xs(v), x2: Xs(v), y1: t, y2: t + ph }, g);
+      const tx = el('text', { x: Xs(v), y: H2 - b + 18, 'text-anchor': 'middle' }, svg); tx.textContent = o.xf ? o.xf(v) : v; });
+    const xl = el('text', { x: l + pw / 2, y: H2 - 4, 'text-anchor': 'middle' }, svg); xl.textContent = o.xname;
+    if (o.zero != null) el('line', { x1: l, x2: W2 - r, y1: Ys(o.zero), y2: Ys(o.zero), stroke: css('fg-3'), 'stroke-width': 1, 'stroke-dasharray': '4 3' }, svg);
+    (o.bands || []).forEach(bd => el('rect', { x: Xs(bd[0]), y: t, width: Xs(bd[1]) - Xs(bd[0]), height: ph, fill: css('accent-soft'), 'fill-opacity': 0.7 }, svg));
+    o.series.forEach(ser => {
+      const YY = ser.r ? Yr : Ys; let d = '', pen = false;
+      ser.y.forEach((v, i) => { if (v == null || o.x[i] == null || (lg && !ser.r && v <= o.y0)) { pen = false; return; }
+        d += (pen ? 'L' : 'M') + Xs(o.x[i]).toFixed(1) + ' ' + YY(v).toFixed(1); pen = true; });
+      if (d) el('path', { d, fill: 'none', stroke: css(ser.c), 'stroke-width': ser.w || 1.9,
+        'stroke-dasharray': ser.dash || 'none', 'stroke-opacity': ser.alpha || 1, 'stroke-linejoin': 'round' }, svg);
+      if (ser.dots) ser.y.forEach((v, i) => { if (v == null || o.x[i] == null) return;
+        el('circle', { cx: Xs(o.x[i]), cy: YY(v), r: 2.6, fill: css(ser.c) }, svg); });
+    });
+    const lab = document.createElement('div'); lab.className = 'panel-label';
+    lab.innerHTML = o.series.map(s => `<span><i class="sw" style="background:${css(s.c)}"></i>${s.name}</span>`).join('');
+    const hl = el('line', { y1: t, y2: t + ph, stroke: css('fg-3'), 'stroke-width': 1, visibility: 'hidden' }, svg);
+    const hit = el('rect', { x: l, y: t, width: pw, height: ph, fill: 'transparent' }, svg);
+    const move = ev => { const rc = svg.getBoundingClientRect(); const mx = (ev.clientX - rc.left) / rc.width * W2;
+      const xv = o.x0 + (mx - l) / pw * (o.x1 - o.x0);
+      let best = -1, bd = 1e9; o.x.forEach((v, i) => { if (v == null) return; const dd = Math.abs(v - xv); if (dd < bd) { bd = dd; best = i; } });
+      if (best < 0) return;
+      hl.setAttribute('x1', Xs(o.x[best])); hl.setAttribute('x2', Xs(o.x[best])); hl.setAttribute('visibility', 'visible');
+      const rows = o.series.map(ser => ser.y[best] == null ? null
+        : `<i class="sw" style="background:var(--${ser.c})"></i>${ser.name} <b>${ser.tf ? ser.tf(ser.y[best]) : (o.tf ? o.tf(ser.y[best]) : ser.y[best])}</b>`).filter(Boolean);
+      showTip(`<b>${o.xtip ? o.xtip(o.x[best]) : o.x[best]}</b><br>` + rows.join('<br>'), ev); };
+    hit.addEventListener('pointermove', move); hit.addEventListener('pointerdown', move);
+    hit.addEventListener('pointerleave', () => { hl.setAttribute('visibility', 'hidden'); hideTip(); });
+    const host = document.getElementById(hostId);
+    host.appendChild(lab); host.appendChild(svg);
+  }
+
+  /* ---------- bindings ---------- */
+  const A = LOOP.arms, P = LOOP.provenance, C = LOOP.compare, RP = LOOP.repeat,
+        DR = LOOP.drift, KT = LOOP.ktrim, E = LOOP.estimator, CU = LOOP.curve,
+        T = LOOP.throughput, B = LOOP.brackets;
+  const set = (id, html) => { const n = document.getElementById(id); if (n) n.innerHTML = html; };
+  const pc = v => v == null ? '—' : v.toFixed(1) + ' %';
+  const sgn = (v, d) => v == null ? '—' : (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(d);
+  const MODEN = { 0: 'off', 1: 'on' };
+  const SRCN = { 0: 'measured', 1: 'inferred', 2: 'none' };
+  const STN = { 0: 'idle', 1: 'settling', 2: 'holding', 3: 'floor', 4: 'ceiling',
+                5: 'open', 6: 'degraded', 7: 'fault' };
+  /* A histogram is rendered as "name=count", most-occupied first, because the
+     modal value is the arm's identity and the rest are boundary samples. */
+  const hbox = (h, names) => Object.entries(h).sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => `<b>${names ? names[k] : k}</b>&nbsp;${v}`).join(' · ');
+  const row = (tb, cells) => { const tr = document.createElement('tr');
+    tr.innerHTML = cells.join(''); document.querySelector(tb + ' tbody').appendChild(tr); return tr; };
+  const td = (v, cls) => `<td${cls ? ` class="${cls}"` : ''}>${v}</td>`;
+  const tn = v => td(v, 'n');
+
+  set('meta-when', `23 Nov 2026, ${LOOP.start.slice(11, 16)}–${LOOP.end.slice(11, 16)}`);
+  set('meta-n', `${LOOP.n.toLocaleString()} samples · ${LOOP.mins.toFixed(0)} min, no gaps`);
+  set('f-src', LOOP.n.toLocaleString() + ' rows, ' + LOOP.start.slice(0, 10)
+    + ' ' + LOOP.start.slice(11, 19) + '–' + LOOP.end.slice(11, 19));
+  set('h-floor', LOOP.load_floor.toFixed(1) + ' W');
+  if (C.headline) set('l-delta', sgn(C.headline.die_delta, 3) + ' °C');
+  set('l-drift', sgn(DR.r_drop_pct, 1) + ' %');
+
+  /* ---------- tiles, built from the data rather than typed ---------- */
+  {
+    const H = C.headline, tiles = [];
+    if (H) tiles.push({ num: sgn(H.die_delta, 3), unit: '°C',
+      t: 'open loop vs closed loop',
+      s: `the same setpoint held on the static feedforward alone, with no measurement in the path at all — and ${H.same_levels ? 'on the same two fan levels' : 'within ' + Math.abs(H.duty_delta).toFixed(2) + ' duty points'}` });
+    if (RP) tiles.push({ num: sgn(RP.die_delta, 2), unit: '°C',
+      t: 'run-to-run, open loop twice',
+      s: 'two identical 30-minute arms an hour apart. This is the bound every other number here inherits, and it is larger than the result above' });
+    if (H) tiles.push({ num: '×' + H.est_sd_ratio.toFixed(1), unit: '',
+      t: 'noisier die estimate',
+      s: 'what losing the thermocouple actually costs: not the regulated temperature, but what the board believes it is' });
+    tiles.push({ num: P.discriminators['2v3'].length.toString(), unit: 'column',
+      t: 'separates arm 2 from arm 3',
+      s: `<code>ctl.state</code> alone — <code>5 open</code> against <code>6 degraded</code>. Every other control channel reads identically in both` });
+    if (KT) tiles.push({ num: Math.abs(KT.dff_absmax).toFixed(1), unit: '/ 15',
+      t: 'duty points the PI used',
+      s: `of the ${KT.ktrim.toFixed(0)} it is allowed. 0.5.0 preseeded ${sgn(KT.prior.preseed, 1)} and pinned the fan at its ceiling for ${KT.prior.pinned_min} minutes` });
+    tiles.push({ num: sgn(DR.r_drop_pct, 1), unit: '%',
+      t: 'drift in natural-convection R',
+      s: `at a fixed 0.86 W with the fan off, monotone across four 30-minute baselines — and the closing one ${DR.last_settled ? 'settled' : '<b>never settled</b>'}. The run was not conducted under constant conditions` });
+    tiles.push({ num: T.thr.toFixed(2), unit: '%', t: 'throttled, all three arms',
+      s: `${T.fps_mean.toFixed(0)} fps at a flat ${T.clk_hi.toFixed(0)} MHz across ${T.n.toLocaleString()} loaded samples; hottest die ${T.die_max.toFixed(2)} °C, ${T.margin.toFixed(2)} °C short of the ${T.bound.toFixed(0)} °C bound` });
+    document.getElementById('tiles').innerHTML = tiles.map(x =>
+      `<div class="finding"><div class="num">${x.num}<span class="unit">${x.unit}</span></div>`
+      + `<div class="t">${x.t}</div><div class="s">${x.s}</div></div>`).join('');
+  }
+
+  /* ---------- the plan ---------- */
+  {
+    const WHAT = ['the reference — and the source of the other two arms’ training labels',
+      'the baseline a learned estimate has to beat: pure feedforward, no feedback',
+      'the candidate — and, with no model compiled in, a second baseline sample'];
+    A.forEach((s, i) => row('#plan', [
+      td('<b>' + (i + 1) + '</b>'),
+      td(s.tc ? '<b>on</b>' : 'off'),
+      td(i === 2 ? '<b>on</b>' : 'off'),
+      td(SRCN[s.src] + (s.state === 6 ? ' <span class="muted small">(requested, absent)</span>' : '')),
+      tn(s.target.toFixed(0) + ' °C'), tn(s.clock),
+      td('<span class="small">' + WHAT[i] + '</span>')]));
+  }
+
+  /* ---------- provenance ---------- */
+  P.rows.forEach(r => row('#prov', [
+    td('<b>' + r.arm + '</b> <span class="muted small">' + r.label + '</span>'),
+    td(hbox(r.src, SRCN)), td(hbox(r.tc)), td(hbox(r.nn)), td(hbox(r.auto)),
+    td(hbox(r.state, STN))]));
+
+  /* ---------- closed vs open ---------- */
+  {
+    C.rows.forEach(r => row('#hold', [
+      td('<b>' + r.arm + '</b>'), td(r.label),
+      tn('<b>' + sgn(r.die_err, 3) + '</b>'), tn(r.die_err_sd.toFixed(3)),
+      tn(r.peak.toFixed(2)), tn(r.reach == null ? 'never' : r.reach + ' s'),
+      tn(r.duty.toFixed(2) + ' %'), tn(r.rpm.toFixed(0)),
+      tn(r.hs.toFixed(2)), tn(r.rint.toFixed(3)),
+      tn(r.fps.toFixed(1)), tn(r.thr.toFixed(2) + ' %')]));
+    const H = C.headline, c = C.rows[H.closed_arm - 1], o = C.rows[H.open_arm - 1];
+    set('h-prose', `At ${c.p.toFixed(2)} W with a ${c.air.toFixed(1)} °C board-air reading, the static `
+      + `feedforward held the die <b>${sgn(o.die_err, 3)} °C</b> from the setpoint against the closed `
+      + `loop's <b>${sgn(c.die_err, 3)}</b> — a difference of ${sgn(H.die_delta, 3)} °C, on a thermocouple `
+      + `quantised at 0.25 °C. The two arms asked for duties ${Math.abs(H.duty_delta).toFixed(2)} points apart`
+      + (H.same_levels ? ' and dithered between the same two EMC2101 levels' : '')
+      + `, took ${Math.abs((o.reach || 0) - (c.reach || 0)).toFixed(0)} s differently to arrive, and `
+      + `delivered ${o.fps.toFixed(2)} against ${c.fps.toFixed(2)} fps with nothing throttled in either. `
+      + `The open arm overshot <em>less</em> — ${sgn(o.peak - A[H.open_arm - 1].target, 3)} against `
+      + `${sgn(c.peak - A[H.closed_arm - 1].target, 3)} — because there is no integrator to unwind.`);
+    set('h-under', `The direction of failure differs, and it matters more than the magnitude. `
+      + `The closed-loop arm <b>never once</b> read the die cooler than it was `
+      + `(${c.est_under}/${c.est_n} settled samples). Arm ${H.open_arm} did so on `
+      + `<b>${o.est_under} of ${o.est_n}</b> — a third of its hold spent believing it had more margin `
+      + `than it had, with no way to detect that from the board. At a 90 °C setpoint with five degrees `
+      + `in hand that is free. At the <code>auto</code> 95 °C setpoint, ${o.est_absmax.toFixed(2)} °C of `
+      + `unknowable error is a quarter of the margin to the lowest throttle onset ever observed on this card.`);
+  }
+
+  /* ---------- estimator scatter and duty occupancy ---------- */
+  {
+    const pts = E.scatter;
+    xy('ch-est', { label: 'model error against die temperature', c: 's1', r: 2.4, alpha: 0.5,
+      x0: Math.min(...pts.map(p => p[0])) - 0.3, x1: Math.max(...pts.map(p => p[0])) + 0.3,
+      y0: Math.min(-0.2, ...pts.map(p => p[1])) - 0.2, y1: Math.max(...pts.map(p => p[1])) + 0.2,
+      xt: [88, 89, 90], yt: [0, 0.5, 1, 1.5, 2], yf: v => sgn(v, 1),
+      xname: 'die temperature (°C)', pts,
+      tip: p => `die <b>${p[0].toFixed(2)} °C</b><br>model error <b>${sgn(p[1], 3)} °C</b>` });
+
+    const levels = [...new Set(A.flatMap(s => Object.keys(s.occupancy)))].map(Number).sort((a, b) => a - b);
+    const COL = ['s1', 's2', 's4'];
+    const host = document.getElementById('ch-occ');
+    const lab = document.createElement('div'); lab.className = 'panel-label';
+    lab.innerHTML = A.map((s, i) => `<span><i class="sw" style="background:var(--${COL[i]})"></i>arm ${i + 1}</span>`).join('');
+    host.appendChild(lab);
+    const W2 = 460, H2 = 260, l = 50, r = 12, tp = 10, b = 44, pw = W2 - l - r, ph = H2 - tp - b;
+    const svg = el('svg', { viewBox: `0 0 ${W2} ${H2}`, class: 'chart', role: 'img',
+      'aria-label': 'seconds spent on each quantised fan level, per arm' });
+    const g = el('g', { class: 'grid' }, svg);
+    [0, 200, 400, 600].forEach(v => { el('line', { x1: l, x2: W2 - r, y1: tp + (1 - v / 600) * ph, y2: tp + (1 - v / 600) * ph }, g);
+      const tx = el('text', { x: l - 7, y: tp + (1 - v / 600) * ph + 4, 'text-anchor': 'end' }, svg); tx.textContent = v; });
+    const gw = pw / levels.length, bw = gw / (A.length + 1);
+    levels.forEach((lv, li) => {
+      A.forEach((s, ai) => {
+        const n = s.occupancy[String(lv)] || 0;
+        const x = l + li * gw + bw * (ai + 0.5), h = n / 600 * ph;
+        const rc = el('rect', { x, y: tp + ph - h, width: bw * 0.9, height: Math.max(h, 0.5),
+          fill: css(COL[ai]), rx: 2 }, svg);
+        rc.addEventListener('pointermove', ev => showTip(
+          `arm ${ai + 1} · <b>${lv.toFixed(1)} %</b> duty<br><b>${n} s</b> of its ${s.n_settled} s hold`, ev));
+        rc.addEventListener('pointerleave', hideTip);
+      });
+      const tx = el('text', { x: l + li * gw + gw / 2, y: H2 - b + 18, 'text-anchor': 'middle' }, svg);
+      tx.textContent = lv.toFixed(1) + ' %';
+    });
+    const xl = el('text', { x: l + pw / 2, y: H2 - 4, 'text-anchor': 'middle' }, svg);
+    xl.textContent = 'applied duty (EMC2101 level) — seconds on the left axis';
+    host.appendChild(svg);
+  }
+
+  /* ---------- repeatability ---------- */
+  if (RP) {
+    const R2 = [
+      ['die − setpoint (°C)', sgn(RP.die_err[0], 3), sgn(RP.die_err[1], 3), sgn(RP.die_delta, 3), true],
+      ['applied duty (%)', RP.duty[0].toFixed(3), RP.duty[1].toFixed(3),
+        sgn(RP.duty_delta, 3) + ` <span class="muted small">(${sgn(RP.duty_levels, 2)} levels)</span>`, false],
+      ['fan (rpm)', RP.rpm[0].toFixed(0), RP.rpm[1].toFixed(0), sgn(RP.rpm[1] - RP.rpm[0], 0), false],
+      ['airflow (m/s)', RP.af[0].toFixed(3), RP.af[1].toFixed(3), sgn(RP.af[1] - RP.af[0], 3), false],
+      ['heatsink (°C)', RP.hs[0].toFixed(3), RP.hs[1].toFixed(3), sgn(RP.hs[1] - RP.hs[0], 3), false],
+      ['board air (°C)', RP.air[0].toFixed(3), RP.air[1].toFixed(3), sgn(RP.air[1] - RP.air[0], 3), false],
+      ['rail power (W)', RP.p[0].toFixed(4), RP.p[1].toFixed(4), sgn(RP.p[1] - RP.p[0], 4), false],
+      ['actual R<sub>conv</sub> (°C/W)', RP.rconv[0].toFixed(3), RP.rconv[1].toFixed(3), sgn(RP.rconv[1] - RP.rconv[0], 3), false],
+      ['model error, mean (°C)', sgn(RP.est[0], 3), sgn(RP.est[1], 3), sgn(RP.est[1] - RP.est[0], 3), false],
+      ['model error, sd (°C)', RP.est_sd[0].toFixed(3), RP.est_sd[1].toFixed(3), sgn(RP.est_sd[1] - RP.est_sd[0], 3), false],
+    ];
+    R2.forEach(([k, a, b, d, bold]) => row('#rep', [td(k), tn(a), tn(b),
+      tn(bold ? '<b>' + d + '</b>' : d)]));
+    set('r-prose', `Arm ${RP.arms[1]} ran <b>${Math.abs(RP.die_delta).toFixed(2)} °C cooler on a full `
+      + `EMC2101 level less air</b> — ${RP.duty[1].toFixed(2)} % against ${RP.duty[0].toFixed(2)} %, `
+      + `${RP.rpm[1].toFixed(0)} rpm against ${RP.rpm[0].toFixed(0)}. Less fan and a colder card is the `
+      + `wrong direction for the fan curve, so this is not the controller: the plant changed. The actual `
+      + `convective resistance confirms it, ${RP.rconv[1].toFixed(3)} against ${RP.rconv[0].toFixed(3)} °C/W. `
+      + `And the occupancy numbers say how one level moved: the requested duty was sitting <b>on the `
+      + `boundary</b> between two levels — arm ${RP.arms[0]} dithered across it, arm ${RP.arms[1]} parked below it.`);
+    set('r-verdict', `<b>And the closing bracket is the run's verdict on itself.</b> `
+      + (DR.last_settled
+        ? `It settled, so the drift had finished.`
+        : `It <b>never settled</b> — still falling ${sgn(DR.last_creep, 2)} °C across its last `
+          + `${DR.window} s, thirty minutes after the load came off, where the first three were flat `
+          + `to within a die LSB. So it is <em>not</em> a valid baseline comparison, and declining to `
+          + `read it as one is the point: the session's drift had not finished when the run ended.`)
+      + ` The cleanest statement of that drift is the natural-convection resistance at a fixed `
+      + `${B[0].p.toFixed(2)} W with the fan off: <b>`
+      + DR.r_amb.map(v => v.toFixed(2)).join(' → ') + ` °C/W</b>, i.e. `
+      + `<b>${sgn(DR.r_drop_pct, 1)} %</b>${DR.monotone ? ' and monotone across all four' : ''}. `
+      + `The card got steadily easier to cool across three and a half hours at constant power with no `
+      + `forced air at all. <b>The die, the heatsink thermocouple and the FS3000 all agree; the EMC2101 — `
+      + `the loop's own air input — is the one that says the opposite</b>, having risen `
+      + `${sgn(DR.rows[DR.rows.length - 1].d_air, 2)} °C over the same span. `
+      + `Three instruments against one, and the one is the input an open loop has nothing to correct `
+      + `with. This run cannot say what moved — a chassis fan, the room, the airflow path — only that `
+      + `something did, by more than the effect the run was built to measure: `
+      + `${Math.abs(C.headline.die_delta).toFixed(3)} °C of closed-versus-open against `
+      + `${Math.abs(DR.rows[2].d_die - DR.rows[3].d_die).toFixed(2)} °C between the last two brackets alone.`);
+    set('r-amb', `Between those two arms the unforced baseline fell <b>${sgn(RP.amb_die, 3)} °C</b> on the die `
+      + `and ${sgn(RP.amb_hs, 3)} °C on the heatsink, at a fixed ${B[0].p.toFixed(2)} W with the fan off — `
+      + `while the loop's own air input moved <b>${sgn(RP.amb_air, 3)} °C, in the opposite direction</b>. `
+      + `So of arm ${RP.arms[1]}'s ${Math.abs(RP.die_delta).toFixed(2)} °C, about ${Math.abs(RP.amb_die).toFixed(2)} °C `
+      + `is a genuinely colder room that the board could not see, and ${Math.abs(RP.unexplained).toFixed(2)} °C `
+      + `is unexplained. Either way the conclusion is the same and it is the one worth carrying forward: `
+      + `<b>open-loop run-to-run repeatability is ${Math.abs(RP.die_delta).toFixed(2)} °C</b>, so the `
+      + `${C.headline ? Math.abs(C.headline.die_delta).toFixed(3) : '—'} °C agreement between closed and open `
+      + `loop is <em>below the noise floor</em>. The honest claim is that the feedforward matched the closed `
+      + `loop to within repeatability — not that it matched it to a hundredth of a degree.`);
+  }
+
+  /* ---------- the brackets ---------- */
+  {
+    DR.rows.forEach(r => row('#brk', [
+      td('<b>' + r.i + '</b>'), tn(r.clock),
+      tn('<b>' + r.die.toFixed(4) + '</b>'), tn(r.i === 1 ? '—' : sgn(r.d_die, 4)),
+      tn(r.hs.toFixed(4)), tn(r.i === 1 ? '—' : sgn(r.d_hs, 4)),
+      tn(r.air.toFixed(4)), tn(r.i === 1 ? '—' : sgn(r.d_air, 4)),
+      tn(r.p.toFixed(5)),
+      tn('<b>' + r.r_amb.toFixed(3) + '</b>'), tn(r.i === 1 ? '—' : sgn(r.d_r, 3)),
+      td(r.settled ? 'yes'
+        : `<b>no</b> <span class="muted small">(still falling ${sgn(r.creep, 2)} °C)</span>`)]));
+    lines('ch-brk', { w: 460, h: 240, label: 'die temperature at the four unforced baselines',
+      x0: 0.6, x1: DR.rows.length + 0.4, y0: Math.min(...DR.rows.map(r => r.die)) - 0.2,
+      y1: Math.max(...DR.rows.map(r => r.die)) + 0.2,
+      xt: DR.rows.map(r => r.i), xf: v => 'bracket ' + v,
+      yt: [42.8, 43.0, 43.2, 43.4], yf: v => v.toFixed(1),
+      xname: 'fan-off bracket, in order', zero: DR.rows[0].die,
+      x: DR.rows.map(r => r.i),
+      series: [{ k: 'die', name: 'die (max TS0, TS1)', c: 's1', dots: true,
+                 y: DR.rows.map(r => r.die), tf: v => v.toFixed(4) + ' °C' },
+               { k: 'hs', name: 'heatsink thermocouple', c: 's2', dots: true,
+                 y: DR.rows.map(r => r.hs), tf: v => v.toFixed(4) + ' °C' }],
+      xtip: v => 'bracket ' + v + ' · ' + DR.rows[v - 1].clock
+        + (DR.rows[v - 1].settled ? '' : ' (still cooling)') });
+    lines('ch-ramb', { w: 460, h: 240, label: 'natural-convection resistance at each baseline',
+      x0: 0.6, x1: DR.rows.length + 0.4,
+      y0: Math.min(...DR.r_amb) - 0.4, y1: Math.max(...DR.r_amb) + 0.4,
+      xt: DR.rows.map(r => r.i), xf: v => 'b' + v,
+      yt: [21, 21.5, 22, 22.5], yf: v => v.toFixed(1),
+      xname: 'fan-off bracket, in order', zero: DR.r_amb[0],
+      x: DR.rows.map(r => r.i),
+      series: [{ k: 'r', name: '(die − air) / W  [°C/W]', c: 's4', dots: true, w: 2.4,
+                 y: DR.r_amb, tf: v => v.toFixed(3) + ' °C/W' }],
+      xtip: v => 'bracket ' + v + ' · ' + DR.rows[v - 1].clock
+        + (DR.rows[v - 1].settled ? '' : ' — NEVER SETTLED') });
+  }
+
+  /* ---------- kTrim ---------- */
+  if (KT) {
+    const pr = KT.prior;
+    set('k-prose', `Arm ${KT.arm} armed from a fan held at 0 % by <code>fan.idle</code>, with the card `
+      + `${Math.abs(KT.preseed_err).toFixed(1)} °C below its setpoint — the same shape of condition that `
+      + `pinned 0.5.0. Bumpless transfer preseeded the integrator to <b>${sgn(KT.preseed, 2)}</b>, which is `
+      + `exactly <code>−kp·err</code> with kp = ${KT.kp}, so the trim term saw about zero and the first `
+      + `commanded duty came out <em>above</em> the feedforward rather than below it. The integrator then `
+      + `unwound monotonically to zero over <b>${KT.integ_zero_at} s</b> `
+      + `(${sgn(KT.integ_rate, 1)} points/min). Peak overshoot: <b>${sgn(KT.over, 3)} °C</b>, against `
+      + `0.5.0's ${sgn(pr.cold_over, 1)} on the same defect's other sign. Across the whole 30 minutes the PI `
+      + `moved the feedforward by ${sgn(KT.dff_min, 2)} to ${sgn(KT.dff_max, 2)} duty points — `
+      + `<b>${(100 * KT.budget_used).toFixed(0)} %</b> of its ${KT.ktrim.toFixed(0)}-point budget — and the `
+      + `ceiling was never reached (${KT.ceiling} samples), nor the floor after the arming second `
+      + `(${KT.floor}).`);
+    KT.decay.forEach(([t, ig, du, ff, er]) => row('#ktab', [
+      tn(t + ' s'), tn(ig == null ? '—' : '<b>' + sgn(ig, 2) + '</b>'),
+      tn(du == null ? '—' : du.toFixed(1) + ' %'), tn(ff == null ? '—' : ff.toFixed(1) + ' %'),
+      tn(er == null ? '—' : sgn(er, 2) + ' °C')]));
+    set('k-above', KT.integ_above_ktrim.toString());
+    set('k-prior', `<b>What 0.5.0 did with the same arithmetic unbounded.</b> Arming from a hand-set 100 % `
+      + `fan preseeded <b>${sgn(pr.preseed, 1)} duty points</b> and pinned the fan at its 73 % ceiling for `
+      + `<b>${pr.pinned_min} minutes</b> while the die was already <b>${pr.deficit} °C below</b> setpoint — `
+      + `20.1 minutes to settle, against 6.5 for the same law at a different setpoint. And on a cold start `
+      + `the P term subtracted <b>${Math.abs(pr.cold_p).toFixed(1)} points</b> from a feedforward that had `
+      + `correctly asked for 33.2 % at 4.33 W, flooring the fan for 40 s and overshooting `
+      + `${sgn(pr.cold_over, 1)} °C. Both signs, one defect, one constant. `
+      + `<em>Do not file the first case as an overshoot</em> — the die never once rose above the setpoint `
+      + `in that step.`);
+  }
+
+  /* ---------- the estimator, by arm ---------- */
+  {
+    E.by_arm.forEach(r => row('#esttab', [
+      td('<b>' + r.arm + '</b> <span class="muted small">' + r.label + '</span>'), td(r.kind),
+      tn('<b>' + sgn(r.mean, 3) + '</b>'), tn(r.sd.toFixed(3)), tn(r.absmax.toFixed(3)),
+      tn(r.under + ' / ' + r.n), tn(r.rint.toFixed(4)),
+      tn(sgn(r.predicted, 3)), tn(sgn(r.residual, 3))]));
+    const c = E.by_arm.find(r => r.kind === 'closed');
+    set('e-prose', c ? `The closed-loop arm's bias has an exact explanation, and it is the whole of it. `
+      + `At its held duty the plant's internal resistance measures <b>${c.rint.toFixed(4)} °C/W</b> against `
+      + `the ${E.rint_cfg} the firmware carries, and `
+      + `(${E.rint_cfg} − ${c.rint.toFixed(4)}) × ${c.p.toFixed(4)} W = <b>${sgn(c.predicted, 3)} °C</b> — `
+      + `which is the measured bias to three decimals, residual ${sgn(c.residual, 3)}. Nothing else is `
+      + `contributing. The open arms are different in kind: their estimate never touches the thermocouple, `
+      + `so the R<sub>conv</sub> curve's error enters instead of the thermocouple's, and the two partly `
+      + `cancel. That makes arm 2's smaller mean <em>luck, not accuracy</em> — and its `
+      + `${(E.by_arm[1].sd / c.sd).toFixed(1)}× spread is the real signal.` : '—');
+    set('e-span', E.rint_run.duty_span.toFixed(2));
+  }
+
+  /* ---------- the feedforward curve ---------- */
+  {
+    const seed = CU.seed, m = CU.measured;
+    lines('ch-curve', { h: 300, label: 'seeded convective resistance against the measured points',
+      x0: 0, x1: 76, y0: 6, y1: 17.2, xt: [0, 10, 20, 30, 40, 50, 60, 70],
+      yt: [7, 9, 11, 13, 15, 17], yf: v => v.toFixed(0),
+      xname: 'fan duty (%) — board readback', x: seed.map(p => p[0]),
+      series: [{ k: 's', name: 'seeded table in Control.h', c: 's3', dots: true,
+                 y: seed.map(p => p[1]), tf: v => v.toFixed(2) + ' °C/W' }],
+      xtip: v => v.toFixed(1) + ' % duty' });
+    const svg = document.querySelector('#ch-curve svg');
+    const l = 56, r = 16, tp = 12, b = 40, W2 = 940, H2 = 300, pw = W2 - l - r, ph = H2 - tp - b;
+    const Xs = v => l + v / 76 * pw, Ys = v => tp + (1 - (v - 6) / 11.2) * ph;
+    m.forEach((p, i) => { const cc = el('circle', { cx: Xs(p[0]), cy: Ys(p[1]), r: 5.5,
+        fill: css('s1'), stroke: css('surface'), 'stroke-width': 2 }, svg);
+      cc.addEventListener('pointermove', ev => showTip(
+        `arm ${i + 1} · <b>${p[0].toFixed(2)} %</b> duty<br>measured <b>${p[1].toFixed(3)} °C/W</b>`
+        + `<br>seeded ${p[2].toFixed(3)} → ${sgn(p[3], 3)} (${sgn(p[4], 1)} %)`, ev));
+      cc.addEventListener('pointerleave', hideTip); });
+    m.forEach(([duty, meas, sd, dd, pct]) => row('#curvetbl', [
+      tn(duty.toFixed(2) + ' %'), tn('<b>' + meas.toFixed(3) + '</b>'), tn(sd.toFixed(3)),
+      tn(sgn(dd, 3) + ' °C/W'), tn(sgn(pct, 1) + ' %')]));
+    const dirs = m.map(x => Math.sign(x[4])), oneWay = dirs.every(d => d === dirs[0]);
+    set('c-prose', `Worst error <b>${CU.worst_pct.toFixed(1)} %</b>, `
+      + (oneWay
+        ? `and all three points in the same direction — the ladder was slightly pessimistic about how `
+          + `well the fan cools, which is the safe direction for a feedforward to be wrong in.`
+        : `and the three points do <b>not</b> agree on a direction: `
+          + m.map(x => `${sgn(x[4], 1)} %`).join(', ') + ` at `
+          + m.map(x => x[0].toFixed(1) + ' %').join(', ') + ` duty respectively. Spanning `
+          + `${CU.duty_span.toFixed(2)} duty points they are effectively three measurements of one `
+          + `point, so the sign flip is the seed table's interpolation slope and the 0.25 °C `
+          + `thermocouple quantum, not a shape the ladder got wrong.`)
+      + ` Note the x-axis: all three arms sit within `
+      + `<b>${CU.duty_span.toFixed(2)} duty points</b> of each other, so this re-measures <em>one</em> point `
+      + `of a nine-point table. It is a consistency check on the seed, not a reason to change it.`);
+  }
+
+  /* ---------- throughput ---------- */
+  set('t-prose', `Across ${T.n.toLocaleString()} loaded samples in all three arms: `
+    + `<b>${T.fps_mean.toFixed(2)} fps</b> (sd ${T.fps_sd.toFixed(2)}, `
+    + `${T.fps_min.toFixed(0)}–${T.fps_max.toFixed(0)}), the neural core flat at `
+    + `<b>${T.clk_hi.toFixed(0)} MHz</b> with <b>${T.thr.toFixed(2)} %</b> of samples below it, and the `
+    + `hottest die of the whole run <b>${T.die_max.toFixed(2)} °C</b> — ${T.margin.toFixed(2)} °C short of `
+    + `the ${T.bound.toFixed(0)} °C zero-throttle bound, at a ${T.target.toFixed(0)} °C setpoint. `
+    + `So the five degrees of margin bought to protect the open-loop arms were never spent, even by the arm `
+    + `that ran ${RP ? Math.abs(RP.die_delta).toFixed(2) : '—'} °C off its sibling. `
+    + `What the board still cannot do is notice: throttling is invisible to it, and closing that would put `
+    + `the host back in the loop — which is the thing running the loop on the board exists to avoid.`);
+  /* ---------- timeline ---------- */
+  {
+    const SS = LOOP.series, W = 940, L = 54, R = 34, PW = W - L - R;
+    const t0 = new Date(LOOP.start);
+    const clock = s => new Date(t0.getTime() + s * 1000).toTimeString().slice(0, 8);
+    const tmax = SS.t[SS.t.length - 1], Xt = t => L + (t / tmax) * PW;
+    const bands = A.map(s => [s.t0, s.t1]);
+    const PANELS = [
+      { title: 'Temperature (°C)', h: 190, lo: 20, hi: 100, ticks: [20, 40, 60, 80, 100], series: [
+        { k: 'tgt', name: 'setpoint', c: 's4' },
+        { k: 'inp', name: 'what the loop regulates', c: 's5' },
+        { k: 'die', name: 'Hailo-8 die (card’s own sensor)', c: 's1' },
+        { k: 'hs', name: 'heatsink thermocouple', c: 's2' },
+        { k: 'air', name: 'board air', c: 's3' }] },
+      { title: 'Fan duty (%) and the two terms behind it', h: 150, lo: -10, hi: 110, ticks: [0, 40, 80],
+        series: [{ k: 'duty', name: 'applied duty (board readback)', c: 's5' },
+                 { k: 'ff', name: 'feedforward term', c: 's3' },
+                 { k: 'integ', name: 'integrator', c: 's2' }] },
+      { title: 'Frame rate (fps)', h: 110, lo: 0, hi: 1500, ticks: [0, 500, 1000, 1500], series: [{ k: 'fps', name: 'Hailo-8', c: 's1' }] },
+      { title: 'Card rail power (W)', h: 105, lo: 0, hi: 6, ticks: [0, 2, 4, 6], series: [{ k: 'p', name: 'INA228 rail', c: 's2' }] },
+      { title: 'Core clock (MHz) — flat at 400 for the whole run', h: 95, lo: 250, hi: 450, ticks: [300, 400], series: [{ k: 'clk', name: 'neural core', c: 's4' }] },
+      /* Eight states in 0.6.0.  kSaturated was split into kFloor (3) and
+         kCeiling (4) because it meant two opposite things: every idle in the
+         0.5.0 run reported "saturated" while sitting at the 9.5 % floor with a
+         slack setpoint.  5 and 6 are what separate arm 2 from arm 3. */
+      { title: 'Loop state (0 off · 1 settling · 2 holding · 3 floor · 4 ceiling · 5 open · 6 degraded · 7 fault)',
+        h: 120, lo: -0.3, hi: 7.3, ticks: [0, 2, 4, 6],
+        series: [{ k: 'state', name: 'ctl.state', c: 's5' }] },
+      { title: 'Temperature source (0 measured · 1 inferred · 2 none)', h: 100, lo: -0.3, hi: 2.3,
+        ticks: [0, 1, 2], series: [{ k: 'src', name: 'ctl.src', c: 's4' }], axis: true },
+    ];
+    const host = document.getElementById('tl-panels'), cursors = [];
+    PANELS.forEach(p => {
+      const box = document.createElement('div'); box.style.display = 'grid'; box.style.gap = '2px';
+      const lab = document.createElement('div'); lab.className = 'panel-label';
+      lab.innerHTML = p.title + (p.series.length > 1 ? ' ' + p.series.map(s => `<span><i class="sw" style="background:${css(s.c)}"></i>${s.name}</span>`).join('') : '');
+      box.appendChild(lab);
+      const H = p.h + (p.axis ? 22 : 6), TT = 6;
+      const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'chart', role: 'img', 'aria-label': p.title });
+      const Y = v => TT + (1 - (v - p.lo) / (p.hi - p.lo)) * (p.h - TT);
+      bands.forEach(b => el('rect', { x: Xt(b[0]), y: TT, width: Xt(b[1]) - Xt(b[0]), height: p.h - TT,
+        fill: css('accent-soft'), 'fill-opacity': 0.75 }, svg));
+      const g = el('g', { class: 'grid' }, svg);
+      p.ticks.forEach(v => { el('line', { x1: L, x2: W - R, y1: Y(v), y2: Y(v) }, g);
+        const tx = el('text', { x: L - 8, y: Y(v) + 4, 'text-anchor': 'end' }, svg); tx.textContent = v; });
+      const GRID = 1800, off = t0.getMinutes() * 60 + t0.getSeconds();
+      for (let s = Math.ceil(off / GRID) * GRID - off; s <= tmax; s += GRID) {
+        el('line', { x1: Xt(s), x2: Xt(s), y1: TT, y2: p.h }, g);
+        if (p.axis) { const tx = el('text', { x: Xt(s), y: p.h + 16, 'text-anchor': 'middle' }, svg); tx.textContent = clock(s).slice(0, 5); }
+      }
+      p.series.forEach(s => { let d = '', pen = false;
+        SS.t.forEach((t, i) => { const v = SS[s.k][i]; if (v == null) { pen = false; return; }
+          d += (pen ? 'L' : 'M') + Xt(t).toFixed(1) + ' ' + Y(Math.max(p.lo, Math.min(v, p.hi))).toFixed(1); pen = true; });
+        el('path', { d, fill: 'none', stroke: css(s.c), 'stroke-width': 1.8, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, svg); });
+      const cur = el('line', { y1: TT, y2: p.h, stroke: css('fg-3'), 'stroke-width': 1, visibility: 'hidden' }, svg);
+      const dots = p.series.map(s => el('circle', { r: 4, fill: css(s.c), stroke: css('surface'), 'stroke-width': 2, visibility: 'hidden' }, svg));
+      cursors.push({ svg, cur, dots, p, Y });
+      el('rect', { x: L, y: 0, width: PW, height: H, fill: 'transparent' }, svg);
+      box.appendChild(svg); host.appendChild(box);
+    });
+    const readout = document.getElementById('tl-read');
+    const MODEN = ['off', 'host', 'smart'], STN = ['idle', 'settling', 'holding', 'clamped', 'fault'];
+    function setCursor(i) {
+      const t = SS.t[i], x = Xt(t);
+      cursors.forEach(c => { c.cur.setAttribute('x1', x); c.cur.setAttribute('x2', x); c.cur.setAttribute('visibility', 'visible');
+        c.p.series.forEach((s, j) => { const v = SS[s.k][i], d = c.dots[j];
+          if (v == null) { d.setAttribute('visibility', 'hidden'); return; }
+          d.setAttribute('cx', x); d.setAttribute('cy', c.Y(Math.max(c.p.lo, Math.min(v, c.p.hi)))); d.setAttribute('visibility', 'visible'); }); });
+      const md = SS.mode[i], stt = SS.state[i], tg = SS.tgt[i], ip = SS.inp[i];
+      readout.innerHTML = `<span><b>${clock(t)}</b></span>`
+        + `<span>loop <b>${md == null ? '—' : MODEN[md]}</b>${stt == null ? '' : ' · ' + STN[stt]}`
+          + `${SS.src[i] == null ? '' : ' · source ' + SRCN[SS.src[i]]}</span>`
+        + (tg != null ? `<span><i class="sw" style="background:${css('s4')}"></i>setpoint <b>${tg.toFixed(1)} °C</b>`
+          + (ip != null ? `, regulating <b>${ip.toFixed(2)}</b> (${sgn(ip - tg, 2)})` : '') + `</span>` : '')
+        + `<span><i class="sw" style="background:${css('s1')}"></i>die <b>${fmt(SS.die[i], 2)} °C</b>`
+        + (SS.est[i] != null ? `, model ${fmt(SS.est[i], 2)}` : '') + `</span>`
+        + `<span><i class="sw" style="background:${css('s2')}"></i>heatsink <b>${fmt(SS.hs[i], 2)}</b></span>`
+        + `<span><i class="sw" style="background:${css('s3')}"></i>air <b>${fmt(SS.air[i], 2)}</b></span>`
+        + `<span><i class="sw" style="background:${css('s5')}"></i>fan <b>${fmt(SS.duty[i], 1)} %</b>, ${fmt(SS.rpm[i], 0)} rpm</span>`
+        + `<span><i class="sw" style="background:${css('s1')}"></i><b>${fmt(SS.fps[i], 0)} fps</b> @ ${fmt(SS.clk[i], 0)} MHz</span>`
+        + `<span><i class="sw" style="background:${css('s2')}"></i>rail <b>${fmt(SS.p[i], 3)} W</b></span>`;
+    }
+    function onMove(ev) { const svg = ev.currentTarget, rc = svg.getBoundingClientRect();
+      const vx = (ev.clientX - rc.left) / rc.width * W, t = Math.max(0, Math.min(tmax, (vx - L) / PW * tmax));
+      let lo = 0, hi = SS.t.length - 1; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (SS.t[m] < t) lo = m; else hi = m; }
+      setCursor(t - SS.t[lo] < SS.t[hi] - t ? lo : hi); }
+    cursors.forEach(c => { c.svg.addEventListener('pointermove', onMove); c.svg.addEventListener('pointerdown', onMove); });
+    setCursor(Math.max(0, SS.t.findIndex(t => t >= A[0].t0 + 300)));
+  }
+
+  /* ---------- the log ---------- */
+  {
+    const tb = document.querySelector('#events tbody');
+    LOOP.events.forEach(e => { const tr = document.createElement('tr');
+      tr.innerHTML = `<td class="n">${e.clock}</td><td class="n">${(e.s / 60).toFixed(1)}′</td>`
+        + `<td class="small mono" style="white-space:normal">${e.msg.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</td>`;
+      tb.appendChild(tr); });
+  }
+})();
+</script>

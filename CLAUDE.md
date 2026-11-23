@@ -342,6 +342,52 @@ Three layers, cleanly separated. Keep it that way.
     never the requested percent.** A plan asking for the fan on a host with no
     such board logs that once and carries on.
 
+  **`fan.mode` hands the fan to the board's own control loop instead**
+  (2026-11-22, **rewritten 2026-11-23 for firmware ≥ 0.6.0**) — `off` / `on`,
+  with `fan.tc` / `fan.nn` (`on` / `off`) choosing where the loop's one
+  temperature comes from, and `fan.target` in °C **or `auto`**. The loop runs on
+  the RA6M5, so it keeps cooling the card when this app exits or crashes; see
+  **The RA6M5 probe board** below and `firmware/mb-probe-ra6m5/Control.h`.
+  **`fan.input` is gone** — the setpoint is always the estimated on-die
+  temperature, because the old die-vs-heatsink choice was the same control law
+  with the observer moved between the setpoint and the error.
+  - **A ramp and a loop are mutually exclusive, and a plan asking for both is
+    REFUSED at load.** They would both drive the fan. `apply_fan_key()` catches
+    them in one block and a post-load pass catches the case it cannot see,
+    where the defaults supply one half and a step the other.
+  - **`fan.idle` is the ONE fan key allowed beside `fan.mode`** (2026-11-23).
+    It is the duty held whenever no loop is driving — the `start` pause, the
+    idles between steps, the `end` hold — so it is the complement of the loop
+    rather than a rival to it. **Without it, "turn the fan off, wait half an
+    hour, then hand it to the board" cannot be written at all**: a bare `fan` is
+    refused alongside `fan.mode` (correctly), and `apply_automation_fan()` only
+    ever runs inside `if (active)`, so no existing key reaches the start pause.
+    `apply_automation_idle_fan()` hands the register back from the loop before
+    asking for a duty, since the firmware refuses one while the loop is on.
+    **What it turned out to BE worth, 2026-11-23: an ambient probe.** Repeated
+    before, between and after the arms it holds the card at a fixed ~0.86 W
+    with no forced air, so differencing the brackets separates a plant change
+    from a controller difference — which that run needed, because the plant
+    moved. Give it the full `idle`/`end` duration rather than trimming it: the
+    closing bracket of that run had **not settled after 30 minutes**, and
+    learning that is what stopped a 0.016 °C result being reported as real.
+    Read a bracket over its last **300 s**, not 600 — every one but the first
+    follows a hot soak.
+  - **It is sent once per step, not per tick.** Once the loop is running the
+    board owns the duty; there is nothing to re-send, and `FanPlan::at()` is
+    meaningless in that mode. The handover signature includes `tc`/`nn`, so a
+    step that changes only the source still re-sends.
+  - **`fan.target = auto` travels as NaN**, all the way to `ctl.target auto`.
+    The host never asserts a temperature for a card it cannot identify, and
+    `_CTL_AUTO` records which it was: "the card's measured bound" and "95
+    degrees" stop meaning the same thing the moment another card is fitted.
+  - **The status comes back as the `ctl.*` channels**, i.e. CSV columns
+    `<port>_CTL_*`. `_CTL_DIE_EST` is the board's *model* of the die and the
+    card's own `_TS0` is the truth, so any run scores the model for free.
+    **Read `_CTL_SRC` first** — it says whether the loop was closed on a
+    measurement (0), on an estimate (1), or ran open with no feedback (2), which
+    is the only thing that confirms a step ran as configured.
+
   `config/automation-thermal-{hailo,deepx}.conf` are the plans this was built
   for: one continuous run, 30 min with the fan off, then 5 % rising 1 %/min to
   100 %. **The two schedules are deliberately identical**, so a difference
@@ -1273,6 +1319,214 @@ launching the app never stops a running fan. The tach reads **only with the
 breakout's `TACH` solder jumper bridged** (it ships open); see the doc. Two
 boards exist (serials ending `A8CC…` and `3BA5…`), both mapped to Hailo. 0x36 on the bus is
 the board's own MAX17048 fuel gauge and is ignored.
+
+**Since firmware 0.6.0 the fan is driven by a SINGLE closed loop running ON
+THE BOARD** (0.5.0 introduced it with three modes; 0.6.0 collapsed them).
+Every input it needs is there — heatsink thermocouple, card watts, board air —
+so it keeps cooling the card when this app exits, crashes or loses the port,
+which is the whole argument for putting it there.
+`firmware/mb-probe-ra6m5/Control.h` carries the design and the provenance of
+every constant; `docs/ra6m5-probe.md` has the wire protocol.
+
+**THE THREE MODES WERE ONE CONTROL LAW, and collapsing them is what 0.6.0 did.**
+Reading 0.5.0 back against its own 225-minute four-setpoint run: in die mode
+
+    e = die_est − target = (tc + rint·W) − target = tc − (target − rint·W)
+
+and `(target − rint·W)` is exactly the heatsink target the feedforward already
+computes. **The observer is a setpoint transformation, not a feedback
+element**, so "regulate the die" and "regulate the heatsink" differed only in
+whether that setpoint moved with load, and `host·die` vs `smart·die` differed
+only in which constant landed in `target`. All three shared one error path —
+which is why one defect produced three different failures in that run. Don't
+reintroduce modes; the axes that are real are the setpoint, its source, and
+whether it was defaulted.
+
+**Power is mandatory, the thermocouple is substitutable — the reverse of
+0.5.0.** `ctl.src` reports which of three sources the loop actually used:
+**0 measured** (the thermocouple, closed loop with PI), **1 inferred** (a
+learned estimate of it, closed loop with PI), **2 none** (open loop, the
+feedforward alone and no PI at all). The control law is identical for the first
+two; only where `tc_` comes from changes — a soft sensor is a drop-in for one
+input, not a second controller. `tc` wins when both are enabled, so `nn` is
+also the fallback for *losing* the thermocouple.
+- **`ctl.src` kept its column name and changed its meaning** in 0.6.0 (it was
+  die-vs-heatsink). A pre-0.6.0 log's values do not mean this. `kProtocol`
+  went 1 → 2 to say so.
+- **`ctl.nn` has no model yet.** The enable, the provenance plumbing and the
+  experiment landed first. `ctl.nn on` is accepted, answers `(no model compiled
+  in)`, and the channel reports **0** with `ctl.state = 6` — so a run
+  configured for the inferred source can never be read as one that got it.
+- **Open loop reports `nan` for `ctl.in` and `ctl.err`**: nothing is measured,
+  so quoting an error would invent one. `ctl.die_est` equals `ctl.target` by
+  construction while unclamped, and diverges exactly when the fan saturates,
+  which is the one case it is informative.
+
+**MEASURED 2026-11-22/23, four setpoints over 225 minutes**, on 0.5.0. The run
+data is `logs/mb-benchmark-20261122-221548.csv` — **keep it**: it is half of
+the 47 282 thermocouple-labelled samples that exist, and the first where duty
+came from a closed loop rather than a ladder. The corpus is **21 179** (the
+2026-11-22 fan ladder, `docs/data/ra6m5-thermal-hailo8-20261122.csv`) +
+**13 502** (this 0.5.0 run) + **12 601** (the 2026-11-23 three-arm run,
+`docs/data/ra6m5-loop-tc-20261123.csv`) — and all 12 601 of the last one carry
+a thermocouple reading even in the arms where it was not in the control path,
+because the MAX31855 is always sampled and always logged. **Train and validate
+a soft sensor on the LOADED windows**, where the plant repeats to ~1 %; the
+fan-off brackets are a check that conditions returned, not a source of model
+inputs.
+- **The loop works.** 70/85 °C die and 60 °C heatsink setpoints, plus the
+  mode's own 95 °C, all held to **≤ 0.03 °C of standing error** over ten
+  minutes each, settling in 6.5–11.8 min (the plant arriving, not the
+  controller deciding — the fan moves inside one second). **0.00 % throttled,
+  400 MHz and 1372.3 ± 0.47 fps across all 7 192 loaded samples**, hottest die
+  94.88 °C. So the 95 °C bound holds under a controller, not just a ladder.
+- **Every failure it found was ONE defect, and 0.6.0 fixes it with one
+  constant.** The error during any approach is "model error" plus "the plant
+  has not got there yet", and nothing separated them, so the PI demanded the
+  fan compensate for the plant's own time constant. Both signs were measured:
+  arming from a hand-set 100 % fan preseeded the integrator to **+103.4 duty
+  points** and pinned the fan at its 73 % ceiling for **9.4 minutes** while the
+  die was already 10.3 °C *below* setpoint (20.1 min to settle, against 6.5 for
+  the same law at a different setpoint); and on a cold start `kp·err`
+  subtracted **29.7 points** from a feedforward that had correctly asked for
+  33.2 % at 4.33 W, flooring the fan for 40 s and overshooting by 3.5 °C.
+  **The fix is `kTrim`: the PI may trim the feedforward by at most 15 duty
+  points.** Stated that way rather than as more anti-windup, because the
+  integrator was unwinding *correctly* from a value the loop could never use.
+  **Do not file the first case as an overshoot** — the die never once rose
+  above the setpoint in that step.
+- **`ctl.state 3` used to mean two opposite things** and is now split into
+  `kFloor` (3) and `kCeiling` (4). Every idle in that run reported "saturated"
+  while sitting at the 9.5 % floor with a slack setpoint, which is the opposite
+  of running out of cooling authority.
+
+**MEASURED 2026-11-23, three arms over 210 minutes**, on 0.6.0 — the run that
+tested the substitution itself. Data `docs/data/ra6m5-loop-tc-20261123.csv`,
+report `docs/reports/ra6m5-loop/`, plan
+`config/automation-thermal-hailo-tc.conf`. **One** setpoint (90 °C), one load,
+three arms differing only in `fan.tc` / `fan.nn`, each bracketed by 30 minutes
+of fan-off idle (`fan.idle = 0`).
+
+- **`kTrim` works and the 0.5.0 defect is gone.** Arm 1 armed from a fan held
+  at 0 % with the card 41.8 °C below setpoint — the same shape that pinned
+  0.5.0. The rearm preseeded the integrator to **+44.95**, which is exactly
+  `−kp·err` at kp = 1, so the trim saw ~0 and the first commanded duty came out
+  *above* the feedforward (12.7 % against 9.5) rather than below it. The
+  integrator then unwound monotonically to zero over **450 s** (−6.0
+  points/min). Over the whole 30 minutes the PI moved the feedforward by
+  **−1.50 … +5.50 duty points — 37 % of its 15-point budget**. Overshoot
+  **+0.280 °C** against 0.5.0's +3.5. `kCeiling` never fired; `kFloor` fired
+  only on the arming second. **116 samples held an integrator above 15 and not
+  one reached the fan** — the bound is `±kTrim − kp·err`, not `±kTrim`, so a
+  large integrator against a large error is *correct* and is not windup.
+- **Open loop matched closed loop, and the agreement is below the noise.**
+  Settled die error (last 10 min, card's own sensor): **−0.318 ± 0.101 °C**
+  closed against **−0.334 ± 0.127** open — a difference of **0.016 °C**, on the
+  same two EMC2101 levels, 0.152 duty points apart, 8 s apart in time-to-reach,
+  1372.29 vs 1372.28 fps, 0.00 % throttled in both. The open arm overshot
+  *less* (+0.078 vs +0.280) because there is no integrator to unwind.
+  **Do not quote 0.016 °C as the result** — see the repeatability bound below.
+- **What losing the thermocouple costs is the ESTIMATE, not the temperature.**
+  `die_est − die` over each settled window: closed **+0.343 ± 0.077**, |max|
+  0.560, and it **never once** read the die cooler than it was (0 of 600).
+  Open: **+0.221 ± 0.591**, |max| 1.402, under-reading on **303 of 600** — a
+  third of the hold spent believing there was more margin than there was, and
+  undetectable from the board. The sd is **7.6× worse** because the open
+  estimate is computed *from* the applied duty, so every 1.587 % EMC2101 step
+  swings it; the closed one is anchored to a measurement and does not move.
+  Open loop's smaller *mean* is two model errors partly cancelling — luck, not
+  accuracy.
+- **The closed-loop estimator's bias is ENTIRELY the R_int error**, which is
+  the cleanest confirmation of the observer yet: at its held duty the plant
+  measures 1.6387 °C/W, and `(1.709 − 1.6387) × 4.8764 W = +0.3428 °C` against
+  a measured **+0.3430**, residual **+0.0002**. Nothing else contributes.
+- **ARMS 2 AND 3 ARE A REPLICATE PAIR and they bound everything: 0.67 °C.**
+  There is no model compiled in, so arm 3 ran open too. Any smaller difference
+  in this run — including the 0.016 °C above — is **below the noise floor** and
+  must not be reported as a measurement. It decomposes exactly, and mostly into
+  mundane things: R_conv −0.089 °C/W × 4.86 W = −0.43 °C, rail power −16 mW ×
+  13.25 °C/W = **−0.21 °C**, EMC2101 air −0.027 = −0.03 °C; sum −0.67 ✓. **A
+  third of it is simply that the card drew 16 mW less** — at this total
+  resistance, 16 mW is 0.21 °C of die.
+- **The closing bracket NEVER SETTLED, and that is the run's verdict on
+  itself.** Still falling 0.197 °C across its last 300 s, thirty minutes after
+  the load came off, where the first three were flat to within a die LSB. So it
+  is not a valid baseline comparison — and declining to read it as one is the
+  finding: the session's drift had not finished when the run ended. **Spend the
+  30 minutes anyway**; a bracket that fails to settle is the only way to learn
+  that.
+- **The 8.1 % drift is a FAN-OFF phenomenon ONLY — do not point it at the
+  loop.** Natural-convection resistance at the four unforced baselines went
+  22.650 → 22.515 → 22.189 → **20.815 °C/W**, monotone, while the loaded arms'
+  own R_conv moved just **0.96 %** (11.7278 → 11.7041 → 11.6153). The regime
+  the loop actually operates in was stable to ~1 % all afternoon. This was
+  first written up as a drift affecting the run and that was an over-read.
+- **The EMC2101 moved the WRONG WAY while everything else moved**, +0.272 °C
+  across the four brackets. It is the fan controller's own die temperature —
+  self-heated, 0.25 °C quantum, on the probe board rather than in the
+  airstream — and the feedforward uses it as `air`. With a thermocouple the PI
+  absorbs that; open loop has nothing to correct it with. **Closing the loop on
+  an estimate does not fix this**: a PI drives `die_est → target`, so a bias
+  *upstream* of the estimate leaves the real die off target by exactly that
+  bias. A soft sensor corrects everything downstream of itself and nothing
+  above it.
+- **`ctl.state` 5 vs 6 is the ONLY column separating arm 2 from arm 3.** `src`,
+  `tc`, `nn` and `auto` read identically in both (1799 samples each). Had that
+  one column not worked, this run would have measured arm 2 three times with no
+  way to say so — see the `kOpen` entry under **Known issues**.
+- R_int today: **1.6387 / 1.6290 / 1.6297** at 37.7 / 37.6 / 36.5 % duty, i.e.
+  a duty span of 1.18 points — one operating point, so this run adds nothing to
+  the duty-dependence question below. Throughput: **1372.29 ± 0.42 fps** over
+  5 394 loaded samples, 400 MHz flat, **0.00 % throttled**, hottest die
+  **90.28 °C** with 4.72 °C of margin to the 95 °C bound.
+
+**`ctl.rint` stays at 1.709 — the planned retune to 1.627 is REFUTED.** That
+figure came from a hand-driven session and the plan said to adopt it if it
+reproduced. It does not: at rest the four held setpoints measure **1.619–1.742
+°C/W**, and 1.627 is below the whole range (the hand-run was reading a plant
+still in motion, where the fast pole puts the die transiently nearer the
+heatsink). 1.709 sits inside the band, which is why the estimator's error flips
+sign with fan duty and **never exceeded 0.68 °C** over 2 400 steady-state
+samples and 27 °C of die. Related and new: R_int is **not** the constant the
+thermocouple report took it for — 1.619 at 32–41 % duty against 1.742 at
+58–61 %, i.e. ~0.57 °C of heatsink reading, most likely the probe being cooled
+by the airstream. Duty and heatsink temperature are confounded across those
+four points, so that run cannot separate them; holding one setpoint at two
+loads would. **The 2026-11-23 run confirms the low-duty end and still cannot
+separate it**: 1.6290–1.6387 °C/W at 36.5–37.7 % duty, squarely consistent
+with the 1.619 measured at 32–41 %, but all three arms held the same setpoint
+at the same load so they span 1.18 duty points. The experiment that settles it
+is still **one setpoint at two different loads**, and nothing has run it.
+
+**The tach and the FS3000 are NOT loop inputs, and the header comment used to
+claim otherwise.** `step()` takes only `Emc2101&, Max31855&, Ina228&`, and of
+the EMC2101 it reads only `temp_int`. As *control* inputs they would add
+nothing — duty→rpm repeats to **0.4–1.7 %** across visits hours apart, so there
+is nothing for a cascade to regulate away.
+
+**Confirmed a second time, independently, 2026-11-23 — and the "airflow as
+disturbance feedforward" idea is DEAD.** Across 3.5 hours at load the whole
+actuator chain agreed with itself: rpm per duty point 62.76 / 63.13 / 62.75
+(+0.59 %, −0.03 %) and m/s per 1 000 rpm 0.8044 / 0.8044 / 0.8155 (−0.00 %,
++1.37 %). **At load the FS3000 carries no information duty does not already
+carry**, so there is nothing for a feedforward term to tell the loop in the
+regime the loop runs in. It showed a change only in the *fan-off* brackets
+(median 0.005 → 0.010 m/s), which is 0.3 % of the 1.9 m/s it reads under load,
+i.e. its noise floor — the one place its reading is least trustworthy. It is
+tempting, after seeing the fan-off resistance move 8 %, to reach for the air
+sensor as a control input; the load-side numbers say don't. Their value is fault detection:
+discovering `max_duty` live instead of hard-coding 73.0 (the tach already shows
+73 % and 100 % landing within 1 rpm), and catching a stalled or fouled fan.
+The FS3000 would catch the one failure the tach structurally cannot — a blocked
+inlet where the fan spins perfectly and no air moves. Neither is wired in yet.
+Note the tach reads **272 ± 118 rpm (43 % spread)** at the 9.5 % floor, so any
+rule has to be gated above it.
+
+**What the board cannot see is the core clock and the frame rate** — those are
+PCIe-side, host-only. So the loop holds a die temperature *believed* safe; it
+cannot detect throttling and react. Closing that would need the host in the
+loop, which is what running it on the board exists to avoid. The host still
+logs `_CLK`, so any setpoint can be audited after the run.
 
 Host side, in `Probes.cpp` — things that are deliberate:
 - **One board is TWO `DeviceProbe`s sharing one `ra6m5::Link`.**
@@ -2440,6 +2694,46 @@ Use `--shape 640x640` for a graph with dynamic spatial dims (SCRFD ships them).
 It counts Conv/ConvTranspose/Gemm/MatMul only, and **GOP = 2 x MAC** — that
 factor is the single most common way these figures get quoted wrong.
 
+**`ra6m5-report-{tc,loop}.py` generate the studies in `docs/reports/`.** Each
+writes one `data.js` (a single `const` object) next to a hand-written
+`index.html` that renders every table and chart from it — **nothing in a page
+re-derives a number, and nothing is typed in**. Both print every scalar their
+prose quotes, so the prose can be checked against the data rather than
+remembered, and both regenerate **byte-identical** (assert that after any
+change; it is the cheapest regression test these have). Conventions that are
+load-bearing in both: columns resolved by **suffix**, because the BDF and USB
+port path move across reboots; `die` is `max(TS0, TS1)`, never a mean; a
+missing reading is JSON `null`, never 0; and every thermal resistance uses the
+INA228 **rail** power (`_INA228_POWER`), never the card's own `_POW`, which
+runs ~0.19 W low — the firmware's own estimate uses the rail, so it is the only
+basis on which the estimator can be scored.
+
+- **`ra6m5-report-loop.py` was rewritten 2026-11-23 for 0.6.0** and the old
+  four-setpoint shape would have broken on the three-arm run in four places,
+  each worth knowing: the changed enums; `nan` in `_CTL_IN`/`_CTL_ERR` for the
+  open arms, which makes every `max()` over an empty sequence throw; an
+  `idles()` that looked for the loop still armed, finding nothing now that
+  `fan.idle = 0` turns it off; and a setpoint-cost regression with no setpoints
+  to fit. **Score open-loop arms against the CARD's sensor, not `_CTL_IN`** —
+  it is the one instrument common to every arm.
+- **The estimator must be scored on the SETTLED WINDOW ONLY.** In open loop
+  `die_est` tracks `target` by construction while the fan is unclamped, so
+  during the approach it reads ~90 °C while the die is still at 57 — pooling
+  the ramp reports a +42 °C "error" that says nothing about the model. The
+  0.5.0 script pooled whole steps safely only because every step was closed.
+- **The fan-off brackets need their own, SHORTER window** (300 s, not the
+  arms' 600). Every bracket but the first follows a hot soak, so 600 s reaches
+  back into the cooling transient and moves the reading by more than the
+  session drift the window exists to measure.
+- **THERE IS NO JS RUNTIME ON THIS HOST** — no node, deno, bun, qjs, or any
+  Python binding — so a report page's JavaScript cannot be executed outside a
+  browser. Verify a generated page by **asserting against the data**: every
+  `LOOP.*` path resolves in the JSON, every row key used in a `forEach` body
+  exists in that list's elements, every element id referenced exists, every
+  declared table gets filled, tags balance. Then screenshot it. Headless
+  Firefox here is a **snap**, so it refuses a second instance while the user
+  has one open — check `ps` for whose it is and **never kill theirs**.
+
 **`csv-to-html-plot.py` is a fork of `../mb-powermon`'s, not a copy** — unlike
 `GraphArea`/`util.h`, it is *not* kept identical and must not be `cp`'d in either
 direction. It adds the metrics that postdate the sibling (`_INA228_POWER`,
@@ -2975,6 +3269,7 @@ see **API modes**.
 | `invalid application of sizeof to incomplete type` on `BenchEngine` | `std::vector<std::unique_ptr<Worker>>` with `Worker` incomplete in the header | Declare **both** ctor and dtor out-of-line in `Bench.cpp` |
 | GUI appears frozen / shows no telemetry in a screenshot | **Not a bug.** GTK4 throttles rendering for an unfocused window, so `xwd` returns a stale first frame | Raise + focus before capture; verify with a temporary `g_message` in `on_tick` before believing a screenshot |
 | DeepX "only 32 fps" on YOLOv8s | **Not a bug.** Sync-mode artifact; 4.6× in async | Always state the API mode with a number |
+| Every open-loop step logged `ctl.state = 6 degraded`; `kOpen` (5) unreachable | The NaN check on the inferred estimate sat **after** the if/else instead of inside the `kInferred` branch — and `pv_tc` is NaN in the `kNone` branch too, so `if (isnan(pv_tc)) src = kNone` fired unconditionally. Nothing in the code read wrong. **Caught on hardware (bench test T6), not in review**, and critical: `ctl.state` 5-vs-6 is the *only* channel separating a deliberate open-loop arm from one that asked for the learned estimate and did not get it. Had it shipped, the 2026-11-23 run would have measured the same arm three times with no way to say so | Test moved inside the `kInferred` branch. **Bench-test every state a plan distinguishes arms by**, and distrust a provenance channel until a command has forced each of its values |
 
 ## Host specifics
 

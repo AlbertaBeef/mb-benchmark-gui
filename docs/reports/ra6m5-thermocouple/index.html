@@ -1,0 +1,595 @@
+<title>Heatsink Thermocouple</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column (lab notebook) that widens for the instrument charts; teal from the app's own header bar. */
+:root {
+  --bg: #f6f8f7;
+  --surface: #fcfcfb;
+  --fg: #101716;
+  --fg-2: #4b5755;
+  --fg-3: #74807e;
+  --rule: #d9e1df;
+  --grid: #e6ecea;
+  --accent: #0f766e;
+  --accent-soft: #e0f0ed;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4;
+  --warn: #b45309;
+  --font-display: "Instrument Sans", "IBM Plex Sans", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0e1312; --surface: #161c1b; --fg: #edf2f1; --fg-2: #b6c2c0; --fg-3: #8a9694;
+  --rule: #2a3533; --grid: #232c2b; --accent: #2bb3a4; --accent-soft: #15302d;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --warn: #f59e0b;
+  color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #0e1312; --surface: #161c1b; --fg: #edf2f1; --fg-2: #b6c2c0; --fg-3: #8a9694;
+  --rule: #2a3533; --grid: #232c2b; --accent: #2bb3a4; --accent-soft: #15302d;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --warn: #f59e0b;
+  color-scheme: dark }
+
+body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 16px; line-height: 1.6; }
+.wrap { max-width: 980px; margin: 0 auto; padding-block: 40px 72px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.prose { max-width: 68ch; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; line-height: 1.2; margin: 0; }
+h1 { font-size: clamp(30px, 5vw, 42px); font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 24px; font-weight: 600; }
+h3 { font-size: 17px; font-weight: 600; }
+p { margin: 0; }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+.meta { font-family: var(--font-mono); font-size: 13px; color: var(--fg-2); display: flex; flex-wrap: wrap; gap: 6px 20px; }
+header { display: grid; gap: 14px; padding-bottom: 28px; border-bottom: 1px solid var(--rule); }
+header .lede { font-size: 18px; color: var(--fg-2); max-width: 62ch; }
+section { display: grid; gap: 16px; padding-top: 44px; }
+section > .head { display: grid; gap: 6px; }
+code, .mono { font-family: var(--font-mono); font-size: 0.88em; }
+code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+ul { margin: 0; padding-left: 20px; display: grid; gap: 8px; }
+li::marker { color: var(--accent); }
+.muted { color: var(--fg-2); }
+.small { font-size: 14px; }
+
+.findings { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+.finding { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 16px; display: grid; gap: 4px; align-content: start; min-width: 0; }
+.finding .num { font-family: var(--font-display); font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.finding .num small { font-size: 16px; color: var(--fg-2); font-weight: 500; }
+.finding p { font-size: 14px; color: var(--fg-2); line-height: 1.45; }
+
+.tbl-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); }
+.tbl-wrap.tall { max-height: 420px; overflow-y: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--grid); vertical-align: top; }
+th { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-2); font-weight: 500; white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--font-mono); font-size: 13px; white-space: nowrap; }
+td .tag { font-family: var(--font-mono); font-size: 12px; color: var(--accent); white-space: nowrap; }
+
+.chart-card { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 16px 16px 10px; display: grid; gap: 10px; min-width: 0; }
+.chart-card h3 { font-size: 15px; }
+.chart-card .sub { font-size: 13px; color: var(--fg-2); }
+.readout { font-family: var(--font-mono); font-size: 12.5px; color: var(--fg-2); display: flex; flex-wrap: wrap; gap: 4px 16px; min-height: 40px; align-items: center; border-bottom: 1px solid var(--grid); padding-bottom: 8px; font-variant-numeric: tabular-nums; }
+.readout b { color: var(--fg); font-weight: 500; }
+.sw { display: inline-block; width: 10px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 5px; }
+.panel-label { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--fg-2); display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.panel-label span { display: inline-flex; align-items: center; text-transform: none; letter-spacing: 0; }
+svg.chart { display: block; width: 100%; height: auto; overflow: visible; touch-action: pan-y; }
+svg.chart text { font-family: var(--font-mono); font-size: 11px; fill: var(--fg-3); }
+svg.chart .grid line { stroke: var(--grid); stroke-width: 1; }
+svg.chart .note { fill: var(--fg-2); font-size: 11px; }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+.tip { position: fixed; pointer-events: none; background: var(--surface); color: var(--fg); border: 1px solid var(--rule); border-radius: 6px; padding: 6px 9px; font-family: var(--font-mono); font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.12); z-index: 20; white-space: nowrap; }
+footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--fg-2); display: grid; gap: 6px; }
+@media (max-width: 520px) { body { font-size: 15px; } .finding .num { font-size: 24px; } }
+</style>
+<div class="wrap">
+<header>
+  <div class="eyebrow">mb-benchmark-gui · telemetry hardware</div>
+  <h1>Splitting the Hailo-8's heat path in two</h1>
+  <p class="lede">A third 353-minute fan ramp on the same rig, with one thing added: a <b>MAX31855K thermocouple bonded into the middle of the card's heatsink</b> with Kryonaut. Every earlier run could only measure the die and the air, so the whole thermal path was a single lumped number. With a reading from the middle of it, the path separates into two resistances in series — and they behave nothing alike. One of them is all the fan can reach; the other is a fixed floor that gets <em>relatively worse</em> the harder you cool. The run from the previous day, same plan and same card without the thermocouple, serves as the control — including for what fitting the probe itself cost.</p>
+  <div class="meta">
+    <span>22 Nov 2026, 13:34–19:28</span><span>Host: AMD EPYC ROMED8-2T</span><span>Hailo-8 M.2 · ResNet-50 async, depth 8</span><span>Firmware: mb-probe-ra6m5 0.4.0</span><span>59 fan levels × 5 min · 21 179 samples, no gaps</span>
+  </div>
+</header>
+
+<section>
+  <div class="head"><h2>Key findings</h2></div>
+  <div class="findings" id="tiles"></div>
+</section>
+
+<section>
+  <div class="head"><h2>What a mid-heatsink reading buys</h2>
+    <p class="prose muted">The card's heat leaves by one route: junction → package → thermal interface → heatsink → air. A die sensor and an air sensor bracket the whole of it, so everything in between arrives as a single number. Putting a thermocouple in the middle splits that number into two resistances that add.</p></div>
+  <div class="prose" style="display:grid;gap:12px">
+    <p>Written out, with <em>P</em> the rail power the INA228 measures — which is the whole of what the card dissipates:</p>
+  </div>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>Quantity</th><th>How it is formed</th><th>What it is physically</th><th>Does the fan change it?</th></tr></thead>
+    <tbody>
+      <tr><td><b>R<sub>int</sub></b></td><td class="n">(die − heatsink) / P</td><td>Junction to heatsink: on-die spreading, the package, and the paste joint.</td><td><b>No.</b> 1.64–1.76 °C/W throughout.</td></tr>
+      <tr><td><b>R<sub>conv</sub></b></td><td class="n">(heatsink − air) / P</td><td>Fin surface to the air moving over it.</td><td><b>All of it.</b> 16.5 → 6.7 °C/W.</td></tr>
+      <tr><td><b>R<sub>tot</sub></b></td><td class="n">(die − air) / P</td><td>The sum, and the only one earlier runs could see.</td><td>18.2 → 8.5 °C/W.</td></tr>
+    </tbody>
+  </table></div>
+  <p class="prose small muted">The earlier two-card study measured this card's lumped resistance at 17.8 → 8.4 °C/W. This run independently gets 18.2 → 8.5, so the split below is a decomposition of a figure that already reproduces, not a new measurement that has to be taken on faith.</p>
+  <h3 style="margin-top:8px">Three operating points</h3>
+  <div class="tbl-wrap"><table id="three">
+    <thead><tr><th>Point</th><th class="n">duty</th><th class="n">P</th><th class="n">die</th><th class="n">heatsink</th><th class="n">air</th><th class="n">R<sub>int</sub></th><th class="n">R<sub>conv</sub></th><th class="n">R<sub>tot</sub></th><th class="n">R<sub>int</sub> share</th></tr></thead>
+    <tbody></tbody>
+  </table></div>
+  <p class="prose"><b>The interface's share of the problem triples as you cool.</b> With the fan off it is 9.3 % of the total and nothing worth thinking about; at the fan's ceiling it is 20.6 %. That is the useful shape of this result: forced air attacks only the convective half, so the better the airflow gets, the more of what is left is a joint that no fan can improve. A bigger fan on this card buys progressively less.</p>
+</section>
+
+<section>
+  <div class="head"><h2>The interface is flat, and that is the finding</h2>
+    <p class="prose muted">Over the whole 320-minute load the heatsink ran from 99.4 °C down to 52.5 °C and the rail from 5.33 W to 4.22 W. Through all of it the die-to-heatsink drop stayed within a degree of 7.8 °C.</p></div>
+  <div class="two">
+    <div class="chart-card"><h3>Interface drop against rail power</h3>
+      <p class="sub">One point per 1 200th full-rate sample. The drop tracks power, not time and not fan speed.</p>
+      <div id="rint-scatter"></div></div>
+    <div class="chart-card"><h3>R<sub>int</sub> by heatsink temperature</h3>
+      <p class="sub">Full-rate samples binned by how hot the heatsink was. Flat to ±4 % across 40 °C.</p>
+      <div id="rint-bins"></div></div>
+  </div>
+  <div class="prose" style="display:grid;gap:12px">
+    <p>Per sample, R<sub>int</sub> is <b>1.709 °C/W with a standard deviation of 0.059</b> over 14 285 full-rate samples. Binned by heatsink temperature it moves from 1.76 to 1.64 — about 7 %, and in the direction that a thermocouple sitting <em>between fins</em> would produce, because at high airflow the bead reads a little nearer the air than the fin base does. Either way it is flat next to a convective half that changes by a factor of 2.4 over the same window.</p>
+    <p class="small muted">A straight-line fit of drop against power gives a slope of 0.88 °C/W with a 3.8 °C intercept and R² of only 0.63 — which looks like a contradiction and is not one. Power only spans 4.2–5.3 W, a 25 % range, while the drop's own scatter from throttle dither spans 3.6–9.6 °C. A regression over that narrow an x-range cannot resolve the slope, so the per-sample ratio is the honest statistic and the fit is reported here only so nobody re-derives it and thinks it means something.</p>
+  </div>
+  <div class="chart-card"><h3>Where the 1.7 °C/W does <em>not</em> hold</h3>
+    <p class="sub">The one place the data contradicts a simple fixed resistance — and it is worth knowing which way.</p>
+    <div class="prose" style="display:grid;gap:10px;padding-top:4px">
+      <p>During the 30-minute cool-down, with the load off and the card drawing <b>0.812 W</b>, the die settles at 28.58 °C and the heatsink at 28.74 °C. The drop is <b>−0.16 °C</b>: the heatsink reads a shade <em>above</em> the die. A fixed 1.71 °C/W would have predicted +1.39 °C.</p>
+      <p>That is not a sensor offset — the two agreeing to 0.16 °C at a common temperature is what bounds any systematic offset between them at well under half a degree, which is in turn what makes the 7.8 °C loaded drop trustworthy. It means the resistance itself is not purely geometric. Under load the Hailo dissipates in a concentrated area and the die sensor reads that hot spot, so the measured drop includes an <b>on-die spreading</b> term that only exists when the power is concentrated. At 0.8 W spread thin there is no hot spot and no spreading drop.</p>
+      <p><b>So read 1.71 °C/W as a loaded operating-point resistance, not a property of the paste joint.</b> It is the right number for predicting this card's die temperature under this workload, and the wrong number for judging whether the thermal interface material was applied well.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>The convective half is where the fan lives</h2>
+    <p class="prose muted">All three resistances, level by level, against the duty that produced them. Duty 0 is the end of the 30-minute fan-off soak — the one genuinely settled point at the top of the ramp.</p></div>
+  <div class="chart-card"><h3>Thermal resistance against fan duty</h3>
+    <p class="sub">R<sub>tot</sub> is the sum of the two below it. One of the two does all the moving.</p>
+    <div id="res-curve"></div></div>
+  <p class="prose">R<sub>conv</sub> falls from <b>16.48 to 6.74 °C/W</b>, a factor of 2.45, and then stops — flat across the last 18 levels because the fan has stopped too. R<sub>int</sub> is the thin band along the bottom, 1.6–1.8 °C/W from one end of the ramp to the other. Subtracting it, <b>every degree the fan is capable of winning on this card is a degree taken out of the convective term</b> — and slightly more than every degree: R<sub>conv</sub> sheds 9.74 °C/W while R<sub>tot</sub> sheds only 9.68, because R<sub>int</sub> creeps <em>up</em> by 0.05 over the same span.</p>
+</section>
+
+<section>
+  <div class="head"><h2>The whole session</h2>
+    <p class="prose muted">Hover or drag for a readout at any second. The second panel is the interface drop itself — the series this run exists to produce. The page opens on the moment the throttle clears.</p></div>
+  <div class="chart-card">
+    <div class="readout" id="tl-readout"></div>
+    <div id="tl-panels" style="display:grid;gap:8px"></div>
+  </div>
+  <p class="prose">The shape is the one the earlier runs established: a 30-minute fan-off soak pinned at 107 °C with the clock cycling 300/350/400 MHz, the throttle clearing in the fifth minute of the 28.6 % tread, then four and a half hours at a flat 400 MHz and 1 372.3 fps while the fan ramps on past the point where it is doing anything. The new trace is the second one. <b>It is almost a straight line at 7.8 °C through a run whose die temperature falls by 47 °C</b>, which is the whole argument of this page in one panel.</p>
+</section>
+
+<section>
+  <div class="head"><h2>Cool-down: one body, not two</h2>
+    <p class="prose muted">The obvious guess is that a heatsink's thermal mass makes it lag the die badly. On this card it does not, and the reason is the ratio of the two resistances just measured.</p></div>
+  <div class="two">
+    <div class="chart-card"><h3>Excess over the settled floor</h3>
+      <p class="sub">Log axis, so a single exponential is a straight line and equal slopes mean equal time constants. Both traces end where they reach the 0.4 °C noise floor, around 330 s.</p>
+      <div id="cool"></div></div>
+    <div class="chart-card"><h3>What the fit says</h3>
+      <div class="tbl-wrap" style="border:0"><table id="cool-tbl">
+        <thead><tr><th></th><th class="n">start</th><th class="n">settled</th><th class="n">τ</th><th class="n">R²</th></tr></thead>
+        <tbody></tbody></table></div>
+      <p class="small muted" style="padding:0 2px">Fitted on ln(excess) over the first 600 s, cut off below 0.5 °C of excess where both sensors are quantising rather than cooling.</p></div>
+  </div>
+  <p class="prose"><b>76.7 s against 74.7 s, both at R² 0.996.</b> Within the fit's own precision the die and the heatsink have the same time constant — they cool as a single lumped body. That follows directly from the split: the resistance <em>inside</em> the assembly (1.7 °C/W) is a quarter of the resistance <em>out</em> of it (6.8 °C/W), so heat redistributes internally much faster than it escapes, and the two never get a chance to separate. It is the small-Biot-number case, and it is a convenient thing to know before designing a controller: <b>the heatsink is not a hidden slow pole.</b> One 75-second time constant describes the plant.</p>
+  <p class="prose small muted">Both sensors settle 5.6–5.8 °C above board air at 0.81 W, which is 7 °C/W — in line with the loaded R<sub>tot</sub> of 8.5 and the remaining difference is the spreading term that disappears at idle, as above.</p>
+</section>
+
+<section>
+  <div class="head"><h2>The fan's ceiling, now visible on the heatsink</h2>
+    <p class="prose muted">Third independent reproduction of a result the two earlier runs already agreed on, and the first one where the thing being cooled can be watched directly.</p></div>
+  <div class="two">
+    <div class="chart-card"><h3>Fan speed and airflow against duty</h3>
+      <p class="sub">Both stop at the same level. The airflow sensor's range is 7.2 m/s, so this is the fan saturating, not the instrument.</p>
+      <div id="fan"></div></div>
+    <div class="chart-card"><h3>Heatsink and die against duty</h3>
+      <p class="sub">Settled value at each of the 59 levels.</p>
+      <div id="temp-duty"></div></div>
+  </div>
+  <p class="prose">At <b>73.0 % duty</b> the fan reaches 4 628 rpm and 3.35 m/s and goes no further. Across the 18 levels from there to 100 % — <b>90 minutes, a quarter of the whole plan</b> — speed holds to a standard deviation of 7.7 rpm, airflow to 0.04 m/s, the heatsink to <b>52.90 ± 0.19 °C</b> and the die to <b>60.60 ± 0.18 °C</b>. The step into saturation is visible and small: 4 527 rpm one level below, 4 628 at it, then nothing.</p>
+  <p class="prose">Having the heatsink instrumented is what makes this unambiguous rather than inferred. A flat die temperature could in principle be the card's own doing; a flat heatsink temperature at a flat airflow is the cooling system telling you plainly that it is out of range.</p>
+</section>
+
+<section>
+  <div class="head"><h2>The control: the same plan, the day before</h2>
+    <p class="prose muted">The 21 Nov run is this plan on this card with the thermocouple absent. Both files are 21 179 rows and both resolve 59 fan levels, which is what makes a level-for-level comparison legitimate.</p></div>
+  <div class="chart-card"><h3>Die temperature, 22 Nov minus 21 Nov, level by level</h3>
+    <p class="sub">Shaded where at least one of the two runs was still clock-throttled during the level.</p>
+    <div id="control"></div></div>
+  <div class="prose" style="display:grid;gap:12px">
+    <p>The two runs agree to <b>±0.51 °C through the nine levels below 22 % duty</b>, where both cards are pinned on the same throttled soak plateau. Then the 22 Nov run diverges, peaking at <b>+4.63 °C</b> around 40 % duty, and decays back to under a degree by the top. Three things, in order of how much of the gap they explain:</p>
+    <ul>
+      <li><b>The throttle released two levels later on 22 Nov.</b> At the 27.0 % level the 21 Nov card was already at 400 MHz for 86 % of the level against 54 %, and at 28.6 % it was 100 % against 70 % — at the <em>same</em> die temperature, 101.7 against 101.6 °C. That is the hysteretic throttle the earlier report documented, reproduced here as an independent demonstration: identical plan, identical die temperature, different clock decision.</li>
+      <li><b>Then thermal lag carries it.</b> Releasing later means entering the full-rate region with more stored heat, and more heat means more leakage, which means more heat. The gap peaks ten levels after the release and bleeds out over the following two hours as the fan ramps.</li>
+      <li><b>A residual of about 0.8 °C that is not lag at all</b> — see below. It survives into the 90-minute saturated plateau, where nothing can still be settling.</li>
+    </ul>
+    <p>The rig itself is a control as before: board air differed by a mean of 0.20 °C between the two days and the fan ran a mean 30 rpm faster, 1.1 % at the plateau. Overall the two runs delivered 4.588 and 4.594 W mean rail power and spent 24.6 % and 25.6 % of their load clock-throttled.</p>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>What fitting the probe cost the card</h2>
+    <p class="prose muted">A thermocouple bead, its paste and the dowel holding it occupy a fin channel. Having an otherwise identical run without them makes the intrusion measurable instead of a caveat.</p></div>
+  <div class="tbl-wrap"><table id="intrusion">
+    <thead><tr><th>Regime</th><th class="n">levels</th><th class="n">21 Nov</th><th class="n">22 Nov</th><th class="n">cost</th><th class="n">relative</th></tr></thead>
+    <tbody></tbody></table></div>
+  <p class="prose">Compared as <b>rise above board air</b>, which removes the two days' ambient difference. In still air the probe costs <b>+0.26 °C of 81.9</b>, i.e. nothing measurable. At the saturated plateau it costs <b>+0.83 °C of 36.7 — 2.3 %</b>. That contrast is itself the evidence for the mechanism: an obstruction can only cost you something when there is air being obstructed. Both regions are ones where neither run can be mid-transient, which is why they are the two chosen.</p>
+  <p class="prose">Consequence for everything above: <b>R<sub>conv</sub> on this page is pessimistic by roughly 2 % relative to an unprobed card, and R<sub>int</sub> is unaffected</b> — the obstruction raises the die and the heatsink by nearly the same amount, so their difference survives it. Worth stating plainly rather than leaving as an unknown, and worth remembering before quoting 6.74 °C/W as the card's own convective resistance.</p>
+</section>
+
+<section>
+  <div class="head"><h2>Leakage, measured again</h2>
+    <p class="prose muted">Card power against die temperature at a fixed 1 372.3 fps — identical work, so the whole slope is leakage.</p></div>
+  <div class="prose" style="display:grid;gap:12px">
+    <p><b>18.68 mW/°C, R² 0.975 over 14 285 samples.</b> Across the 44.6–104.0 °C the die covers at full rate that is <b>1.11 W</b>, or <b>21.5 % of card power at the hot end</b>, for no extra frames. The earlier study measured 19.5 mW/°C on the previous day's run; the two agree to 4 %, which is a reasonable check on both.</p>
+    <p>The share differs from the earlier report's 15.2 % only because this run's full-rate die range is wider (59 °C against 40), not because the card behaves differently. <b>Quote the slope, not the share</b> — the slope is the card, the share is an artifact of whatever temperature span the run happened to cover.</p>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>What this means for the control loop</h2>
+    <p class="prose muted">The next phase is closed-loop fan control on this board. These are the plant parameters the run measured, rather than the ones that would have to be guessed.</p></div>
+  <div class="chart-card"><h3>Plant gain: °C of die per point of duty</h3>
+    <p class="sub">Level to level, full-rate levels only so the throttle does not contaminate the gain.</p>
+    <div id="gain"></div></div>
+  <div class="prose" style="display:grid;gap:12px">
+    <ul>
+      <li><b>Usable actuator range is 9.5–73 %, not 0–100 %.</b> Everything above 73 % is open-loop dead travel; an integrator allowed to wander up there will wind up and then take a long time to come back down. Clamp the output at the measured ceiling.</li>
+      <li><b>Total authority is 40.2 °C</b> at full rate, from 100.8 °C at 30 % duty to 60.6 °C at the ceiling. That is a lot of range, and it means a loop targeting the 95 °C the earlier study recommended for zero throttling has comfortable margin.</li>
+      <li><b>Gain is strongly non-linear: −1.8 °C per duty-point at 30 %, −0.6 at 70 %.</b> A fixed-gain controller tuned at the hot end will be sluggish at the cold end and vice versa. It falls below 0.5 °C/point above 66.7 % and below 0.1 above 76.2 %.</li>
+      <li><b>One time constant, about 75 s, describes the plant</b> — the cool-down section is the evidence, and the heatsink is not a second slower pole. That is a comfortable amount of phase margin for a loop sampling at 1 Hz.</li>
+      <li><b>The heatsink is the better sensor to close the loop on, if a choice exists.</b> It carries the same information as the die, 7.8 °C below it with a drop that depends only on power, and it is not subject to the hysteretic clock decisions that make the die temperature jump for reasons the controller did not cause.</li>
+      <li><b>Leakage is positive feedback</b> at 18.7 mW/°C, so a hot die costs power which makes it hotter. It is stable here but it is a term worth having in any model, and it is why the throttle-release divergence above took two hours to wash out.</li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>Every level</h2>
+    <p class="prose muted">All 59 fan levels, each summarised over the last 60 seconds of its five-minute tread so the figures are equilibria rather than the lag into them. Throttle column is the share of the level the clock spent below 400 MHz.</p></div>
+  <div class="tbl-wrap tall"><table id="treads">
+    <thead><tr><th class="n">#</th><th class="n">duty</th><th>from</th><th class="n">rpm</th><th class="n">m/s</th><th class="n">die</th><th class="n">heatsink</th><th class="n">drop</th><th class="n">air</th><th class="n">P</th><th class="n">fps</th><th class="n">thr</th><th class="n">R<sub>int</sub></th><th class="n">R<sub>conv</sub></th><th class="n">R<sub>tot</sub></th></tr></thead>
+    <tbody></tbody>
+  </table></div>
+</section>
+
+<section>
+  <div class="head"><h2>Method, and how to redo it</h2></div>
+  <div class="prose" style="display:grid;gap:12px">
+    <p>The plan is <code>config/automation-thermal-hailo.conf</code> unchanged from the two-card study: 3 minutes idle, 320 minutes of one continuous ResNet-50 async run at depth 8, then 30 minutes with the load off and the window still logging. The fan is held off for the first 30 minutes, then walked from 9.5238 % in steps of 1.5873 % — exact 1/63ths, so the request and the EMC2101's 64-level readback agree — holding each level 5 minutes. <b>Always read <code>&lt;port&gt;_FAN_DUTY</code>, the board's own readback, never the requested percent.</b></p>
+    <p>The thermocouple is a MAX31855K type-K junction bonded with Grizzly Kryonaut between two fins at the middle of the heatsink, fitted 22 Nov. It reports on the Temperature graph as <code>RA6M5 MAX31855</code> and logs to <code>usb &lt;port&gt;_MAX31855</code>. Attaching a junction to a chip the firmware has already detected needs no <code>rescan</code> — the chip is found by its reserved bits at power-up and an open circuit is a separate fault flag, so the reading simply starts appearing. Details in <code>docs/ra6m5-probe.md</code>.</p>
+    <p>Power throughout is the INA228 rail figure (<code>_INA228_POWER</code>), never the card's own <code>_POW</code>. Thermal resistance needs what the card actually dissipates and the rail is the whole of it; <code>_POW</code> is the chip's estimate of a subset and runs about 0.18 W lower under load. Mixing them would shift every resistance on this page by 4 %.</p>
+    <p>The data file is generated, not hand-made:</p>
+    <pre class="mono small" style="overflow-x:auto;background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:12px;margin:0">tools/ra6m5-report-tc.py \
+    --run  docs/data/ra6m5-thermal-hailo8-20261122.csv \
+    --prev docs/data/ra6m5-thermal-hailo8-20261121.csv \
+    --out  docs/reports/ra6m5-thermocouple</pre>
+    <p class="small muted">It prints every scalar this page's prose quotes, so the prose can be checked against the data rather than trusted. The <code>--prev</code> run is what makes the control and the intrusion measurement possible; without it the generator still works and those two sections are simply absent from the data.</p>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>Still open</h2></div>
+  <div class="prose"><ul>
+    <li><b>Whether 1.71 °C/W is a good joint or a mediocre one.</b> Nothing here establishes that, because the number includes an on-die spreading term that cannot be separated from the interface with one thermocouple. Two junctions — one on the heatsink base, one out on a fin — would split it, and would also settle whether the 7 % drift in R<sub>int</sub> across the ramp is the bead reading the fin gradient.</li>
+    <li><b>Where the probe should actually sit.</b> Mid-fin was chosen for access. The base is the thermodynamically meaningful place and would read a degree or so hotter; it is also harder to reach and more likely to disturb the flow it is measuring.</li>
+    <li><b>The 2.3 % intrusion penalty is one measurement on one mount.</b> Kapton tape instead of a wooden dowel should reduce it, and a run with the dowel removed and the bead taped would measure by how much.</li>
+    <li><b>Whether the hysteresis band is repeatable or stochastic.</b> Two runs now show the throttle releasing at different levels from the same die temperature. A third and fourth run of this plan would say whether the release level has a distribution worth characterising — which matters, because a controller operating near the throttle boundary will be driven by it.</li>
+    <li><b>The DX-M1 has no thermocouple reading yet.</b> Its lumped resistance is 11.6 → 7.2 °C/W, markedly better than this card in still air; whether that is a better joint or a better fin stack is exactly the question this split would answer, and the measurement is one card swap away.</li>
+  </ul></div>
+</section>
+
+<footer>
+  <div>Generated from <code>docs/data/ra6m5-thermal-hailo8-20261122.csv</code> (21 179 samples, 13:34:25–19:27:52) with <code>docs/data/ra6m5-thermal-hailo8-20261121.csv</code> as the control, by <code>tools/ra6m5-report-tc.py</code>.</div>
+  <div>Companion to the two-card study in <code>docs/reports/ra6m5-exploration/</code>, which has the probe bring-up, the fan ladder's design and the Hailo-8 against DeepX DX-M1 comparison.</div>
+  <div class="muted">mb-benchmark-gui · RA6M5 probe firmware 0.4.0 · plan <code>config/automation-thermal-hailo.conf</code></div>
+</footer>
+</div>
+<div class="tip" id="tip" hidden></div>
+
+<script src="data.js"></script>
+<script>
+(function () {
+  const NS = 'http://www.w3.org/2000/svg';
+  const css = n => `var(--${n})`;
+  const el = (tag, attrs = {}, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; };
+  const fmt = (v, d) => v == null ? '—' : v.toFixed(d);
+  const tip = document.getElementById('tip');
+  function showTip(html, ev) { tip.innerHTML = html; tip.hidden = false; const x = Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8); tip.style.left = x + 'px'; tip.style.top = (ev.clientY - tip.offsetHeight - 12) + 'px'; }
+  function hideTip() { tip.hidden = true; }
+  const T = TC.treads, I = TC.interface, C = TC.cool, K = TC.ceiling, X0 = TC.control;
+
+  /* ---------- key-finding tiles, built from the data rather than typed ---------- */
+  {
+    const first = T[0], last = T[T.length - 1];
+    const tiles = [
+      [`${I.rint_mean.toFixed(2)} <small>°C/W</small>`,
+       `Die to heatsink, and <b>the fan cannot touch it</b>. Flat to a standard deviation of ${I.rint_sd.toFixed(2)} across ${I.n.toLocaleString()} full-rate samples, 47 °C of heatsink temperature and ${I.p_min.toFixed(2)}–${I.p_max.toFixed(2)} W.`],
+      [`${first.rconv.toFixed(1)} &rarr; ${K ? T.find(x => x.duty === K.duty).rconv.toFixed(1) : ''} <small>°C/W</small>`,
+       `The convective half, fan off against the fan's ceiling &mdash; a factor of ${(first.rconv / T.find(x => x.duty === K.duty).rconv).toFixed(2)}. <b>Every degree the fan wins comes out of this term</b> and none out of the interface.`],
+      [`${(100 * first.rint / first.rtot).toFixed(1)} &rarr; ${(100 * last.rint / last.rtot).toFixed(1)} <small>%</small>`,
+       `The interface's share of the total resistance, fan off against fan full. <b>Cooling harder makes the joint matter more, not less</b> &mdash; which is where a bigger fan stops paying.`],
+      [`${C.die_tau.tau.toFixed(0)} <small>vs</small> ${C.hs_tau.tau.toFixed(0)} <small>s</small>`,
+       `Die and heatsink cool-down time constants, both at R² ${C.die_tau.r2.toFixed(3)}. <b>They are one body, not two</b>: the resistance inside the assembly is a quarter of the resistance out of it.`],
+      [`${K.duty.toFixed(1)} <small>% duty</small>`,
+       `Where the fan stops, reproduced a third time and now visible on the heatsink itself: <b>${K.hs.toFixed(2)} ± ${K.hs_sd.toFixed(2)} °C across ${K.treads} levels</b>, ${K.mins.toFixed(0)} minutes of dead travel.`],
+      [`+${TC.intrusion.forced.delta.toFixed(2)} <small>°C</small>`,
+       `What fitting the probe cost the card at full fan &mdash; ${TC.intrusion.forced.pct.toFixed(1)} % of its rise above air &mdash; against <b>+${TC.intrusion.still.delta.toFixed(2)} °C in still air</b>. Measured against the identical run from the day before.`],
+      [`${TC.authority.span.toFixed(1)} <small>°C</small>`,
+       `The actuator's total authority at full rate, from ${TC.authority.from_duty} % duty to the ceiling. Gain runs &minus;1.8 °C per duty-point at the hot end to &minus;0.6 at the cold: <b>strongly non-linear</b>.`],
+      [`${TC.leakage.mw_per_c.toFixed(1)} <small>mW/°C</small>`,
+       `Leakage at a fixed 1 372.3 fps &mdash; ${TC.leakage.swing.toFixed(2)} W over ${TC.leakage.die_lo.toFixed(0)}–${TC.leakage.die_hi.toFixed(0)} °C for identical work. Reproduces the previous run's 19.5 mW/°C to 4 %.`],
+    ];
+    const host = document.getElementById('tiles');
+    tiles.forEach(([n, p]) => { const d = document.createElement('div'); d.className = 'finding';
+      d.innerHTML = `<div class="num">${n}</div><p>${p}</p>`; host.appendChild(d); });
+  }
+
+  /* ---------- the three-operating-point table ---------- */
+  {
+    const pick = d => T.reduce((a, b) => Math.abs(b.duty - d) < Math.abs(a.duty - d) ? b : a);
+    const rows = [['fan off, settled', pick(0)], ['mid-ramp', pick(36.5)], ['the fan’s ceiling', pick(K.duty)]];
+    const tb = document.querySelector('#three tbody');
+    rows.forEach(([lbl, r]) => { const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${lbl}</td><td class="n">${r.duty.toFixed(1)} %</td><td class="n">${r.p.toFixed(3)} W</td>`
+        + `<td class="n">${r.die.toFixed(2)}</td><td class="n">${r.hs.toFixed(2)}</td><td class="n">${r.air.toFixed(2)}</td>`
+        + `<td class="n">${r.rint.toFixed(2)}</td><td class="n">${r.rconv.toFixed(2)}</td><td class="n">${r.rtot.toFixed(2)}</td>`
+        + `<td class="n">${(100 * r.rint / r.rtot).toFixed(1)} %</td>`;
+      tb.appendChild(tr); });
+  }
+
+  /* ---------- generic x/y chart ---------- */
+  function xy(hostId, o) {
+    const W2 = 460, H2 = 260, l = 50, r = 12, t = 10, b = 34, pw = W2 - l - r, ph = H2 - t - b;
+    const svg = el('svg', { viewBox: `0 0 ${W2} ${H2}`, class: 'chart', role: 'img', 'aria-label': o.label });
+    const Xs = v => l + (v - o.x0) / (o.x1 - o.x0) * pw, Ys = v => t + (1 - (v - o.y0) / (o.y1 - o.y0)) * ph;
+    const g = el('g', { class: 'grid' }, svg);
+    o.yt.forEach(v => { el('line', { x1: l, x2: W2 - r, y1: Ys(v), y2: Ys(v) }, g); const tx = el('text', { x: l - 7, y: Ys(v) + 4, 'text-anchor': 'end' }, svg); tx.textContent = o.yf ? o.yf(v) : v; });
+    o.xt.forEach(v => { const tx = el('text', { x: Xs(v), y: H2 - b + 18, 'text-anchor': 'middle' }, svg); tx.textContent = o.xf ? o.xf(v) : v; });
+    const xl = el('text', { x: l + pw / 2, y: H2 - 2, 'text-anchor': 'middle' }, svg); xl.textContent = o.xname;
+    if (o.line) el('path', { d: o.pts.map((p, i) => (i ? 'L' : 'M') + Xs(p[0]).toFixed(1) + ' ' + Ys(p[1]).toFixed(1)).join(''), fill: 'none', stroke: css(o.c), 'stroke-width': 2, 'stroke-linejoin': 'round' }, svg);
+    o.pts.forEach(p => el('circle', { cx: Xs(p[0]), cy: Ys(p[1]), r: o.r || 4, fill: css(o.c), 'fill-opacity': o.alpha || 1, stroke: o.line ? css('surface') : 'none', 'stroke-width': o.line ? 2 : 0 }, svg));
+    const hl = el('circle', { r: 6, fill: 'none', stroke: css('fg'), 'stroke-width': 1.5, visibility: 'hidden' }, svg);
+    const hit = el('rect', { x: l, y: t, width: pw, height: ph, fill: 'transparent' }, svg);
+    const move = ev => { const rc = svg.getBoundingClientRect(); const mx = (ev.clientX - rc.left) / rc.width * W2, my = (ev.clientY - rc.top) / rc.height * H2;
+      let best = -1, bd = 1e9; o.pts.forEach((p, i) => { const d = (Xs(p[0]) - mx) ** 2 + (Ys(p[1]) - my) ** 2; if (d < bd) { bd = d; best = i; } });
+      if (best < 0 || bd > 900) { hl.setAttribute('visibility', 'hidden'); hideTip(); return; }
+      const p = o.pts[best]; hl.setAttribute('cx', Xs(p[0])); hl.setAttribute('cy', Ys(p[1])); hl.setAttribute('visibility', 'visible'); showTip(o.tip(p), ev); };
+    hit.addEventListener('pointermove', move); hit.addEventListener('pointerdown', move);
+    hit.addEventListener('pointerleave', () => { hl.setAttribute('visibility', 'hidden'); hideTip(); });
+    document.getElementById(hostId).appendChild(svg);
+  }
+
+  /* ---------- lines(): named series on one plot, optional right axis / log y ---------- */
+  function lines(hostId, o) {
+    const W2 = o.w || 940, H2 = o.h || 300, l = 56, r = o.ry ? 46 : 16, t = 12, b = 40, pw = W2 - l - r, ph = H2 - t - b;
+    const svg = el('svg', { viewBox: `0 0 ${W2} ${H2}`, class: 'chart', role: 'img', 'aria-label': o.label });
+    const Xs = v => l + (v - o.x0) / (o.x1 - o.x0) * pw;
+    /* a log y axis is what makes two exponentials with the same time constant
+       read as two parallel straight lines, which is the whole point of the
+       cool-down chart; on a linear axis the comparison is invisible. */
+    const lg = o.logy, L0 = lg ? Math.log(o.y0) : 0, L1 = lg ? Math.log(o.y1) : 0;
+    const Ys = v => lg ? t + (1 - (Math.log(v) - L0) / (L1 - L0)) * ph
+                       : t + (1 - (v - o.y0) / (o.y1 - o.y0)) * ph;
+    const Yr = o.ry ? v => t + (1 - (v - o.ry.lo) / (o.ry.hi - o.ry.lo)) * ph : null;
+    const g = el('g', { class: 'grid' }, svg);
+    o.yt.forEach(v => { el('line', { x1: l, x2: W2 - r, y1: Ys(v), y2: Ys(v) }, g);
+      const tx = el('text', { x: l - 7, y: Ys(v) + 4, 'text-anchor': 'end' }, svg); tx.textContent = o.yf ? o.yf(v) : v; });
+    if (o.ry) o.ry.ticks.forEach(v => { const tx = el('text', { x: W2 - r + 8, y: Yr(v) + 4, 'text-anchor': 'start' }, svg); tx.textContent = o.ry.f ? o.ry.f(v) : v; });
+    o.xt.forEach(v => { el('line', { x1: Xs(v), x2: Xs(v), y1: t, y2: t + ph }, g);
+      const tx = el('text', { x: Xs(v), y: H2 - b + 18, 'text-anchor': 'middle' }, svg); tx.textContent = o.xf ? o.xf(v) : v; });
+    const xl = el('text', { x: l + pw / 2, y: H2 - 4, 'text-anchor': 'middle' }, svg); xl.textContent = o.xname;
+    if (o.zero != null) el('line', { x1: l, x2: W2 - r, y1: Ys(o.zero), y2: Ys(o.zero), stroke: css('fg-3'), 'stroke-width': 1, 'stroke-dasharray': '4 3' }, svg);
+    (o.bands || []).forEach(bd => el('rect', { x: Xs(bd[0]), y: t, width: Xs(bd[1]) - Xs(bd[0]), height: ph, fill: css('accent-soft'), 'fill-opacity': 0.7 }, svg));
+    o.series.forEach(ser => {
+      const YY = ser.r ? Yr : Ys; let d = '', pen = false;
+      ser.y.forEach((v, i) => { if (v == null || o.x[i] == null || (lg && !ser.r && v <= o.y0)) { pen = false; return; }
+        d += (pen ? 'L' : 'M') + Xs(o.x[i]).toFixed(1) + ' ' + YY(v).toFixed(1); pen = true; });
+      if (d) el('path', { d, fill: 'none', stroke: css(ser.c), 'stroke-width': ser.w || 1.9,
+        'stroke-dasharray': ser.dash || 'none', 'stroke-opacity': ser.alpha || 1, 'stroke-linejoin': 'round' }, svg);
+      if (ser.dots) ser.y.forEach((v, i) => { if (v == null || o.x[i] == null) return;
+        el('circle', { cx: Xs(o.x[i]), cy: YY(v), r: 2.6, fill: css(ser.c) }, svg); });
+    });
+    const lab = document.createElement('div'); lab.className = 'panel-label';
+    lab.innerHTML = o.series.map(s => `<span><i class="sw" style="background:${css(s.c)}"></i>${s.name}</span>`).join('');
+    const hl = el('line', { y1: t, y2: t + ph, stroke: css('fg-3'), 'stroke-width': 1, visibility: 'hidden' }, svg);
+    const hit = el('rect', { x: l, y: t, width: pw, height: ph, fill: 'transparent' }, svg);
+    const move = ev => { const rc = svg.getBoundingClientRect(); const mx = (ev.clientX - rc.left) / rc.width * W2;
+      const xv = o.x0 + (mx - l) / pw * (o.x1 - o.x0);
+      let best = -1, bd = 1e9; o.x.forEach((v, i) => { if (v == null) return; const dd = Math.abs(v - xv); if (dd < bd) { bd = dd; best = i; } });
+      if (best < 0) return;
+      hl.setAttribute('x1', Xs(o.x[best])); hl.setAttribute('x2', Xs(o.x[best])); hl.setAttribute('visibility', 'visible');
+      const rows = o.series.map(ser => ser.y[best] == null ? null
+        : `<i class="sw" style="background:var(--${ser.c})"></i>${ser.name} <b>${ser.tf ? ser.tf(ser.y[best]) : (o.tf ? o.tf(ser.y[best]) : ser.y[best])}</b>`).filter(Boolean);
+      showTip(`<b>${o.xtip ? o.xtip(o.x[best]) : o.x[best]}</b><br>` + rows.join('<br>'), ev); };
+    hit.addEventListener('pointermove', move); hit.addEventListener('pointerdown', move);
+    hit.addEventListener('pointerleave', () => { hl.setAttribute('visibility', 'hidden'); hideTip(); });
+    const host = document.getElementById(hostId);
+    host.appendChild(lab); host.appendChild(svg);
+  }
+
+  /* ---------- the interface ---------- */
+  xy('rint-scatter', { label: 'Interface drop against rail power',
+    pts: I.scatter, x0: 4.1, x1: 5.45, y0: 3, y1: 10, xt: [4.2, 4.6, 5.0, 5.4], yt: [3, 4, 5, 6, 7, 8, 9, 10],
+    yf: v => v + ' °C', xname: 'card rail power (W)', c: 's1', r: 2.6, alpha: 0.6,
+    tip: p => `${p[0].toFixed(2)} W · drop ${p[1].toFixed(2)} °C · ${(p[1] / p[0]).toFixed(2)} °C/W` });
+  { const bins = I.bins.filter(b => b.n >= 100);
+    xy('rint-bins', { label: 'Interface resistance by heatsink temperature', line: true,
+      pts: bins.map(b => [(b.lo + b.hi) / 2, b.rint, b.n]),
+      x0: 45, x1: 100, y0: 1.5, y1: 1.9, xt: [50, 60, 70, 80, 90, 100], yt: [1.5, 1.6, 1.7, 1.8, 1.9],
+      yf: v => v.toFixed(1), xname: 'heatsink temperature (°C)', c: 's3',
+      tip: p => `${p[0] - 5}–${p[0] + 5} °C · ${p[1].toFixed(3)} °C/W · n=${p[2].toLocaleString()}` }); }
+
+  /* ---------- the three resistances against duty ---------- */
+  { const x = T.map(r => r.duty);
+    lines('res-curve', { label: 'Thermal resistance against fan duty', h: 320, x,
+      x0: 0, x1: 100, y0: 0, y1: 20, xt: [0, 20, 40, 60, 80, 100], yt: [0, 4, 8, 12, 16, 20],
+      yf: v => v + ' °C/W', xname: 'applied fan duty (%)  ·  0 = end of the 30-minute fan-off soak',
+      xtip: v => v === 0 ? 'fan off, settled' : v.toFixed(1) + ' % duty', tf: v => v.toFixed(2) + ' °C/W',
+      series: [{ y: T.map(r => r.rtot), name: 'R_tot  (die → air)', c: 's2', w: 2.4, dots: true },
+               { y: T.map(r => r.rconv), name: 'R_conv  (heatsink → air) — all the movement', c: 's1', w: 2.2, dots: true },
+               { y: T.map(r => r.rint), name: 'R_int  (die → heatsink) — flat', c: 's3', w: 2.4, dots: true }] }); }
+
+  /* ---------- timeline ---------- */
+  {
+    const S = TC.series, W = 940, L = 54, R = 30, PW = W - L - R;
+    const t0 = new Date(TC.start);
+    const clock = s => new Date(t0.getTime() + s * 1000).toTimeString().slice(0, 8);
+    const tmax = S.t[S.t.length - 1], Xt = t => L + (t / tmax) * PW;
+    const PANELS = [
+      { title: 'Temperature (°C)', h: 180, lo: 20, hi: 110, ticks: [20, 40, 60, 80, 100], series: [
+        { k: 'die', name: 'Hailo-8 die (hotter of TS0/TS1)', c: 's1' },
+        { k: 'hs', name: 'heatsink, MAX31855 thermocouple', c: 's2' },
+        { k: 'air', name: 'board air, EMC2101 chip', c: 's3' }],
+        notes: [{ t: 5680, v: 101.0, text: 'throttle clears, 28.6 % duty' }] },
+      { title: 'Interface drop, die − heatsink (°C)', h: 120, lo: 0, hi: 12, ticks: [0, 4, 8, 12],
+        series: [{ k: 'dt', name: 'die − heatsink', c: 's3' }] },
+      { title: 'Frame rate (fps)', h: 110, lo: 0, hi: 1500, ticks: [0, 500, 1000, 1500], series: [{ k: 'fps', name: 'Hailo-8', c: 's1' }] },
+      { title: 'Card rail power (W)', h: 105, lo: 0, hi: 6, ticks: [0, 2, 4, 6], series: [{ k: 'p', name: 'INA228 rail', c: 's2' }] },
+      { title: 'Core clock (MHz)', h: 100, lo: 250, hi: 450, ticks: [300, 350, 400], series: [{ k: 'clk', name: 'neural core', c: 's4' }] },
+      { title: 'Fan duty (%) and airflow (m/s)', h: 130, lo: 0, hi: 100, ticks: [0, 50, 100],
+        ry: { lo: 0, hi: 4, ticks: [0, 1, 2, 3, 4] }, series: [
+        { k: 'duty', name: 'duty (%), left axis', c: 's5' },
+        { k: 'af', name: 'airflow (m/s), right axis', c: 's4', r: true }], axis: true },
+    ];
+    const host = document.getElementById('tl-panels'), cursors = [];
+    PANELS.forEach(p => {
+      const box = document.createElement('div'); box.style.display = 'grid'; box.style.gap = '2px';
+      const lab = document.createElement('div'); lab.className = 'panel-label';
+      lab.innerHTML = p.title + (p.series.length > 1 ? ' ' + p.series.map(s => `<span><i class="sw" style="background:${css(s.c)}"></i>${s.name}</span>`).join('') : '');
+      box.appendChild(lab);
+      const H = p.h + (p.axis ? 22 : 6), TT = 6;
+      const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'chart', role: 'img', 'aria-label': p.title });
+      const Y = v => TT + (1 - (v - p.lo) / (p.hi - p.lo)) * (p.h - TT);
+      const Yr = p.ry ? v => TT + (1 - (v - p.ry.lo) / (p.ry.hi - p.ry.lo)) * (p.h - TT) : null;
+      const scaleOf = s => s.r ? { Y: Yr, hi: p.ry.hi } : { Y, hi: p.hi };
+      const g = el('g', { class: 'grid' }, svg);
+      p.ticks.forEach(v => { el('line', { x1: L, x2: W - R, y1: Y(v), y2: Y(v) }, g); const tx = el('text', { x: L - 8, y: Y(v) + 4, 'text-anchor': 'end' }, svg); tx.textContent = v; });
+      if (p.ry) p.ry.ticks.forEach(v => { const tx = el('text', { x: W - R + 8, y: Yr(v) + 4, 'text-anchor': 'start' }, svg); tx.textContent = v; });
+      const GRID = 1800;   // a 353-minute run has 70 five-minute marks: too dense
+      const off = t0.getMinutes() * 60 + t0.getSeconds();
+      for (let s = Math.ceil(off / GRID) * GRID - off; s <= tmax; s += GRID) {
+        el('line', { x1: Xt(s), x2: Xt(s), y1: TT, y2: p.h }, g);
+        if (p.axis) { const tx = el('text', { x: Xt(s), y: p.h + 16, 'text-anchor': 'middle' }, svg); tx.textContent = clock(s).slice(0, 5); }
+      }
+      p.series.forEach(s => { let d = '', pen = false; const sc = scaleOf(s);
+        S.t.forEach((t, i) => { const v = S[s.k][i]; if (v == null) { pen = false; return; }
+          d += (pen ? 'L' : 'M') + Xt(t).toFixed(1) + ' ' + sc.Y(Math.min(v, sc.hi)).toFixed(1); pen = true; });
+        el('path', { d, fill: 'none', stroke: css(s.c), 'stroke-width': 1.9, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, svg); });
+      (p.notes || []).forEach(n => { el('circle', { cx: Xt(n.t), cy: Y(n.v), r: 4, fill: 'none', stroke: css('fg-2'), 'stroke-width': 1.5 }, svg);
+        const tx = el('text', { x: Xt(n.t) + 8, y: Y(n.v) - 8, 'text-anchor': 'start', class: 'note' }, svg); tx.textContent = n.text; });
+      const cur = el('line', { y1: TT, y2: p.h, stroke: css('fg-3'), 'stroke-width': 1, visibility: 'hidden' }, svg);
+      const dots = p.series.map(s => el('circle', { r: 4, fill: css(s.c), stroke: css('surface'), 'stroke-width': 2, visibility: 'hidden' }, svg));
+      cursors.push({ svg, cur, dots, p, scales: p.series.map(scaleOf) });
+      el('rect', { x: L, y: 0, width: PW, height: H, fill: 'transparent' }, svg);
+      box.appendChild(svg); host.appendChild(box);
+    });
+    const readout = document.getElementById('tl-readout');
+    function setCursor(i) {
+      const t = S.t[i], x = Xt(t);
+      cursors.forEach(c => { c.cur.setAttribute('x1', x); c.cur.setAttribute('x2', x); c.cur.setAttribute('visibility', 'visible');
+        c.p.series.forEach((s, j) => { const v = S[s.k][i], d = c.dots[j], sc = c.scales[j];
+          if (v == null) { d.setAttribute('visibility', 'hidden'); return; }
+          d.setAttribute('cx', x); d.setAttribute('cy', sc.Y(Math.min(v, sc.hi))); d.setAttribute('visibility', 'visible'); }); });
+      const p = S.p[i], dt = S.dt[i];
+      readout.innerHTML = `<span><b>${clock(t)}</b></span>`
+        + `<span><i class="sw" style="background:${css('s1')}"></i>die <b>${fmt(S.die[i], 1)} °C</b></span>`
+        + `<span><i class="sw" style="background:${css('s2')}"></i>heatsink <b>${fmt(S.hs[i], 1)} °C</b></span>`
+        + `<span><i class="sw" style="background:${css('s3')}"></i>drop <b>${fmt(dt, 2)} °C</b>`
+        + (dt != null && p ? ` = ${(dt / p).toFixed(2)} °C/W` : '') + `</span>`
+        + `<span><i class="sw" style="background:${css('s1')}"></i><b>${fmt(S.fps[i], 0)} fps</b> @ ${fmt(S.clk[i], 0)} MHz</span>`
+        + `<span><i class="sw" style="background:${css('s2')}"></i>rail <b>${fmt(p, 2)} W</b></span>`
+        + `<span><i class="sw" style="background:${css('s5')}"></i>fan <b>${fmt(S.duty[i], 1)} %</b>, ${fmt(S.rpm[i], 0)} rpm</span>`
+        + `<span><i class="sw" style="background:${css('s4')}"></i>air <b>${fmt(S.af[i], 2)} m/s</b></span>`;
+    }
+    function onMove(ev) { const svg = ev.currentTarget, rc = svg.getBoundingClientRect();
+      const vx = (ev.clientX - rc.left) / rc.width * W, t = Math.max(0, Math.min(tmax, (vx - L) / PW * tmax));
+      let lo = 0, hi = S.t.length - 1; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (S.t[m] < t) lo = m; else hi = m; }
+      setCursor(t - S.t[lo] < S.t[hi] - t ? lo : hi); }
+    cursors.forEach(c => { c.svg.addEventListener('pointermove', onMove); c.svg.addEventListener('pointerdown', onMove); });
+    setCursor(Math.max(0, S.t.findIndex(t => t >= 5680)));   // open on the throttle clearing
+  }
+
+  /* ---------- cool-down ---------- */
+  lines('cool', { label: 'Cool-down excess over the settled floor', w: 460, h: 280, x: C.t, logy: true,
+    x0: 0, x1: 400, y0: 0.4, y1: 40, xt: [0, 100, 200, 300, 400], yt: [0.5, 1, 2, 5, 10, 20, 40],
+    yf: v => v + ' °C', xf: v => v + ' s', xname: 'seconds after the load stopped',
+    xtip: v => v + ' s', tf: v => v.toFixed(2) + ' °C above floor',
+    series: [{ y: C.die_e, name: 'die', c: 's1' }, { y: C.hs_e, name: 'heatsink', c: 's2' }] });
+  {
+    const tb = document.querySelector('#cool-tbl tbody');
+    [['die', C.die0, C.die_inf, C.die_tau], ['heatsink', C.hs0, C.hs_inf, C.hs_tau]].forEach(([n, a, b, f]) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${n}</td><td class="n">${a.toFixed(2)} °C</td><td class="n">${b.toFixed(2)} °C</td>`
+        + `<td class="n">${f.tau.toFixed(1)} s</td><td class="n">${f.r2.toFixed(4)}</td>`;
+      tb.appendChild(tr); });
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="muted">board air</td><td class="n">—</td><td class="n">${C.air_inf.toFixed(2)} °C</td><td class="n">—</td><td class="n">—</td>`;
+    tb.appendChild(tr);
+  }
+
+  /* ---------- the fan's ceiling ---------- */
+  lines('fan', { label: 'Fan speed and airflow against duty', w: 460, h: 280, x: T.map(r => r.duty),
+    x0: 0, x1: 100, y0: 0, y1: 5000, xt: [0, 25, 50, 75, 100], yt: [0, 1000, 2000, 3000, 4000, 5000],
+    yf: v => (v / 1000) + 'k', xname: 'applied fan duty (%)', xtip: v => v.toFixed(1) + ' % duty',
+    ry: { lo: 0, hi: 4, ticks: [0, 1, 2, 3, 4] },
+    series: [{ y: T.map(r => r.rpm), name: 'rpm, left', c: 's5', dots: true, tf: v => v.toFixed(0) + ' rpm' },
+             { y: T.map(r => r.af), name: 'm/s, right', c: 's4', r: true, dots: true, tf: v => v.toFixed(2) + ' m/s' }] });
+  lines('temp-duty', { label: 'Die and heatsink against duty', w: 460, h: 280, x: T.map(r => r.duty),
+    x0: 0, x1: 100, y0: 50, y1: 110, xt: [0, 25, 50, 75, 100], yt: [50, 60, 70, 80, 90, 100, 110],
+    yf: v => v + ' °C', xname: 'applied fan duty (%)', xtip: v => v.toFixed(1) + ' % duty', tf: v => v.toFixed(2) + ' °C',
+    series: [{ y: T.map(r => r.die), name: 'die', c: 's1', dots: true },
+             { y: T.map(r => r.hs), name: 'heatsink', c: 's2', dots: true }] });
+
+  /* ---------- the control run ---------- */
+  if (X0) {
+    const P = X0.per_tread;
+    const thr = P.filter(r => r.thr > 0 || r.thr_prev > 0).map(r => r.duty);
+    lines('control', { label: 'Die temperature difference between the two runs', h: 300, x: P.map(r => r.duty),
+      x0: 0, x1: 100, y0: -1, y1: 5, xt: [0, 20, 40, 60, 80, 100], yt: [-1, 0, 1, 2, 3, 4, 5],
+      yf: v => (v > 0 ? '+' : '') + v + ' °C', zero: 0,
+      bands: thr.length ? [[Math.min(...thr) - 0.8, Math.max(...thr) + 0.8]] : [],
+      xname: 'applied fan duty (%)  ·  shaded = at least one run still clock-throttled',
+      xtip: v => v.toFixed(1) + ' % duty', tf: v => (v > 0 ? '+' : '') + v.toFixed(2) + ' °C',
+      series: [{ y: P.map(r => r.d_die), name: '22 Nov die − 21 Nov die, same fan level', c: 's2', w: 2.4, dots: true }] });
+    const tb = document.querySelector('#intrusion tbody');
+    [['still air — fan off, both runs fully throttled', TC.intrusion.still],
+     ['forced air — the saturated plateau', TC.intrusion.forced]].forEach(([lbl, d]) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${lbl}</td><td class="n">${d.treads}</td><td class="n">${d.prev.toFixed(2)} °C</td>`
+        + `<td class="n">${d.run.toFixed(2)} °C</td><td class="n"><b>+${d.delta.toFixed(2)} °C</b></td>`
+        + `<td class="n">+${d.pct.toFixed(2)} %</td>`;
+      tb.appendChild(tr); });
+  }
+
+  /* ---------- plant gain ---------- */
+  lines('gain', { label: 'Plant gain against duty', h: 280, x: TC.gain.map(g => g.duty),
+    x0: 25, x1: 100, y0: -2.2, y1: 0.4, xt: [30, 40, 50, 60, 70, 80, 90, 100], yt: [-2, -1.5, -1, -0.5, 0],
+    yf: v => v + ' °C', zero: 0, xname: 'applied fan duty (%)', xtip: v => v.toFixed(1) + ' % duty',
+    tf: v => v.toFixed(2) + ' °C per duty-point',
+    series: [{ y: TC.gain.map(g => g.g), name: 'Δ die per 1 % of duty, level to level', c: 's1', w: 2.2, dots: true }] });
+
+  /* ---------- every level ---------- */
+  {
+    const tb = document.querySelector('#treads tbody');
+    T.forEach((r, i) => { const tr = document.createElement('tr');
+      const hot = r.thr > 0;
+      tr.innerHTML = `<td class="n">${i}</td><td class="n"><b>${r.duty.toFixed(1)}</b></td><td class="n">${r.clock}</td>`
+        + `<td class="n">${r.rpm.toFixed(0)}</td><td class="n">${r.af.toFixed(2)}</td>`
+        + `<td class="n">${r.die.toFixed(2)}</td><td class="n">${r.hs.toFixed(2)}</td><td class="n">${(r.die - r.hs).toFixed(2)}</td>`
+        + `<td class="n">${r.air.toFixed(2)}</td><td class="n">${r.p.toFixed(3)}</td><td class="n">${r.fps.toFixed(0)}</td>`
+        + `<td class="n">${hot ? '<span class="tag">' + r.thr.toFixed(0) + ' %</span>' : '—'}</td>`
+        + `<td class="n">${r.rint.toFixed(2)}</td><td class="n">${r.rconv.toFixed(2)}</td><td class="n">${r.rtot.toFixed(2)}</td>`;
+      tb.appendChild(tr); });
+  }
+})();
+</script>

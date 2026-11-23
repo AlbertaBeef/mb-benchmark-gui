@@ -159,6 +159,13 @@ _METRIC_RE = re.compile(
     r"|INA228_CURRENT"
     r"|SYS_VBUS|SYS_CURRENT|SYS_POWER"
     r"|(?:" + _PMD2_RAILS + r")_(?:POWER|VBUS|CURRENT)"
+    # CTL_* must precede the bare alternatives below it: the device
+    # capture is non-greedy, so with TEMP first "usb 1-1.1_CTL_TARGET"
+    # would split as device "usb 1-1.1_CTL" + metric "TARGET" and invent
+    # a phantom device. Same trap as INA228_TEMP, same fix.
+    r"|CTL_MODE|CTL_SRC|CTL_STATE|CTL_TC|CTL_NN|CTL_AUTO"
+    r"|CTL_TARGET|CTL_IN|CTL_DIE_EST"
+    r"|CTL_ERR|CTL_DUTY|CTL_FF|CTL_INTEG|CTL_SAT"
     r"|POW|TEMP|TS\d+|T\d+|N\d+-\d+|SYS|AI\d+|PCIE\d+|TOTAL|INA228"
     r"|ENERGY|CHARGE|VBUS|CURRENT|CLK|C\d+|AIRFLOW|FAN_RPM|FAN_DUTY|EMC2101|MAX31855)$"
 )
@@ -245,6 +252,28 @@ def _classify_metric(met):
     # the dataset label says so.
     if met in ("fan_rpm", "fan_duty"):
         return "airflow"
+    # The board's thermal control loop. Three of its channels are temperatures
+    # and belong on the temperature chart: `ctl_die_est` is the board's MODEL
+    # of the die (heatsink + R_int x watts) and the card's own `ts0` is the
+    # truth, so drawing them together is the direct test of that model — and of
+    # the setpoint, which `ctl_target` draws as the line the loop is holding.
+    if met in ("ctl_target", "ctl_in", "ctl_die_est"):
+        return "temp"
+    # The duty it commanded, scaled onto the airflow chart like the fan's own.
+    if met == "ctl_duty":
+        return "airflow"
+    # The rest — mode, src, state, tc, nn, auto, err, ff, integ, sat — are
+    # logged and deliberately not plotted: three are enumerations, three are
+    # booleans, and the others are controller internals that share no axis with
+    # anything. Same deliberate omission as charge below, not an oversight.
+    #
+    # `ctl_src` is worth reading by hand even though it is not drawn: since
+    # firmware 0.6.0 it says whether the loop was closed on a MEASURED
+    # thermocouple (0), on an inferred one (1), or ran open with no feedback at
+    # all (2). Before 0.6.0 the same column meant die-vs-heatsink, so its values
+    # in an older log do not mean this.
+    if met.startswith("ctl_"):
+        return None
     # Charge is read and logged but deliberately not plotted: it is coulombs,
     # and a chart carries one unit, so it cannot share the joules axis. It is
     # an analysis column — divide by elapsed for average current. Returning
@@ -876,7 +905,7 @@ def build_datasets(rows, telemetry, bench, ident, overlays, t0, bucket_size):
         elif kind == "syscurrent":
             sysamps.append(style(label, series, color, [], 0.1))
         elif kind == "airflow":
-            if met in ("fan_rpm", "fan_duty"):
+            if met in ("fan_rpm", "fan_duty", "ctl_duty"):
                 div, note = (1000.0, "krpm") if met == "fan_rpm" else (10.0, "% ÷ 10")
                 series = [{"x": p["x"], "y": None if p["y"] is None else p["y"] / div}
                           for p in series]

@@ -15,6 +15,7 @@
 // out means a plan parses and validates with no models tree present.
 #pragma once
 
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -70,14 +71,49 @@ struct FanPlan {
     double after = kUnset;   // seconds into the run before the ramp begins
     double max   = kUnset;   // the duty the ramp stops at (a floor if step < 0)
 
+    // The duty to hold whenever NO loop is driving: before the first step, and
+    // during any step whose mode is off. Deliberately separate from `duty`, and
+    // deliberately exempt from conflicts() — it is the complement of the loop
+    // rather than a rival to it, so "fan off for half an hour, then hand it to
+    // the board" is expressible. Without it that plan cannot be written at all:
+    // a bare `fan` is refused alongside `fan.mode`, correctly, and the
+    // plan-level fan is never applied during the start pause.
+    double idle = kUnset;
+
+    // The RA6M5's on-board control loop. Plain ints rather than the enums in
+    // Probes.h: Automation is pure data and deliberately depends on nothing,
+    // the same reason it does not resolve catalog ids. MainWindow translates.
+    //
+    // ONE MODE since firmware 0.6.0 — `host` and `smart` were the same control
+    // law with a different constant, and the input selector was never a real
+    // choice. See firmware/mb-probe-ra6m5/Control.h.
+    static constexpr int kModeUnset = -1, kModeOff = 0, kModeOn = 1;
+    static constexpr int kFlagUnset = -1, kFlagOff = 0, kFlagOn = 1;
+    int mode = kModeUnset;
+    int tc = kFlagUnset;          // fan.tc — use the physical thermocouple
+    int nn = kFlagUnset;          // fan.nn — substitute the learned estimate
+    int target_auto = kFlagUnset; // fan.target = auto: the board's own bound
+    // NaN, not kUnset: a setpoint of -1 °C is silly but legal (the firmware
+    // accepts -40..150), and reusing -1 as the sentinel would quietly swallow
+    // it. Test with std::isnan, never with ==.
+    double target = std::numeric_limits<double>::quiet_NaN();
+
     // A ramp needs all three of start/step/every; anything less is a constant.
     bool ramps() const {
         return start != kUnset && step != kUnset && every != kUnset;
     }
+    bool loops() const { return mode != kModeUnset && mode != kModeOff; }
+    // A ramp and a loop both drive the fan, so a plan asking for both cannot
+    // mean anything. Checked at load, where a bad plan is fatal by design.
+    // `idle` is not in here on purpose: it applies only when the loop is not.
+    bool conflicts() const { return loops() && (ramps() || duty != kUnset); }
     // Whether this plan says anything about the fan at all. A plan that says
     // nothing must not touch it.
-    bool states_anything() const { return duty != kUnset || ramps(); }
+    bool states_anything() const {
+        return duty != kUnset || idle != kUnset || ramps() || mode != kModeUnset;
+    }
     // The duty wanted `t` seconds into a run, or kUnset for "say nothing".
+    // Meaningless while a loop is running — the board owns the duty then.
     double at(double t) const;
 
     void overlay(const FanPlan& o);

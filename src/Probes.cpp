@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cerrno>
 #include <climits>
 #include <cmath>
@@ -1725,6 +1726,10 @@ public:
     ~Link() { if (fd_ >= 0) ::close(fd_); }
     std::string error;   // why the link is down; empty while healthy
     std::string fw;      // "mb-probe-ra6m5 0.1.0"
+    // Wire protocol the board answered with. 1 = fw <= 0.5.x, 2 = fw >= 0.6.0.
+    // Needed because `ctl.src` kept its name and changed its meaning at 2: on
+    // a protocol-1 board it is die-vs-heatsink, not the signal's provenance.
+    int proto_ = 0;
 
     // Open the tty and run the `info` handshake. Opening asserts DTR, which
     // is what makes the firmware start reporting at all.
@@ -1763,10 +1768,21 @@ public:
                 return it == kv.end() ? std::string() : it->second;
             };
             if (line == "I end") {
-                if (proto != 1) {
+                // 1 = fw <= 0.5.x, 2 = fw >= 0.6.0. Both are accepted: the
+                // channel list is read from the board's own declare() block, so
+                // an older board simply has fewer columns.
+                //
+                // THIS WAS `proto != 1` AND WOULD HAVE HIDDEN THE BOARD
+                // COMPLETELY the moment 0.6.0 was flashed — the probe fails
+                // discovery, so no INA228, no airflow, no fan, no loop and no
+                // columns, with one line in the startup note to explain it.
+                // A protocol bump has to be accepted by the host BEFORE the
+                // firmware that sends it is flashed.
+                if (proto != 1 && proto != 2) {
                     error = "unsupported protocol " + std::to_string(proto);
                     return false;
                 }
+                proto_ = proto;
                 // Staleness is measured from here: a board that has just
                 // answered is not "silent", even before its first D line.
                 last_data_ = std::chrono::steady_clock::now();
@@ -2000,6 +2016,19 @@ public:
                 {name_ + (ch[0] == 'e' ? " EMC2101" : " MAX31855"), "°C"});
         }
         temp_values_.assign(temp_metrics_.size(), kNaN);
+        // The on-board control loop (firmware >= 0.5.0). The firmware declares
+        // these whenever the loop COULD run, not when it happens to be running,
+        // so this list is fixed for the session exactly like every other — and
+        // switching the loop on later fills columns that already exist.
+        for (const char* ch : kCtlChannels) {
+            if (!link_->has_channel(ch)) continue;
+            ctl_channels_.push_back(ch);
+            // `ctl.die_est` -> "RA6M5 CTL DIE_EST" -> `usb <port>_CTL_DIE_EST`.
+            std::string key = ch + 4;  // past "ctl."
+            for (char& c : key) c = static_cast<char>(std::toupper(c));
+            ctl_metrics_.push_back({name_ + " CTL " + key, ctl_unit(ch)});
+        }
+        ctl_values_.assign(ctl_metrics_.size(), kNaN);
         note_ = link_->fw + ", serial " + serial_;
         if (link_->sensor("ina228"))
             note_ += ina_label_.empty()
@@ -2009,6 +2038,17 @@ public:
         if (link_->sensor("fs3000")) note_ += ", FS3000 airflow";
         if (link_->sensor("emc2101")) note_ += ", EMC2101 fan";
         if (link_->sensor("max31855")) note_ += ", MAX31855K thermocouple";
+        if (!ctl_metrics_.empty()) {
+            note_ += ", thermal control loop";
+            // An older board still works — the channel list comes from its own
+            // declare() — but its loop has three modes and its `ctl.src` means
+            // something else, so the panel and this host disagree with it about
+            // half of what it reports. Say so once, in the note that lands in
+            // the CSV, rather than letting a log be read as if it were 0.6.0.
+            if (link_->proto_ < 2)
+                note_ += " (protocol 1: pre-0.6.0 firmware, re-flash for the "
+                         "single-mode loop)";
+        }
         startup_note_ = note_;
         return true;
     }
@@ -2031,6 +2071,11 @@ public:
         // in max31855.fault), so a disconnected probe is a gap, not a value.
         for (size_t i = 0; i < temp_channels_.size(); ++i)
             temp_values_[i] = plausible_temp(link_->value(temp_channels_[i]));
+        // Straight through: these are the loop's own numbers, and the two
+        // enumerations must NOT be plausibility-gated — a mode of 0 is "off",
+        // a real reading, not a sentinel to turn into a gap.
+        for (size_t i = 0; i < ctl_channels_.size(); ++i)
+            ctl_values_[i] = link_->value(ctl_channels_[i]);
         // One transition note when the stream stops, one when it resumes.
         note_ = link_->stale() ? (link_->error.empty() ? std::string("no data from board")
                                                        : link_->error)
@@ -2046,10 +2091,83 @@ public:
         return link_->send(b);
     }
 
+    // Mode LAST, so the loop never runs a step with a stale setting. Before
+    // 0.6.0 it went first, because selecting Smart installed that mode's own
+    // 95 °C default and a caller's target had to follow it; with one mode there
+    // is nothing for that ordering to protect, and the reverse is safer.
+    // Each setting is independent and idempotent, so re-sending all of them
+    // costs nothing and keeps one code path for "apply this configuration".
+    bool set_fan_control(FanMode m, bool tc, bool nn, double target) override {
+        if (ctl_metrics_.empty()) return false;
+        bool ok = link_->send(std::string("ctl.tc ") + (tc ? "on" : "off"));
+        ok = link_->send(std::string("ctl.nn ") + (nn ? "on" : "off")) && ok;
+        // NaN means "auto": let the board name its own measured per-card bound
+        // rather than this host asserting a number for a card it cannot see.
+        if (std::isnan(target)) {
+            ok = link_->send("ctl.target auto") && ok;
+        } else {
+            char b[48];
+            std::snprintf(b, sizeof b, "ctl.target %.2f", target);
+            ok = link_->send(b) && ok;
+        }
+        return link_->send(std::string("ctl.mode ") +
+                           (m == FanMode::On ? "on" : "off")) && ok;
+    }
+
+    FanControlStatus fan_control_status() const override {
+        FanControlStatus s;
+        if (ctl_metrics_.empty()) return s;
+        s.present = true;
+        const double m = link_->value("ctl.mode");
+        const double i = link_->value("ctl.src");
+        const double st = link_->value("ctl.state");
+        // A stale link makes every channel NaN; report the loop as absent-ish
+        // rather than inventing mode 0, which would read as a deliberate "off".
+        if (std::isnan(m)) { s.present = false; return s; }
+        s.mode = static_cast<FanMode>(static_cast<int>(m));
+        // A missing src defaults to None, not Measured: claiming a measurement
+        // the board never reported is the one direction this must not guess in.
+        // Same for a protocol-1 board, where the column exists but means
+        // die-vs-heatsink — reading that as a provenance would invent one.
+        s.src = (link_->proto_ < 2 || std::isnan(i))
+                    ? FanSrc::None
+                    : static_cast<FanSrc>(static_cast<int>(i));
+        s.state = static_cast<int>(std::isnan(st) ? 0 : st);
+        // The EFFECTIVE flags, straight from the board — `ctl.nn` reads 0 while
+        // no model is compiled in, so the UI greys its own control from this
+        // rather than offering something the firmware will not do.
+        const double tc = link_->value("ctl.tc"), nn = link_->value("ctl.nn");
+        const double au = link_->value("ctl.auto");
+        s.tc = !std::isnan(tc) && tc != 0.0;
+        s.nn = !std::isnan(nn) && nn != 0.0;
+        s.target_auto = std::isnan(au) || au != 0.0;
+        s.target = link_->value("ctl.target");
+        s.in = link_->value("ctl.in");
+        s.die_est = link_->value("ctl.die_est");
+        s.err = link_->value("ctl.err");
+        s.duty = link_->value("ctl.duty");
+        return s;
+    }
+
 private:
+    // Declared order is the CSV column order; it mirrors the firmware's own
+    // declare() block in mb-probe-ra6m5.ino.
+    static constexpr const char* kCtlChannels[] = {
+        "ctl.mode", "ctl.src", "ctl.state", "ctl.tc", "ctl.nn", "ctl.auto",
+        "ctl.target", "ctl.in", "ctl.die_est", "ctl.err", "ctl.duty",
+        "ctl.ff", "ctl.integ", "ctl.sat"};
+    static const char* ctl_unit(const std::string& ch) {
+        if (ch == "ctl.mode" || ch == "ctl.src" || ch == "ctl.state") return "enum";
+        if (ch == "ctl.tc" || ch == "ctl.nn" || ch == "ctl.auto") return "bool";
+        if (ch == "ctl.sat") return "count";
+        if (ch == "ctl.duty" || ch == "ctl.ff" || ch == "ctl.integ") return "%";
+        return "°C";
+    }
+
     std::shared_ptr<ra6m5::Link> link_;
     std::string port_, serial_, name_, ina_label_, startup_note_;
     std::vector<const char*> temp_channels_;  // aligned with temp_metrics_
+    std::vector<const char*> ctl_channels_;   // aligned with ctl_metrics_
 };
 
 }  // namespace
@@ -2268,6 +2386,7 @@ void Probes::flatten() {
     syscurrent_metrics_.clear();
     airflow_metrics_.clear();
     fan_metrics_.clear();
+    ctl_metrics_.clear();
     auto stamp = [](MetricInfo& m, size_t k, DeviceProbe* d) {
         m.device = static_cast<int>(k);
         m.device_name = d->name();
@@ -2324,6 +2443,7 @@ void Probes::flatten() {
     // colour alias, so the suffix is never applied — it is here for symmetry.
     emit(dev_order_, &DeviceProbe::airflow_metrics, " AIRFLOW", airflow_metrics_);
     emit(dev_order_, &DeviceProbe::fan_metrics, " FAN", fan_metrics_);
+    emit(dev_order_, &DeviceProbe::ctl_metrics, " CTL", ctl_metrics_);
 
     // Frequency follows plain discovery order — there is no INA228-style
     // folding to do, since a clock always belongs to the card reporting it.
@@ -2344,6 +2464,7 @@ void Probes::flatten() {
     syscurrent_values_.assign(syscurrent_metrics_.size(), kNaN);
     airflow_values_.assign(airflow_metrics_.size(), kNaN);
     fan_values_.assign(fan_metrics_.size(), kNaN);
+    ctl_values_.assign(ctl_metrics_.size(), kNaN);
 }
 
 bool Probes::has_fan_control() const {
@@ -2356,6 +2477,29 @@ bool Probes::set_fan_duty(double pct) {
     bool any = false;
     for (auto& d : devices_) any = d->set_fan_duty(pct) || any;
     return any;
+}
+
+bool Probes::has_fan_loop() const {
+    for (const auto& d : devices_)
+        if (!d->ctl_metrics().empty()) return true;
+    return false;
+}
+
+bool Probes::set_fan_control(FanMode m, bool tc, bool nn, double target) {
+    bool any = false;
+    for (auto& d : devices_) any = d->set_fan_control(m, tc, nn, target) || any;
+    return any;
+}
+
+// The first board that answers. Two boards both running a loop would be two
+// fans fighting over one airflow path, which ina228.conf's "don't map both"
+// rule already warns against; nothing here tries to make that case coherent.
+FanControlStatus Probes::fan_control_status() const {
+    for (const auto& d : devices_) {
+        const FanControlStatus s = d->fan_control_status();
+        if (s.present) return s;
+    }
+    return {};
 }
 
 void Probes::set_busy(bool busy) {
@@ -2399,6 +2543,7 @@ void Probes::poll() {
     fill(dev_order_, &DeviceProbe::syscurrent_values, syscurrent_values_);
     fill(dev_order_, &DeviceProbe::airflow_values, airflow_values_);
     fill(dev_order_, &DeviceProbe::fan_values, fan_values_);
+    fill(dev_order_, &DeviceProbe::ctl_values, ctl_values_);
     size_t fi = 0;
     for (auto& d : devices_)
         for (double v : d->freq_values()) freq_values_[fi++] = v;

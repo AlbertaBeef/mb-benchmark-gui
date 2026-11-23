@@ -18,6 +18,8 @@
 #include <gtkmm/spinbutton.h>
 
 #include <string>
+
+#include "Probes.h"   // FanMode / FanSrc / FanControlStatus
 #include <map>
 #include <vector>
 
@@ -131,6 +133,33 @@ public:
     // here on the plan owns the duty, not the board's own idea of it.
     void set_fan_duty(double pct);
     sigc::signal<void(double)>& signal_fan_duty_changed() { return sig_fan_duty_; }
+
+    // The RA6M5's on-board thermal control loop. Shown only when the board's
+    // firmware has one (>= 0.5.0); `set_fan_loop_present()` reveals the row.
+    //
+    // While a mode is active the DUTY SPIN IS GREYED, because the firmware
+    // refuses `fan <pct>` then — one writer at a time. The status label shows
+    // what the loop is doing, refreshed from the board's own readback.
+    void set_fan_loop_present(bool present);
+    void set_fan_loop_status(const FanControlStatus& s);
+    // Apply a configuration as if the user had chosen it, so the widgets keep
+    // showing what is actually in force and there stays one path to the board.
+    // Automation uses it.
+    void set_fan_control(FanMode m, bool tc, bool nn, double target);
+    sigc::signal<void(FanMode, bool, bool, double)>& signal_fan_control_changed() {
+        return sig_fan_ctl_;
+    }
+
+private:
+    // Reads the three widgets, greys whatever the chosen mode makes
+    // meaningless, and emits once. One place so the widgets and the board can
+    // never disagree about what was asked for.
+    void emit_fan_control();
+    // `apply_fan_mode_defaults()` was here and is deliberately gone — see the
+    // comment above emit_fan_control() in the .cpp for what it was for and why
+    // one mode removes the need for it.
+
+public:
 
     // Per-accelerator settings from the Accelerators section's rows.
     int memryx_freq_mhz() const;   // MPU clock to request before a run
@@ -263,6 +292,24 @@ private:
     bool fan_synced_ = false;    // first readback taken; the spin is the user's
     bool fan_syncing_ = false;   // a readback is being applied: don't send it back
     sigc::signal<void(double)> sig_fan_duty_;
+    // The on-board control loop's row. `fan_ctl_syncing_` is the same guard as
+    // fan_syncing_ and exists for the same reason: a status readback drives
+    // these widgets, and without it that would echo straight back to the board.
+    Gtk::Box* fan_ctl_row_ = nullptr;
+    Gtk::ComboBoxText fan_ctl_mode_;
+    // The two sources for the one signal the loop regulates on, plus whether
+    // the setpoint is the board's own measured bound. Check buttons, not a
+    // combo: tc and nn are not exclusive — with both on the board prefers the
+    // real sensor and keeps the estimate as its fallback.
+    Gtk::CheckButton fan_ctl_tc_, fan_ctl_nn_, fan_ctl_auto_;
+    Gtk::SpinButton fan_ctl_target_;
+    Gtk::Label fan_ctl_status_;
+    bool fan_ctl_syncing_ = false;
+    // Whether the BOARD says it carries a model. Not a compile-time guess:
+    // the firmware reports `ctl.nn` effective, so this follows the readback and
+    // the NN box greys when there is nothing behind it.
+    bool fan_ctl_nn_available_ = false;
+    sigc::signal<void(FanMode, bool, bool, double)> sig_fan_ctl_;
     std::map<std::string, Gtk::CheckButton*> pmd2_boxes_;
     bool running_ = false;
     bool busy_ = false;   // workers from a previous run still shutting down
