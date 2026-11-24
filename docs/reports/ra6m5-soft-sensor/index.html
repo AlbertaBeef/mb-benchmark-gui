@@ -166,7 +166,7 @@ pre.eq { font-family: var(--font-mono); font-size: 13px; line-height: 1.7; margi
         <tbody></tbody></table></div></div>
   </div>
   <div class="chart-card"><h3>One panel per fan speed, every tread at that speed drawn on it</h3>
-    <p class="sub">Same quantity and same axes as above. Within a panel the treads differ only in frame-rate cap — so they <b>ought to coincide</b>, and where they fan apart something else is going on. <b>Orange is throttled</b>, the same colour it has in the ladder chart above. Note the 20.6 % panel: three of its four treads sat on the card's thermal limit while reporting their commanded frame rate exactly.</p>
+    <p class="sub">Same quantity and same axes as above. Within a panel the treads differ only in frame-rate cap — so they <b>ought to coincide</b>, and where they fan apart something else is going on. <b>Each model keeps the colour it has in the chart above</b>, so a curve's hue means the same thing in both sections — except where a tread <b>throttled</b>, which takes orange instead, as it does in the ladder chart. That a tread hit the thermal limit matters more than which model it was. Note the 20.6 % panel: three of its four treads sat on the card's thermal limit while reporting their commanded frame rate exactly.</p>
     <div class="panels" id="fit-panels"></div></div>
   <div class="prose" style="display:grid;gap:12px">
     <p id="p-cap">—</p>
@@ -307,6 +307,30 @@ d tc/dt = (tc_ss − tc) / tau            one state: the model's memory of the h
   const tn = v => td(v, 'n');
   const M = SS.model, L = SS.ladder, P = SS.probe, F = SS.fit, V = SS.valid;
 
+  // ONE colour per model, for the whole page. Derived from the load probe's
+  // rows, which arrive sorted by plateau, so the step-2 legend reads
+  // top-to-bottom in the order the curves stack -- and step 3 then inherits
+  // the same hue per model instead of choosing its own. Deriving it beats
+  // writing it down twice: a model that appears in step 3 and not in step 2
+  // would otherwise get a silently different colour in each.
+  //
+  // s2 (orange) is NOT in this list. It means "the card was throttling", in
+  // the ladder chart and in step 3's panels, and a throttled tread takes it
+  // INSTEAD of its model's colour -- the fact that it throttled matters more
+  // than which model it was.
+  // Order chosen so the THIRD entry is not amber. Third by plateau is
+  // ResNet-50, which is most of step 3's treads and appears in the 20.6 %
+  // panel right beside the throttled ones -- and amber (#eda100) against
+  // throttle orange (#eb6834) is the one pairing on this page a reader could
+  // plausibly confuse, in the very panel where the distinction IS the finding.
+  // Amber moves to ArcFace, which appears in step 2 only.
+  const MODEL_C = ['s1', 's3', 's6', 's5', 's4', 's7', 's8', 's9'];
+  const THROTTLE_C = 's2';
+  const modelColour = {};
+  P.panels.rows.forEach((pn, i) => { modelColour[pn.model] = MODEL_C[i % MODEL_C.length]; });
+  const colourFor = (model, throttled) =>
+    throttled ? THROTTLE_C : (modelColour[model] || 'fg-2');
+
   set('meta-fw', `Firmware: mb-probe-ra6m5 0.7.0 · model_ready = ${M.ready ? 1 : 0}`);
   set('f-fw', M.firmware);
   set('l-param', 'one');
@@ -401,21 +425,14 @@ d tc/dt = (tc_ss − tc) / tau            one state: the model's memory of the h
   /* ---------- step 2: the load probe ---------- */
   {
     const PP = P.panels;
-    // Rows arrive sorted by plateau, so the legend reads in the same order the
-    // curves stack and the eight colours are assigned top-down.
-    // s2 (orange) is deliberately NOT in here: on this page orange means "the
-    // card was throttling", in the ladder chart and in step 3's panels. Keeping
-    // it out of the one chart where nothing is throttling keeps that reading
-    // true everywhere, which is worth a ninth hue.
-    const C8 = ['s1', 's3', 's4', 's5', 's6', 's7', 's8', 's9'];
     lines('probe-overlay', { w: 940, h: 440,
       label: 'heatsink rise above air for all eight models, on a tread-relative clock',
       x0: 0, x1: PP.t[PP.t.length - 1], y0: 0, y1: PP.ymax,
       xt: [0, 50, 100, 150, 200, 250],
       yt: [0, 10, 20, 30, 40, 50].filter(v => v <= PP.ymax), yf: v => v.toFixed(0),
       xname: 'seconds into the tread', x: PP.t,
-      series: PP.rows.map((pn, i) => ({
-        k: pn.model, c: C8[i % C8.length], w: 2.2,
+      series: PP.rows.map(pn => ({
+        k: pn.model, c: colourFor(pn.model, false), w: 2.2,
         name: `${pn.model} · ${pn.w.toFixed(2)} W · ${pn.plateau.toFixed(1)} °C`,
         y: pn.y, tf: v => v.toFixed(2) + ' °C above air' })),
       xtip: v => v.toFixed(0) + ' s' });
@@ -447,7 +464,7 @@ d tc/dt = (tc_ss − tc) / tau            one state: the model's memory of the h
         + `${pn.n_thr} throttled</span>` : ''}</span>`,
       label: pn => `every tread at ${pn.duty.toFixed(1)} % fan duty`,
       series: pn => pn.rows.map(x => ({
-        k: x.cap + x.model, c: x.thr ? 's2' : 's1', w: x.thr ? 2.2 : 1.6,
+        k: x.cap + x.model, c: colourFor(x.model, x.thr), w: x.thr ? 2.2 : 1.6,
         dash: x.thr ? '4 3' : 'none', alpha: x.thr ? 1 : 0.85,
         name: `${x.model} · cap ${x.cap} · ${x.w.toFixed(2)} W${x.thr ? ' · THROTTLED' : ''}`,
         y: x.y, tf: v => v.toFixed(2) + ' °C above air' })) });
