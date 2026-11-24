@@ -125,7 +125,7 @@ pre.eq { font-family: var(--font-mono); font-size: 13px; line-height: 1.7; margi
   <div class="head"><h2>Step 1 — how well does the fan cool? (the 59-level ladder)</h2>
     <p class="prose muted">The plant is <code>heatsink − air = W × R<sub>conv</sub>(duty)</code>: the heatsink sits above ambient by the card's watts times a thermal resistance the fan controls. Walking the fan from 0 to 100 % in 59 steps, five minutes each, measures that resistance — <b>but only where the card is not throttling</b>.</p></div>
   <div class="chart-card"><h3>Convective resistance against fan duty</h3>
-    <p class="sub">Each point is one 5-minute level, read over its last 60 s. <b>Red points throttled</b> — at those duties the card is pinned on its thermal limit, so the heatsink reading is set by the limit and not by the fan. The dashed line is the nine-node table the firmware ends up carrying.</p>
+    <p class="sub">Each marker is one 5-minute level, read over its last 60 s. <b>Blue</b> is usable data. <b>Orange</b> is the low-duty end where the card was pinned on its thermal limit, so the heatsink reading there is set by the limit and not by the fan — it looks like a continuation of the curve and is not one. The <b>dashed green</b> line is the nine-node table the firmware ended up carrying, which is why it departs from the orange markers rather than following them.</p>
     <div id="ch-ladder"></div></div>
   <p class="prose" id="p-ladder">—</p>
 </section>
@@ -158,7 +158,7 @@ pre.eq { font-family: var(--font-mono); font-size: 13px; line-height: 1.7; margi
         <tbody></tbody></table></div></div>
   </div>
   <div class="chart-card"><h3>One panel per fan speed, every tread at that speed drawn on it</h3>
-    <p class="sub">Same quantity and same axes as above. Within a panel the treads differ only in frame-rate cap — so they <b>ought to coincide</b>, and where they fan apart something else is going on. <b>Red is throttled.</b> Note the 20.6 % panel: three of its four treads sat on the card's thermal limit while reporting their commanded frame rate exactly.</p>
+    <p class="sub">Same quantity and same axes as above. Within a panel the treads differ only in frame-rate cap — so they <b>ought to coincide</b>, and where they fan apart something else is going on. <b>Orange is throttled</b>, the same colour it has in the ladder chart above. Note the 20.6 % panel: three of its four treads sat on the card's thermal limit while reporting their commanded frame rate exactly.</p>
     <div class="panels" id="fit-panels"></div></div>
   <div class="prose" style="display:grid;gap:12px">
     <p id="p-cap">—</p>
@@ -336,28 +336,26 @@ d tc/dt = (tc_ss − tc) / tau            one state: the model's memory of the h
 
   /* ---------- step 1: the ladder ---------- */
   {
-    const clean = L.levels.filter(x => x.thr === 0), bad = L.levels.filter(x => x.thr > 0);
+    // Three proper series on the ladder's own 59 duties, rather than circles
+    // drawn by hand on top of the SVG: lines() then legends all three for
+    // free, and there is no second coordinate transform of mine to get wrong.
+    const x = L.levels.map(v => v.duty);
     lines('ch-ladder', { h: 320, label: 'convective resistance against fan duty',
       x0: 0, x1: 102, y0: 5, y1: 23, xt: [0, 20, 40, 60, 80, 100],
       yt: [6, 10, 14, 18, 22], yf: v => v.toFixed(0),
-      xname: 'fan duty (%) — the board\'s own readback',
-      x: M.nodes.map(n => n.duty),
-      series: [{ k: 'm', name: 'the nine-node table the firmware carries', c: 's3',
-                 dash: '5 3', dots: true, y: M.nodes.map(n => n.rconv),
-                 tf: v => v.toFixed(2) + ' °C/W' }],
+      xname: 'fan duty (%) — the board\'s own readback', x: x,
+      series: [
+        { k: 'thr', name: 'measured — but the card was THROTTLING, so not the fan',
+          c: 's2', w: 2, dots: true,
+          y: L.levels.map(v => v.thr > 0 ? v.rconv : null),
+          tf: v => v.toFixed(3) + ' °C/W' },
+        { k: 'ok', name: 'measured, card unthrottled — the usable data', c: 's1', w: 2, dots: true,
+          y: L.levels.map(v => v.thr === 0 ? v.rconv : null),
+          tf: v => v.toFixed(3) + ' °C/W' },
+        { k: 'tab', name: 'the nine-node table the firmware ended up carrying', c: 's3',
+          w: 1.8, dash: '5 3', y: L.levels.map(v => v.curve),
+          tf: v => v.toFixed(2) + ' °C/W' }],
       xtip: v => v.toFixed(1) + ' % duty' });
-    const svg = document.querySelector('#ch-ladder svg');
-    const l = 56, rr = 16, tp = 12, b = 40, W2 = 940, H2 = 320, pw = W2 - l - rr, ph = H2 - tp - b;
-    const Xs = v => l + v / 102 * pw, Ys = v => tp + (1 - (v - 5) / 18) * ph;
-    [[clean, 's1', 'unthrottled'], [bad, 'bad', 'THROTTLED — not a plant measurement']]
-      .forEach(([set_, col, lbl]) => set_.forEach(p => {
-        const c = el('circle', { cx: Xs(p.duty), cy: Ys(p.rconv), r: 4,
-          fill: css(col === 'bad' ? 's5' : col), stroke: css('surface'), 'stroke-width': 1.5 }, svg);
-        c.addEventListener('pointermove', ev => showTip(
-          `<b>${p.duty.toFixed(1)} %</b> duty · ${lbl}<br>R_conv <b>${p.rconv.toFixed(3)} °C/W</b>`
-          + `<br>${p.w.toFixed(2)} W · heatsink ${p.tc.toFixed(1)} °C · air ${p.air.toFixed(1)} °C`
-          + `<br>${p.thr.toFixed(0)} % of samples below 400 MHz`, ev));
-        c.addEventListener('pointerleave', hideTip); }));
     set('p-ladder', `<b>Only ${L.clean_from.toFixed(1)} % duty and above is usable.</b> `
       + `${L.n_throttled} of the ${L.n_levels} levels ran with the card throttling — below 23.8 % `
       + `duty <em>every single sample</em> was under 400 MHz — and a throttled tread measures the `

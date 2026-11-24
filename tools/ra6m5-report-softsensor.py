@@ -275,7 +275,8 @@ def main():
         w, tc, air = mean([x['p'] for x in tail]), mean([x['hs'] for x in tail]), mean([x['air'] for x in tail])
         thr = throttled_pct(blk)
         lev.append(dict(duty=duty, n=len(blk), w=r(w, 3), tc=r(tc, 2), air=r(air, 2),
-                        rconv=r((tc - air) / w, 4) if w else None, thr=r(thr, 1)))
+                        rconv=r((tc - air) / w, 4) if w else None, thr=r(thr, 1),
+                        curve=r(rconv_at(M, duty), 4)))
     clean = [x for x in lev if x['thr'] == 0.0]
     out['ladder'] = dict(levels=lev, clean_from=min(x['duty'] for x in clean),
                          n_throttled=sum(1 for x in lev if x['thr'] and x['thr'] > 0),
