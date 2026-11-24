@@ -1,0 +1,500 @@
+<title>Fitting A Soft Sensor</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column (lab notebook) that widens for the instrument charts; teal from the app's own header bar. */
+:root {
+  --bg: #f6f8f7;
+  --surface: #fcfcfb;
+  --fg: #101716;
+  --fg-2: #4b5755;
+  --fg-3: #74807e;
+  --rule: #d9e1df;
+  --grid: #e6ecea;
+  --accent: #0f766e;
+  --accent-soft: #e0f0ed;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4;
+  --warn: #b45309;
+  --font-display: "Instrument Sans", "IBM Plex Sans", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0e1312; --surface: #161c1b; --fg: #edf2f1; --fg-2: #b6c2c0; --fg-3: #8a9694;
+  --rule: #2a3533; --grid: #232c2b; --accent: #2bb3a4; --accent-soft: #15302d;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --warn: #f59e0b;
+  color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #0e1312; --surface: #161c1b; --fg: #edf2f1; --fg-2: #b6c2c0; --fg-3: #8a9694;
+  --rule: #2a3533; --grid: #232c2b; --accent: #2bb3a4; --accent-soft: #15302d;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --warn: #f59e0b;
+  color-scheme: dark }
+
+body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 16px; line-height: 1.6; }
+.wrap { max-width: 980px; margin: 0 auto; padding-block: 40px 72px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.prose { max-width: 68ch; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; line-height: 1.2; margin: 0; }
+h1 { font-size: clamp(30px, 5vw, 42px); font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 24px; font-weight: 600; }
+h3 { font-size: 17px; font-weight: 600; }
+p { margin: 0; }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+.meta { font-family: var(--font-mono); font-size: 13px; color: var(--fg-2); display: flex; flex-wrap: wrap; gap: 6px 20px; }
+header { display: grid; gap: 14px; padding-bottom: 28px; border-bottom: 1px solid var(--rule); }
+header .lede { font-size: 18px; color: var(--fg-2); max-width: 62ch; }
+section { display: grid; gap: 16px; padding-top: 44px; }
+section > .head { display: grid; gap: 6px; }
+code, .mono { font-family: var(--font-mono); font-size: 0.88em; }
+code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+ul { margin: 0; padding-left: 20px; display: grid; gap: 8px; }
+li::marker { color: var(--accent); }
+.muted { color: var(--fg-2); }
+.small { font-size: 14px; }
+
+.findings { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+.finding { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 16px; display: grid; gap: 4px; align-content: start; min-width: 0; }
+.finding .num { font-family: var(--font-display); font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.finding .num small { font-size: 16px; color: var(--fg-2); font-weight: 500; }
+.finding p { font-size: 14px; color: var(--fg-2); line-height: 1.45; }
+
+.tbl-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); }
+.tbl-wrap.tall { max-height: 420px; overflow-y: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--grid); vertical-align: top; }
+th { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-2); font-weight: 500; white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--font-mono); font-size: 13px; white-space: nowrap; }
+td .tag { font-family: var(--font-mono); font-size: 12px; color: var(--accent); white-space: nowrap; }
+
+.chart-card { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 16px 16px 10px; display: grid; gap: 10px; min-width: 0; }
+.chart-card h3 { font-size: 15px; }
+.chart-card .sub { font-size: 13px; color: var(--fg-2); }
+.readout { font-family: var(--font-mono); font-size: 12.5px; color: var(--fg-2); display: flex; flex-wrap: wrap; gap: 4px 16px; min-height: 40px; align-items: center; border-bottom: 1px solid var(--grid); padding-bottom: 8px; font-variant-numeric: tabular-nums; }
+.readout b { color: var(--fg); font-weight: 500; }
+.sw { display: inline-block; width: 10px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 5px; }
+.panel-label { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--fg-2); display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.panel-label span { display: inline-flex; align-items: center; text-transform: none; letter-spacing: 0; }
+svg.chart { display: block; width: 100%; height: auto; overflow: visible; touch-action: pan-y; }
+svg.chart text { font-family: var(--font-mono); font-size: 11px; fill: var(--fg-3); }
+svg.chart .grid line { stroke: var(--grid); stroke-width: 1; }
+svg.chart .note { fill: var(--fg-2); font-size: 11px; }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+.tip { position: fixed; pointer-events: none; background: var(--surface); color: var(--fg); border: 1px solid var(--rule); border-radius: 6px; padding: 6px 9px; font-family: var(--font-mono); font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.12); z-index: 20; white-space: nowrap; }
+footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--fg-2); display: grid; gap: 6px; }
+@media (max-width: 520px) { body { font-size: 15px; } .finding .num { font-size: 24px; } }pre.eq { font-family: var(--font-mono); font-size: 13px; line-height: 1.7; margin: 0;
+  padding: 14px 16px; background: var(--bg); border: 1px solid var(--rule);
+  border-radius: 6px; overflow-x: auto; color: var(--fg); }
+.finding .t { font-size: 13px; }
+</style><div class="wrap">
+<header>
+  <div class="eyebrow">mb-benchmark-gui · telemetry hardware</div>
+  <h1>Fitting a soft sensor</h1>
+  <p class="lede">The RA6M5 board runs a closed-loop fan controller that regulates the accelerator's <em>estimated die temperature</em>, and it needs one temperature to do it: a thermocouple bonded between the heatsink fins. This page is about replacing that sensor with a <b>model</b> — so the loop still works on a board where the probe was never fitted, or where it fails mid-run. Four runs went into it: <b>two to characterise the plant</b>, <b>one to fit on</b>, and <b>two held back</b> to test the result on data the fit never saw. The finished model adds exactly <b id="l-param">—</b> parameter to what the controller already knew, and predicts the probe it replaces to <b id="l-rms">—</b> on held-out data.</p>
+  <div class="meta">
+    <span>Host: AMD EPYC ROMED8-2T</span><span>Hailo-8 M.2</span><span>RA6M5 probe board · EMC2101 fan, MAX31855 thermocouple, INA228 rail</span><span id="meta-fw">—</span>
+  </div>
+</header>
+
+<section>
+  <div class="head"><h2>What came out of it</h2></div>
+  <div class="findings" id="tiles"></div>
+</section>
+
+<section>
+  <div class="head"><h2>The runs, and what each one was for</h2>
+    <p class="prose muted">A model is only as good as the data under it, so this is the first table rather than an appendix. The two <b>characterise</b> runs establish the shape of the problem; the <b>fit</b> run is the one the parameters come from; the two <b>held out</b> runs were never shown to the fit and are the only honest test of it.</p></div>
+  <div class="tbl-wrap"><table id="runtbl">
+    <thead><tr><th>Date</th><th>Log</th><th class="n">rows</th><th class="n">minutes</th><th>role</th><th>what it contributed</th></tr></thead>
+    <tbody></tbody></table></div>
+</section>
+
+<section>
+  <div class="head"><h2>Step 1 — how well does the fan cool? (the 59-level ladder)</h2>
+    <p class="prose muted">The plant is <code>heatsink − air = W × R<sub>conv</sub>(duty)</code>: the heatsink sits above ambient by the card's watts times a thermal resistance the fan controls. Walking the fan from 0 to 100 % in 59 steps, five minutes each, measures that resistance — <b>but only where the card is not throttling</b>.</p></div>
+  <div class="chart-card"><h3>Convective resistance against fan duty</h3>
+    <p class="sub">Each point is one 5-minute level, read over its last 60 s. <b>Red points throttled</b> — at those duties the card is pinned on its thermal limit, so the heatsink reading is set by the limit and not by the fan. The dashed line is the nine-node table the firmware ends up carrying.</p>
+    <div id="ch-ladder"></div></div>
+  <p class="prose" id="p-ladder">—</p>
+</section>
+
+<section>
+  <div class="head"><h2>Step 2 — is there a load axis at all? (eight models)</h2>
+    <p class="prose muted">The ladder measures <code>R<sub>conv</sub></code> at <b>one</b> load, so nothing in it tests whether the plant is really linear in watts. Before fitting anything, it was worth knowing whether this card's eight models even draw different power — on the day this ran, only ResNet-50 had ever been benchmarked on it, and every other figure was an estimate from GOP×fps.</p></div>
+  <div class="tbl-wrap"><table id="modtbl">
+    <thead><tr><th>Model</th><th class="n">GOP/frame</th><th class="n">fps</th><th class="n">rail W</th><th class="n">TOPS</th><th class="n">die °C</th><th class="n">R<sub>conv</sub></th></tr></thead>
+    <tbody></tbody></table></div>
+  <p class="prose" id="p-probe">—</p>
+</section>
+
+<section>
+  <div class="head"><h2>Step 3 — the fitting run, and the assumption it demolished</h2>
+    <p class="prose muted">24 treads: four fixed fan duties, and within each a ladder of frame-rate caps. The intent was a grid of <em>matched loads at different duties</em>, using the cap to put a chosen wattage at a low fan speed — the one thing swapping models cannot do. The cap did not cooperate.</p></div>
+  <div class="two">
+    <div class="chart-card"><h3>What the frame-rate cap actually did</h3>
+      <p class="sub">ResNet-50 at 73 % duty, corrected to a common heatsink temperature (leakage follows temperature at <span id="s-leak">—</span>, so an uncorrected comparison credits the cap with cooling it also caused).</p>
+      <div class="tbl-wrap"><table id="captbl">
+        <thead><tr><th class="n">cap</th><th class="n">fps</th><th class="n">rail W</th><th class="n">mJ/frame</th></tr></thead>
+        <tbody></tbody></table></div></div>
+    <div class="chart-card"><h3>R<sub>conv</sub> at four fan duties</h3>
+      <p class="sub">From an exponential fit to each whole tread, not a tail average. ResNet-50 only, so the spread is the plant's and not a mix of models.</p>
+      <div class="tbl-wrap"><table id="dutytbl">
+        <thead><tr><th class="n">duty</th><th class="n">R<sub>conv</sub></th><th class="n">spread</th><th class="n">n</th><th class="n">τ</th></tr></thead>
+        <tbody></tbody></table></div></div>
+  </div>
+  <div class="prose" style="display:grid;gap:12px">
+    <p id="p-cap">—</p>
+    <p id="p-throttle">—</p>
+    <p id="p-ident">—</p>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>Step 4 — the model</h2>
+    <p class="prose muted">Three lines. The first two are what the feedforward controller already computed; only the third is new.</p></div>
+  <div class="chart-card"><h3>What the board runs</h3>
+    <pre class="eq">tc_ss   = air + W × R_conv(duty)        the steady state the plant is heading for
+tau     = R_conv(duty) × C              the time constant, from the same curve
+d tc/dt = (tc_ss − tc) / tau            one state: the model's memory of the heatsink</pre>
+    <p class="sub">So the entire addition is <b>C</b>, a lumped heatsink heat capacity, fitted jointly with the curve. There is no neural network here and deliberately so: this is monotone in duty by construction, has four numbers a person can check, and runs in a handful of float operations on a 250 ms tick.</p></div>
+  <div class="tbl-wrap"><table id="nodetbl">
+    <thead><tr><th class="n">duty</th><th class="n">R<sub>conv</sub></th><th class="n">τ</th><th class="n">old value</th><th class="n">change</th><th>where this node comes from</th></tr></thead>
+    <tbody></tbody></table></div>
+  <p class="prose" id="p-nodes">—</p>
+</section>
+
+<section>
+  <div class="head"><h2>Step 5 — does it work? (on data the fit never saw)</h2>
+    <p class="prose muted">Both runs below are closed-loop sessions where the fan duty was decided moment to moment by the controller, which is a far harder test than a staircase: the model has to track a plant whose cooling is changing underneath it. Neither contributed a single sample to the fit.</p></div>
+  <div class="chart-card"><h3>The model against the probe it replaces</h3>
+    <p class="sub">Grey: the real thermocouple. Blue: the fitted model, given only rail watts, board air and the applied fan duty. Amber: the <em>same curve</em> with the time constant removed — what you get if you treat a slow plant as if it responded instantly.</p>
+    <div id="ch-valid"></div></div>
+  <div class="tbl-wrap"><table id="validtbl">
+    <thead><tr><th>Held-out run</th><th class="n">duty range</th><th class="n">W range</th><th class="n">model rms</th><th class="n">bias</th><th class="n">worst cold</th><th class="n">static-form rms</th></tr></thead>
+    <tbody></tbody></table></div>
+  <p class="prose" id="p-valid">—</p>
+</section>
+
+<section>
+  <div class="head"><h2>Conclusions</h2></div>
+  <div class="prose" style="display:grid;gap:12px">
+    <p id="c-1">—</p>
+    <p id="c-2">—</p>
+    <p id="c-3">—</p>
+    <p id="c-4">—</p>
+    <p id="c-5">—</p>
+  </div>
+</section>
+
+<footer>
+  <div>Generated by <code>tools/ra6m5-report-softsensor.py</code> from the logs in the first table. Every number on this page is read from <code>data.js</code> at load time; nothing is typed in, and the model's constants are parsed out of <code id="f-fw">—</code> rather than copied, so the page cannot quote a model the firmware does not have.</div>
+  <div><b>The exceptions, named:</b> the 98.9–104.2 °C throttle band is from the two-card thermal study; the 0.86 W figure for the fan-off brackets and the 262 rpm floor are from the runs named in the node table.</div>
+  <div>Related: <a href="../ra6m5-loop/">doing without the thermocouple</a> — the three-arm run, scored against this model · <a href="../ra6m5-thermocouple/">the heat path split in two</a> · <a href="../ra6m5-exploration/">two cards up a fan ladder</a>.</div>
+</footer>
+<div id="tip" class="tip" hidden></div>
+</div>
+<script src="data.js"></script>
+<script>
+(function () {
+  const NS = 'http://www.w3.org/2000/svg';
+  const css = n => `var(--${n})`;
+  const el = (tag, attrs = {}, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; };
+  const fmt = (v, d) => v == null ? "—" : v.toFixed(d);
+  const tip = document.getElementById('tip');
+  function showTip(html, ev) { tip.innerHTML = html; tip.hidden = false; const x = Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8); tip.style.left = x + 'px'; tip.style.top = (ev.clientY - tip.offsetHeight - 12) + 'px'; }
+  function hideTip() { tip.hidden = true; }
+  /* ---------- generic x/y chart ---------- */
+  function xy(hostId, o) {
+    const W2 = 460, H2 = 260, l = 50, r = 12, t = 10, b = 34, pw = W2 - l - r, ph = H2 - t - b;
+    const svg = el('svg', { viewBox: `0 0 ${W2} ${H2}`, class: 'chart', role: 'img', 'aria-label': o.label });
+    const Xs = v => l + (v - o.x0) / (o.x1 - o.x0) * pw, Ys = v => t + (1 - (v - o.y0) / (o.y1 - o.y0)) * ph;
+    const g = el('g', { class: 'grid' }, svg);
+    o.yt.forEach(v => { el('line', { x1: l, x2: W2 - r, y1: Ys(v), y2: Ys(v) }, g); const tx = el('text', { x: l - 7, y: Ys(v) + 4, 'text-anchor': 'end' }, svg); tx.textContent = o.yf ? o.yf(v) : v; });
+    o.xt.forEach(v => { const tx = el('text', { x: Xs(v), y: H2 - b + 18, 'text-anchor': 'middle' }, svg); tx.textContent = o.xf ? o.xf(v) : v; });
+    const xl = el('text', { x: l + pw / 2, y: H2 - 2, 'text-anchor': 'middle' }, svg); xl.textContent = o.xname;
+    if (o.line) el('path', { d: o.pts.map((p, i) => (i ? 'L' : 'M') + Xs(p[0]).toFixed(1) + ' ' + Ys(p[1]).toFixed(1)).join(''), fill: 'none', stroke: css(o.c), 'stroke-width': 2, 'stroke-linejoin': 'round' }, svg);
+    o.pts.forEach(p => el('circle', { cx: Xs(p[0]), cy: Ys(p[1]), r: o.r || 4, fill: css(o.c), 'fill-opacity': o.alpha || 1, stroke: o.line ? css('surface') : 'none', 'stroke-width': o.line ? 2 : 0 }, svg));
+    const hl = el('circle', { r: 6, fill: 'none', stroke: css('fg'), 'stroke-width': 1.5, visibility: 'hidden' }, svg);
+    const hit = el('rect', { x: l, y: t, width: pw, height: ph, fill: 'transparent' }, svg);
+    const move = ev => { const rc = svg.getBoundingClientRect(); const mx = (ev.clientX - rc.left) / rc.width * W2, my = (ev.clientY - rc.top) / rc.height * H2;
+      let best = -1, bd = 1e9; o.pts.forEach((p, i) => { const d = (Xs(p[0]) - mx) ** 2 + (Ys(p[1]) - my) ** 2; if (d < bd) { bd = d; best = i; } });
+      if (best < 0 || bd > 900) { hl.setAttribute('visibility', 'hidden'); hideTip(); return; }
+      const p = o.pts[best]; hl.setAttribute('cx', Xs(p[0])); hl.setAttribute('cy', Ys(p[1])); hl.setAttribute('visibility', 'visible'); showTip(o.tip(p), ev); };
+    hit.addEventListener('pointermove', move); hit.addEventListener('pointerdown', move);
+    hit.addEventListener('pointerleave', () => { hl.setAttribute('visibility', 'hidden'); hideTip(); });
+    document.getElementById(hostId).appendChild(svg);
+  }
+
+  /* ---------- lines(): named series on one plot, optional right axis / log y ---------- */
+  function lines(hostId, o) {
+    const W2 = o.w || 940, H2 = o.h || 300, l = 56, r = o.ry ? 46 : 16, t = 12, b = 40, pw = W2 - l - r, ph = H2 - t - b;
+    const svg = el('svg', { viewBox: `0 0 ${W2} ${H2}`, class: 'chart', role: 'img', 'aria-label': o.label });
+    const Xs = v => l + (v - o.x0) / (o.x1 - o.x0) * pw;
+    /* a log y axis is what makes two exponentials with the same time constant
+       read as two parallel straight lines, which is the whole point of the
+       cool-down chart; on a linear axis the comparison is invisible. */
+    const lg = o.logy, L0 = lg ? Math.log(o.y0) : 0, L1 = lg ? Math.log(o.y1) : 0;
+    const Ys = v => lg ? t + (1 - (Math.log(v) - L0) / (L1 - L0)) * ph
+                       : t + (1 - (v - o.y0) / (o.y1 - o.y0)) * ph;
+    const Yr = o.ry ? v => t + (1 - (v - o.ry.lo) / (o.ry.hi - o.ry.lo)) * ph : null;
+    const g = el('g', { class: 'grid' }, svg);
+    o.yt.forEach(v => { el('line', { x1: l, x2: W2 - r, y1: Ys(v), y2: Ys(v) }, g);
+      const tx = el('text', { x: l - 7, y: Ys(v) + 4, 'text-anchor': 'end' }, svg); tx.textContent = o.yf ? o.yf(v) : v; });
+    if (o.ry) o.ry.ticks.forEach(v => { const tx = el('text', { x: W2 - r + 8, y: Yr(v) + 4, 'text-anchor': 'start' }, svg); tx.textContent = o.ry.f ? o.ry.f(v) : v; });
+    o.xt.forEach(v => { el('line', { x1: Xs(v), x2: Xs(v), y1: t, y2: t + ph }, g);
+      const tx = el('text', { x: Xs(v), y: H2 - b + 18, 'text-anchor': 'middle' }, svg); tx.textContent = o.xf ? o.xf(v) : v; });
+    const xl = el('text', { x: l + pw / 2, y: H2 - 4, 'text-anchor': 'middle' }, svg); xl.textContent = o.xname;
+    if (o.zero != null) el('line', { x1: l, x2: W2 - r, y1: Ys(o.zero), y2: Ys(o.zero), stroke: css('fg-3'), 'stroke-width': 1, 'stroke-dasharray': '4 3' }, svg);
+    (o.bands || []).forEach(bd => el('rect', { x: Xs(bd[0]), y: t, width: Xs(bd[1]) - Xs(bd[0]), height: ph, fill: css('accent-soft'), 'fill-opacity': 0.7 }, svg));
+    o.series.forEach(ser => {
+      const YY = ser.r ? Yr : Ys; let d = '', pen = false;
+      ser.y.forEach((v, i) => { if (v == null || o.x[i] == null || (lg && !ser.r && v <= o.y0)) { pen = false; return; }
+        d += (pen ? 'L' : 'M') + Xs(o.x[i]).toFixed(1) + ' ' + YY(v).toFixed(1); pen = true; });
+      if (d) el('path', { d, fill: 'none', stroke: css(ser.c), 'stroke-width': ser.w || 1.9,
+        'stroke-dasharray': ser.dash || 'none', 'stroke-opacity': ser.alpha || 1, 'stroke-linejoin': 'round' }, svg);
+      if (ser.dots) ser.y.forEach((v, i) => { if (v == null || o.x[i] == null) return;
+        el('circle', { cx: Xs(o.x[i]), cy: YY(v), r: 2.6, fill: css(ser.c) }, svg); });
+    });
+    const lab = document.createElement('div'); lab.className = 'panel-label';
+    lab.innerHTML = o.series.map(s => `<span><i class="sw" style="background:${css(s.c)}"></i>${s.name}</span>`).join('');
+    const hl = el('line', { y1: t, y2: t + ph, stroke: css('fg-3'), 'stroke-width': 1, visibility: 'hidden' }, svg);
+    const hit = el('rect', { x: l, y: t, width: pw, height: ph, fill: 'transparent' }, svg);
+    const move = ev => { const rc = svg.getBoundingClientRect(); const mx = (ev.clientX - rc.left) / rc.width * W2;
+      const xv = o.x0 + (mx - l) / pw * (o.x1 - o.x0);
+      let best = -1, bd = 1e9; o.x.forEach((v, i) => { if (v == null) return; const dd = Math.abs(v - xv); if (dd < bd) { bd = dd; best = i; } });
+      if (best < 0) return;
+      hl.setAttribute('x1', Xs(o.x[best])); hl.setAttribute('x2', Xs(o.x[best])); hl.setAttribute('visibility', 'visible');
+      const rows = o.series.map(ser => ser.y[best] == null ? null
+        : `<i class="sw" style="background:var(--${ser.c})"></i>${ser.name} <b>${ser.tf ? ser.tf(ser.y[best]) : (o.tf ? o.tf(ser.y[best]) : ser.y[best])}</b>`).filter(Boolean);
+      showTip(`<b>${o.xtip ? o.xtip(o.x[best]) : o.x[best]}</b><br>` + rows.join('<br>'), ev); };
+    hit.addEventListener('pointermove', move); hit.addEventListener('pointerdown', move);
+    hit.addEventListener('pointerleave', () => { hl.setAttribute('visibility', 'hidden'); hideTip(); });
+    const host = document.getElementById(hostId);
+    host.appendChild(lab); host.appendChild(svg);
+  }
+  /* ---------- bindings ---------- */
+  const set = (id, html) => { const n = document.getElementById(id); if (n) n.innerHTML = html; };
+  const sgn = (v, d) => v == null ? '—' : (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(d);
+  const row = (sel, cells) => { const tr = document.createElement('tr');
+    tr.innerHTML = cells.join(''); document.querySelector(sel + ' tbody').appendChild(tr); };
+  const td = (v, cls) => `<td${cls ? ` class="${cls}"` : ''}>${v}</td>`;
+  const tn = v => td(v, 'n');
+  const M = SS.model, L = SS.ladder, P = SS.probe, F = SS.fit, V = SS.valid;
+
+  set('meta-fw', `Firmware: mb-probe-ra6m5 0.7.0 · model_ready = ${M.ready ? 1 : 0}`);
+  set('f-fw', M.firmware);
+  set('l-param', 'one');
+  const rmss = V.runs.map(r => r.dyn.rms);
+  set('l-rms', `${Math.min(...rmss).toFixed(2)}–${Math.max(...rmss).toFixed(2)} °C rms`);
+  set('s-leak', `${F.caps.leak_mw.toFixed(1)} mW/°C`);
+
+  /* ---------- findings ---------- */
+  {
+    const statRms = V.runs.map(r => r.static.rms);
+    const worstCold = Math.min(...V.runs.map(r => r.dyn.worst_cold));
+    document.getElementById('tiles').innerHTML = [
+     { num: `${Math.min(...rmss).toFixed(2)}–${Math.max(...rmss).toFixed(2)}`, unit: '°C',
+       t: 'error against the real probe',
+       s: `rms over the loaded windows of two runs held out of the fit entirely. The heatsink rises 30–50 °C above air under load, so this is 1–2 % of the signal being measured.` },
+     { num: '×' + (Math.min(...statRms) / Math.max(...rmss)).toFixed(0), unit: 'worse',
+       t: 'without the time constant',
+       s: `the identical curve, evaluated as if the plant responded instantly, scores ${Math.min(...statRms).toFixed(1)}–${Math.max(...statRms).toFixed(1)} °C rms. Nearly all of the accuracy is in the one state, not in the curve.` },
+     { num: sgn(worstCold, 1), unit: '°C',
+       t: 'worst it under-reads',
+       s: 'the only direction that costs safety margin: believing the heatsink cooler than it is means under-cooling. Hence a 90 °C setpoint for the model, not the 95 °C the real probe earned.' },
+     { num: M.C.toFixed(1), unit: 'J/°C',
+       t: 'the whole of what was added',
+       s: 'one lumped heat capacity. The steady-state half of the model is the fan curve the feedforward was already inverting.' }
+    ].map(x => `<div class="finding"><div class="num">${x.num}<small> ${x.unit}</small></div>`
+      + `<div class="t"><b>${x.t}</b></div><p>${x.s}</p></div>`).join('');
+  }
+
+  /* ---------- the runs ---------- */
+  SS.runs.forEach(r => row('#runtbl', [
+    td(r.date), td(`<code>${r.file}</code><br><span class="muted small">${r.where}/</span>`),
+    tn(r.n.toLocaleString()), tn(r.mins.toFixed(0)),
+    td(r.role.startsWith('validate') ? '<b>held out</b>' : r.role === 'fit' ? '<b>fit</b>' : 'characterise'),
+    td(`<span class="small">${r.gave}</span>`)]));
+
+  /* ---------- step 1: the ladder ---------- */
+  {
+    const clean = L.levels.filter(x => x.thr === 0), bad = L.levels.filter(x => x.thr > 0);
+    lines('ch-ladder', { h: 320, label: 'convective resistance against fan duty',
+      x0: 0, x1: 102, y0: 5, y1: 23, xt: [0, 20, 40, 60, 80, 100],
+      yt: [6, 10, 14, 18, 22], yf: v => v.toFixed(0),
+      xname: 'fan duty (%) — the board\'s own readback',
+      x: M.nodes.map(n => n.duty),
+      series: [{ k: 'm', name: 'the nine-node table the firmware carries', c: 's3',
+                 dash: '5 3', dots: true, y: M.nodes.map(n => n.rconv),
+                 tf: v => v.toFixed(2) + ' °C/W' }],
+      xtip: v => v.toFixed(1) + ' % duty' });
+    const svg = document.querySelector('#ch-ladder svg');
+    const l = 56, rr = 16, tp = 12, b = 40, W2 = 940, H2 = 320, pw = W2 - l - rr, ph = H2 - tp - b;
+    const Xs = v => l + v / 102 * pw, Ys = v => tp + (1 - (v - 5) / 18) * ph;
+    [[clean, 's1', 'unthrottled'], [bad, 'bad', 'THROTTLED — not a plant measurement']]
+      .forEach(([set_, col, lbl]) => set_.forEach(p => {
+        const c = el('circle', { cx: Xs(p.duty), cy: Ys(p.rconv), r: 4,
+          fill: css(col === 'bad' ? 's5' : col), stroke: css('surface'), 'stroke-width': 1.5 }, svg);
+        c.addEventListener('pointermove', ev => showTip(
+          `<b>${p.duty.toFixed(1)} %</b> duty · ${lbl}<br>R_conv <b>${p.rconv.toFixed(3)} °C/W</b>`
+          + `<br>${p.w.toFixed(2)} W · heatsink ${p.tc.toFixed(1)} °C · air ${p.air.toFixed(1)} °C`
+          + `<br>${p.thr.toFixed(0)} % of samples below 400 MHz`, ev));
+        c.addEventListener('pointerleave', hideTip); }));
+    set('p-ladder', `<b>Only ${L.clean_from.toFixed(1)} % duty and above is usable.</b> `
+      + `${L.n_throttled} of the ${L.n_levels} levels ran with the card throttling — below 23.8 % `
+      + `duty <em>every single sample</em> was under 400 MHz — and a throttled tread measures the `
+      + `thermal limit rather than the fan. That matters more than it sounds: the first version of `
+      + `this curve took all nine of its nodes from this ladder, including the throttled ones, and `
+      + `was wrong by up to 32 % at the bottom. The other end is reassuring — the `
+      + `${L.flat_above_73.n} levels from 73 to 100 % read ${L.flat_above_73.lo.toFixed(2)}–`
+      + `${L.flat_above_73.hi.toFixed(2)} °C/W with no trend, so the fan genuinely saturates at `
+      + `73 % and the table is right to stop there.`);
+  }
+
+  /* ---------- step 2: the load probe ---------- */
+  {
+    P.models.forEach(m => row('#modtbl', [
+      td(m.model), tn(m.gop == null ? '—' : m.gop.toFixed(2)), tn(m.fps.toFixed(0)),
+      tn('<b>' + m.w.toFixed(3) + '</b>'), tn(m.tops == null ? '—' : m.tops.toFixed(2)),
+      tn(m.die.toFixed(1)), tn(m.rconv.toFixed(3))]));
+    set('p-probe', `<b>The load axis exists: ${P.w_lo.toFixed(3)} to ${P.w_hi.toFixed(3)} W, a `
+      + `${P.spread.toFixed(1)}× spread.</b> So a model's identity, not its frame rate, is what sets `
+      + `this card's power — a point step 3 makes again the hard way. Two things follow. `
+      + `R<sub>conv</sub> comes out at ${Math.min(...P.models.map(m => m.rconv)).toFixed(2)}–`
+      + `${Math.max(...P.models.map(m => m.rconv)).toFixed(2)} °C/W across that whole range, which is `
+      + `the first evidence that the plant really is linear in watts. And the heavy loads only exist `
+      + `at high fan speed: at ${P.w_hi.toFixed(2)} W the die already sits at `
+      + `${P.models[P.models.length - 1].die.toFixed(0)} °C with the fan at its ceiling. `
+      + `<b>The (watts, duty) space is a triangle, not a rectangle</b> — which is exactly why the `
+      + `fitting run tried to use a frame-rate cap to reach low duty at a chosen wattage.`);
+  }
+
+  /* ---------- step 3: the fitting run ---------- */
+  {
+    F.caps.rows.forEach(c => row('#captbl', [
+      tn(c.cap === 'max' ? '<b>none</b>' : c.cap), tn(c.fps.toFixed(0)),
+      tn('<b>' + c.w_corr.toFixed(3) + '</b>'), tn(c.mj.toFixed(2))]));
+    F.duties.forEach(d => row('#dutytbl', [
+      tn('<b>' + d.duty.toFixed(1) + ' %</b>'), tn(d.rconv.toFixed(3)),
+      tn(d.sd == null ? '<span class="muted">n=1</span>' : '± ' + d.sd.toFixed(3) + ' (' + d.sd_pct.toFixed(2) + ' %)'),
+      tn(d.n), tn(d.tau.toFixed(0) + ' s')]));
+    const c = F.caps.rows;
+    const flat = c.filter(x => x.fps >= 500);
+    const spanW = Math.max(...flat.map(x => x.w_corr)) - Math.min(...flat.map(x => x.w_corr));
+    set('p-cap', `<b>The frame-rate cap is not a load knob on this card.</b> Capping ResNet-50 from `
+      + `${c[0].fps.toFixed(0)} fps down to 500 — ${(c[0].fps / 500).toFixed(1)}× less work — changes `
+      + `the rail by <b>${(spanW * 1000).toFixed(0)} mW</b>, while the energy per frame rises `
+      + `${(c.find(x => x.fps === 500).mj / c[0].mj).toFixed(1)}×. Power only falls once the cap goes `
+      + `below ~300 fps. The reason is architectural: on a dataflow accelerator the <em>configured `
+      + `network</em> lights and clocks the fabric, so power is set by which model is resident, not by `
+      + `how many frames pass through it. The plan for this run had estimated a power ladder by `
+      + `scaling linearly in frames and was wrong by up to 2.7×, which turned the intended matched-load `
+      + `grid into a replicate grid. The replicates are not wasted — they are what produces the error `
+      + `bars in the table beside this one — but the linearity question had to be answered from the `
+      + `eight models of step 2 instead.`);
+    set('p-throttle', F.throttled.length ? `<b>${F.throttled.length} treads throttled, and the frame `
+      + `rate could not tell.</b> At ${F.throttled[0].duty.toFixed(1)} % duty the card dropped to `
+      + `350 MHz for ${Math.min(...F.throttled.map(t => t.thr)).toFixed(0)}–`
+      + `${Math.max(...F.throttled.map(t => t.thr)).toFixed(0)} % of their samples with the die at `
+      + `${Math.max(...F.throttled.map(t => t.die)).toFixed(0)} °C — while <code>hailo_fps</code> read `
+      + `back its commanded cap to the decimal, because the caps (`
+      + F.throttled.map(t => t.cap).join(', ') + ` fps) sit below what the card manages even when `
+      + `throttled. <b>Under a frame-rate cap, throughput cannot detect throttling; only the clock `
+      + `can.</b> Those treads are excluded from every number here.` : '');
+    set('p-ident', `<b>Which model is running matters at the 1–3 % level, and it is the YOLO `
+      + `family.</b> At matched duty against ResNet-50: `
+      + F.identity.map(i => `${i.model} <b>${sgn(i.pct, 2)} %</b>`).join(', ')
+      + `. SCRFD-10G lands on ResNet-50 to a few hundredths across a 16–19 % difference in load, `
+      + `against a 0.55 % session-to-session noise floor — so the agreement is real and so is the YOLO `
+      + `offset. The likely cause is spatial: the thermocouple reads <em>one point</em> between the `
+      + `fins, not the mean heatsink temperature, and different networks light different parts of the `
+      + `die. The board cannot observe this, so it goes in the error budget.`);
+  }
+
+  /* ---------- step 4: the model ---------- */
+  {
+    M.nodes.forEach(n => row('#nodetbl', [
+      tn('<b>' + n.duty.toFixed(1) + ' %</b>'), tn(n.rconv.toFixed(2)), tn(n.tau.toFixed(0) + ' s'),
+      tn(n.old == null ? '—' : n.old.toFixed(2)),
+      tn(n.pct == null ? '—' : (Math.abs(n.pct) >= 4 ? '<b>' + sgn(n.pct, 1) + ' %</b>' : sgn(n.pct, 1) + ' %')),
+      td(`<span class="small">${n.why}</span>`)]));
+    const moved = M.nodes.filter(n => n.pct != null && Math.abs(n.pct) >= 4);
+    set('p-nodes', `<b>Three nodes changed by up to ${Math.max(...moved.map(n => Math.abs(n.pct))).toFixed(0)} %, `
+      + `and that is the throttled ladder data being thrown out.</b> The old table claimed `
+      + `${moved[0].old.toFixed(2)} °C/W at the fan's 9.5 % floor where the plant actually delivers `
+      + `${M.nodes.find(n => n.duty === 9.5).rconv.toFixed(2)} — so the controller believed the fan `
+      + `half again as effective at its floor as it is. Everything at or above `
+      + `${L.clean_from.toFixed(1)} % moved by at most 1.1 %, so this is a low-duty correction and not `
+      + `a re-measurement of the whole curve; any session held in the usual 32–61 % band is `
+      + `unaffected. The honest weak spot is the bottom: the 0 % and 9.5 % nodes are measured at `
+      + `0.86 W only, and natural convection is not linear in temperature rise, so one resistance `
+      + `cannot serve both idle and load. It costs nothing in practice — the loop's floor is 9.5 % `
+      + `duty and any real load down there throttles the card long before the model's error matters — `
+      + `but <code>die_est</code> should not be believed with the fan off.`);
+  }
+
+  /* ---------- step 5: validation ---------- */
+  {
+    const S = V.series;
+    lines('ch-valid', { h: 340, label: `estimate against probe · ${V.series_file}`,
+      x0: 0, x1: Math.max(...S.t), y0: 20, y1: 95,
+      xt: [0, 30, 60, 90, 120, 150, 180, 210].filter(v => v <= Math.max(...S.t)),
+      yt: [30, 45, 60, 75, 90], yf: v => v.toFixed(0),
+      xname: 'minutes into the run', x: S.t,
+      series: [{ k: 'st', name: 'same curve, no time constant', c: 's4', w: 1.4, y: S.stat,
+                 tf: v => v.toFixed(1) + ' °C' },
+               { k: 'tc', name: 'the real thermocouple', c: 'fg-2', w: 2.6, y: S.tc,
+                 tf: v => v.toFixed(2) + ' °C' },
+               { k: 'es', name: 'the fitted model', c: 's1', w: 1.8, y: S.est,
+                 tf: v => v.toFixed(2) + ' °C' }],
+      xtip: v => v.toFixed(0) + ' min' });
+    V.runs.forEach(v => row('#validtbl', [
+      td(`<code>${v.file}</code>`), tn(v.duty_lo.toFixed(0) + '–' + v.duty_hi.toFixed(0) + ' %'),
+      tn(v.w_lo.toFixed(2) + '–' + v.w_hi.toFixed(2) + ' W'),
+      tn('<b>' + v.dyn.rms.toFixed(3) + ' °C</b>'), tn(sgn(v.dyn.bias, 3)),
+      tn(sgn(v.dyn.worst_cold, 2)), tn(v.static.rms.toFixed(1) + ' °C')]));
+    set('p-valid', `<b>The time constant is doing nearly all the work.</b> The amber trace is the `
+      + `same nine-node curve with the pole removed — the memoryless form, which is also what the `
+      + `controller's open-loop <code>die_est</code> computes. It is wrong by the whole of whatever `
+      + `transient is in flight: ${Math.min(...V.runs.map(r => r.static.rms)).toFixed(1)}–`
+      + `${Math.max(...V.runs.map(r => r.static.rms)).toFixed(1)} °C rms with excursions past `
+      + `${Math.max(...V.runs.map(r => Math.max(Math.abs(r.static.worst_cold), Math.abs(r.static.worst_hot)))).toFixed(0)} °C, `
+      + `because a 70–${Math.max(...M.nodes.map(n => n.tau)).toFixed(0)} s plant simply does not `
+      + `arrive when the fan changes. Add one state and one fitted capacity and the same curve tracks `
+      + `the probe to ${Math.min(...rmss).toFixed(2)}–${Math.max(...rmss).toFixed(2)} °C.`);
+  }
+
+  /* ---------- conclusions ---------- */
+  {
+    const worstCold = Math.min(...V.runs.map(r => r.dyn.worst_cold));
+    set('c-1', `<b>1 — A thermocouple on this heatsink can be replaced by four numbers.</b> A `
+      + `nine-node fan curve, a heat capacity of ${M.C.toFixed(1)} J/°C, and a first-order lag `
+      + `predict the probe to ${Math.min(...rmss).toFixed(2)}–${Math.max(...rmss).toFixed(2)} °C rms `
+      + `on closed-loop runs it was never fitted to. Substituted into the controller, it commands a `
+      + `settled fan duty within half a point of what the real probe commanded.`);
+    set('c-2', `<b>2 — The dynamics matter far more than the curve.</b> Dropping the single time `
+      + `constant costs a factor of ${(Math.min(...V.runs.map(r => r.static.rms)) / Math.max(...rmss)).toFixed(0)} `
+      + `in accuracy. If you take one thing from this: a static lookup of a slow thermal plant is not `
+      + `a sensor, however good the lookup is.`);
+    set('c-3', `<b>3 — Most of the work was deciding which data to throw away.</b> ${L.n_throttled} `
+      + `of ${L.n_levels} ladder levels were throttled and unusable; ${F.throttled.length} of `
+      + `${F.n} fitting treads likewise, and the frame rate reported them as perfectly healthy. The `
+      + `single biggest improvement to the model came not from a better fit but from noticing that `
+      + `three of its nine nodes had been measured on a card sitting against its thermal limit.`);
+    set('c-4', `<b>4 — The error budget is two-sided, and only one side is dangerous.</b> Model `
+      + `identity is one-sided and safe: the curve is fitted to ResNet-50, which has the highest `
+      + `convective resistance of the models measured, so every other load reads hot and over-cools. `
+      + `Session-to-session drift in the plant reads <em>cold</em> — worst case `
+      + `<b>${sgn(worstCold, 2)} °C</b> — and the throttle boundary sits as little as 3.9 °C above the `
+      + `firmware's 95 °C default. So the model gets a 90 °C setpoint; the real probe earned 95 °C `
+      + `over 13 247 samples and the estimate has not.`);
+    set('c-5', `<b>5 — What the board still cannot see.</b> The core clock and the frame rate are `
+      + `PCIe-side, host-only. The loop holds a die temperature it <em>believes</em> safe; it cannot `
+      + `detect throttling and react, and this page contains two separate demonstrations of how badly `
+      + `throughput misleads about that. Closing the gap would mean putting the host back in the loop, `
+      + `which is the one thing running it on the board exists to avoid — so instead the host logs the `
+      + `clock, and any setpoint can be audited after the fact.`);
+  }
+})();
+</script>

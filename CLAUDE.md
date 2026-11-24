@@ -1458,7 +1458,10 @@ a thermocouple reading even in the arms where it was not in the control path,
 because the MAX31855 is always sampled and always logged. **Train and validate
 a soft sensor on the LOADED windows**, where the plant repeats to ~1 %; the
 fan-off brackets are a check that conditions returned, not a source of model
-inputs.
+inputs. All of that advice was followed and it held — see **The soft sensor**.
+Two more runs are curated since: `docs/data/ra6m5-softsensor-fit-20261123.csv`
+(14 932, the fitting run) and `docs/data/ra6m5-loadprobe-20261123.csv` (4 267,
+the eight-model load probe), bringing the corpus to **66 481**.
 - **The loop works.** 70/85 °C die and 60 °C heatsink setpoints, plus the
   mode's own 95 °C, all held to **≤ 0.03 °C of standing error** over ten
   minutes each, settling in 6.5–11.8 min (the plant arriving, not the
@@ -1674,13 +1677,17 @@ valid.
 
   | duty | Rconv (°C/W) | n | tau (s) | C = tau/R |
   | ---: | ---: | ---: | ---: | ---: |
-  | 73.00 % | **6.678 ± 0.011** | 6 | 70.5 ± 1.6 | 10.5 |
-  | 50.80 % | **9.770 ± 0.096** | 5 | 102.6 ± 19.3 | 10.5 |
-  | 33.30 % | **12.421 ± 0.103** | 5 | 159.4 ± 4.2 | 12.8 |
-  | 20.60 % | 15.816 | **1** | 177.0 | 11.2 |
+  | 73.00 % | **6.682 ± 0.018** (0.27 %) | 6 | 70.3 | 10.53 |
+  | 50.80 % | **9.760 ± 0.107** (1.10 %) | 5 | 102.4 | 10.49 |
+  | 33.30 % | **12.384 ± 0.097** (0.78 %) | 5 | 159.6 | 12.89 |
+  | 20.60 % | 15.813 | **1** | 176.0 | 11.13 |
 
+  **ResNet-50 treads only** — pooling models here would fold the
+  model-identity effect below into what is meant to be the plant's own spread.
   Three independent sessions now agree at 73 %: ladder 6.746, load probe
-  6.63 ± 0.18, this run 6.678. **FIT THE EXPONENTIAL, DO NOT REGRESS THE
+  6.63 ± 0.18, this run 6.682. These are the figures
+  `tools/ra6m5-report-softsensor.py` prints; it is the reproducible
+  computation, so prefer it over any number quoted from a scratch script. **FIT THE EXPONENTIAL, DO NOT REGRESS THE
   TAIL** — the load probe's hardest-won lesson, and it is why these are
   asymptotes and not tail means.
 - **AIR MUST BE PRICED AT THE SAME DUTY AS THE TREAD.** The EMC2101 is cooled
@@ -3028,7 +3035,8 @@ Use `--shape 640x640` for a graph with dynamic spatial dims (SCRFD ships them).
 It counts Conv/ConvTranspose/Gemm/MatMul only, and **GOP = 2 x MAC** — that
 factor is the single most common way these figures get quoted wrong.
 
-**`ra6m5-report-{tc,loop}.py` generate the studies in `docs/reports/`.** Each
+**`ra6m5-report-{tc,loop,softsensor}.py` generate the studies in
+`docs/reports/`.** Each
 writes one `data.js` (a single `const` object) next to a hand-written
 `index.html` that renders every table and chart from it — **nothing in a page
 re-derives a number, and nothing is typed in**. Both print every scalar their
@@ -3042,6 +3050,14 @@ INA228 **rail** power (`_INA228_POWER`), never the card's own `_POW`, which
 runs ~0.19 W low — the firmware's own estimate uses the rail, so it is the only
 basis on which the estimator can be scored.
 
+- **`ra6m5-report-softsensor.py` is the one to read for the FIT** —
+  `docs/reports/ra6m5-soft-sensor/`, and it is deliberately a separate page
+  from `ra6m5-loop/`. That one reports one run; this one reports the fit, which
+  spans four (two to characterise, one to fit on, two held out) and whose whole
+  point is that the data came from somewhere before the model did. It takes the
+  logs as arguments, so re-running it on a later session is a command and not
+  an edit, and it is the **reproducible computation** for every Rconv figure —
+  prefer its output over any number from a scratch script.
 - **`ra6m5-report-loop.py` reads the soft sensor's constants out of
   `Control.h` rather than carrying a copy** (2026-11-24), and raises if the
   header is refactored. The page quotes `Rconv`, the heat capacity and the time

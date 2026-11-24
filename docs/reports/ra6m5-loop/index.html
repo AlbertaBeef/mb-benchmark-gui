@@ -88,7 +88,7 @@ footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule);
 <header>
   <div class="eyebrow">mb-benchmark-gui · telemetry hardware</div>
   <h1>Doing without the thermocouple</h1>
-  <p class="lede">Firmware 0.5.0 shipped three fan modes. Reading its own 225-minute run back showed they were <b>one control law with a different constant</b> — the die observer is a setpoint transformation, not a feedback element — so 0.6.0 collapsed them into a single loop with <b>one</b> regulated quantity, the estimated on-die temperature, and made the thermocouple <b>substitutable</b> while power became mandatory. This run asks what that substitution costs. Three arms, same setpoint, same load, differing only in where the loop's one temperature comes from. The open loop held the die <b id="l-delta">—</b> from the closed loop — but the four fan-off brackets that frame the run say that number is <b>well inside the noise</b>, and that the noise is not noise: the card's natural-convection resistance fell <b id="l-drift">—</b> monotonically across the afternoon, and the closing baseline was <b>still falling when the run ended</b>. The useful result is therefore not the agreement. It is the bound on it, and the finding that the loop's own air input moved the <em>wrong way</em> while everything else moved.</p>
+  <p class="lede">An earlier revision of this firmware shipped three fan modes. Reading its own 225-minute run back showed they were <b>one control law with a different constant</b> — the die observer is a setpoint transformation, not a feedback element — so 0.6.0 collapsed them into a single loop with <b>one</b> regulated quantity, the estimated on-die temperature, and made the thermocouple <b>substitutable</b> while power became mandatory. This run asks what that substitution costs. Three arms, same setpoint, same load, differing only in where the loop's one temperature comes from. The open loop held the die <b id="l-delta">—</b> from the closed loop — but the four fan-off brackets that frame the run say that number is <b>well inside the noise</b>, and that the noise is not noise: the card's natural-convection resistance fell <b id="l-drift">—</b> monotonically across the afternoon, and the closing baseline was <b>still falling when the run ended</b>. The useful result is therefore not the agreement. It is the bound on it, and the finding that the loop's own air input moved the <em>wrong way</em> while everything else moved.</p>
   <div class="meta">
     <span id="meta-when">—</span><span>Host: AMD EPYC ROMED8-2T</span><span>Hailo-8 M.2 · ResNet-50 async, depth 8</span><span>Firmware: mb-probe-ra6m5 0.6.0, protocol 2</span><span id="meta-n">—</span>
   </div>
@@ -183,7 +183,7 @@ footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule);
 
 <section>
   <div class="head"><h2>One constant, three failures retired</h2>
-    <p class="prose muted">0.5.0's run produced three different-looking failures from one defect: the tracking error during any approach is <em>model error</em> plus <em>the plant has not got there yet</em>, and nothing separated them — so the PI demanded the fan compensate for the plant's own time constant. 0.6.0 bounds the PI's authority instead of adding more anti-windup, because the integrator was unwinding <em>correctly</em> from a value the loop could never use.</p></div>
+    <p class="prose muted">The earlier firmware's run produced three different-looking failures from one defect: the tracking error during any approach is <em>model error</em> plus <em>the plant has not got there yet</em>, and nothing separated them — so the PI demanded the fan compensate for the plant's own time constant. 0.6.0 bounds the PI's authority instead of adding more anti-windup, because the integrator was unwinding <em>correctly</em> from a value the loop could never use.</p></div>
   <div class="prose" style="display:grid;gap:12px">
     <pre class="mono small" style="overflow-x:auto;background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:12px;margin:0">const double corr = clampd(kp * err + integ, -kTrim, kTrim);   // kTrim = 15 duty points
 const double raw  = base + corr;
@@ -208,7 +208,7 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
     <tbody></tbody></table></div>
   <div class="prose" style="display:grid;gap:12px">
     <p id="e-prose">—</p>
-    <p class="small"><b>R<sub>int</sub> stays at 1.709, and this run cannot improve on it.</b> All three arms held the same setpoint at the same load, so they land within <b id="e-span">—</b> duty points of each other — one operating point. 0.5.0's four setpoints measured 1.619 °C/W at 32–41 % duty against 1.742 at 58–61 %, i.e. R<sub>int</sub> is a <em>loaded operating-point</em> resistance and not a paste constant; duty and heatsink temperature are confounded across those points too. Separating them needs one setpoint held at two different loads, which no run so far has done.</p>
+    <p class="small"><b>R<sub>int</sub> stays at 1.709, and this run cannot improve on it.</b> All three arms held the same setpoint at the same load, so they land within <b id="e-span">—</b> duty points of each other — one operating point. an earlier four-setpoint run measured 1.619 °C/W at 32–41 % duty against 1.742 at 58–61 %, i.e. R<sub>int</sub> is a <em>loaded operating-point</em> resistance and not a paste constant; duty and heatsink temperature are confounded across those points too. Separating them needs one setpoint held at two different loads, which no run so far has done.</p>
   </div>
 </section>
 
@@ -227,7 +227,7 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
 <section id="softsensor">
   <div class="head"><h2>The soft sensor, fitted after the fact</h2>
     <p class="prose muted">This run asked for a learned estimate of the thermocouple three times and got open loop, because none existed. One does now — fitted 24 November on the 22 November fan ladder and the 23 November soft-sensor run, and <b>not one sample of this run entered that fit</b>. So the arms below are a held-out test, and the question arm 3 could not answer is answerable: what <em>would</em> it have regulated on?</p></div>
-  <div class="tiles" id="m-tiles"></div>
+  <div class="findings" id="m-tiles"></div>
   <div class="chart-card"><h3>R<sub>conv</sub>(duty), and the pole it sets</h3>
     <p class="sub">The same nine-point table the feedforward inverts, read out of <code>Control.h</code>. The soft sensor adds exactly one parameter to it: a lumped heat capacity, so that τ&nbsp;=&nbsp;R<sub>conv</sub>&nbsp;×&nbsp;C.</p>
     <div id="ch-model"></div></div>
@@ -270,7 +270,7 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
 
 <footer>
   <div>Generated from <code id="f-src">—</code> by <code>tools/ra6m5-report-loop.py</code>. Every number on this page is read from that file at load time; nothing is typed in.</div>
-  <div><b>The exceptions, named:</b> the 0.5.0 comparison figures (+103.4 preseed, 9.4 min at the ceiling, 10.3 °C deficit, −29.7 points of P, +3.5 °C overshoot) come from the 22 November run, <code>logs/mb-benchmark-20261122-221548.csv</code>; the seeded R<sub>conv</sub> table is the 22 November fan ladder; the 98.9–104.2 °C throttle band is from the two-card thermal study; and R<sub>int</sub>'s 1.619/1.742 duty dependence is 0.5.0's four setpoints.</div>
+  <div><b>The exceptions, named:</b> the earlier-firmware comparison figures (+103.4 preseed, 9.4 min at the ceiling, 10.3 °C deficit, −29.7 points of P, +3.5 °C overshoot) come from the 22 November run, <code>logs/mb-benchmark-20261122-221548.csv</code>; the seeded R<sub>conv</sub> table is the 22 November fan ladder; the 98.9–104.2 °C throttle band is from the two-card thermal study; and R<sub>int</sub>'s 1.619/1.742 duty dependence is from that same four-setpoint run.</div>
   <div>Earlier reports on this board: <a href="../ra6m5-exploration/">two cards up a fan ladder</a> · <a href="../ra6m5-thermocouple/">the heat path split in two</a>.</div>
 </footer>
 <div id="tip" class="tip" hidden></div>
@@ -400,7 +400,7 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
       s: `<code>ctl.state</code> alone — <code>5 open</code> against <code>6 degraded</code>. Every other control channel reads identically in both` });
     if (KT) tiles.push({ num: Math.abs(KT.dff_absmax).toFixed(1), unit: '/ 15',
       t: 'duty points the PI used',
-      s: `of the ${KT.ktrim.toFixed(0)} it is allowed. 0.5.0 preseeded ${sgn(KT.prior.preseed, 1)} and pinned the fan at its ceiling for ${KT.prior.pinned_min} minutes` });
+      s: `of the ${KT.ktrim.toFixed(0)} it is allowed. the earlier firmware preseeded ${sgn(KT.prior.preseed, 1)} and pinned the fan at its ceiling for ${KT.prior.pinned_min} minutes` });
     tiles.push({ num: sgn(DR.r_drop_pct, 1), unit: '%',
       t: 'drift in natural-convection R',
       s: `at a fixed 0.86 W with the fan off, monotone across four 30-minute baselines — and the closing one ${DR.last_settled ? 'settled' : '<b>never settled</b>'}. The run was not conducted under constant conditions` });
@@ -616,12 +616,12 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
     const pr = KT.prior;
     set('k-prose', `Arm ${KT.arm} armed from a fan held at 0 % by <code>fan.idle</code>, with the card `
       + `${Math.abs(KT.preseed_err).toFixed(1)} °C below its setpoint — the same shape of condition that `
-      + `pinned 0.5.0. Bumpless transfer preseeded the integrator to <b>${sgn(KT.preseed, 2)}</b>, which is `
+      + `pinned the earlier firmware. Bumpless transfer preseeded the integrator to <b>${sgn(KT.preseed, 2)}</b>, which is `
       + `exactly <code>−kp·err</code> with kp = ${KT.kp}, so the trim term saw about zero and the first `
       + `commanded duty came out <em>above</em> the feedforward rather than below it. The integrator then `
       + `unwound monotonically to zero over <b>${KT.integ_zero_at} s</b> `
       + `(${sgn(KT.integ_rate, 1)} points/min). Peak overshoot: <b>${sgn(KT.over, 3)} °C</b>, against `
-      + `0.5.0's ${sgn(pr.cold_over, 1)} on the same defect's other sign. Across the whole 30 minutes the PI `
+      + `the earlier firmware's ${sgn(pr.cold_over, 1)} on the same defect's other sign. Across the whole 30 minutes the PI `
       + `moved the feedforward by ${sgn(KT.dff_min, 2)} to ${sgn(KT.dff_max, 2)} duty points — `
       + `<b>${(100 * KT.budget_used).toFixed(0)} %</b> of its ${KT.ktrim.toFixed(0)}-point budget — and the `
       + `ceiling was never reached (${KT.ceiling} samples), nor the floor after the arming second `
@@ -631,7 +631,7 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
       tn(du == null ? '—' : du.toFixed(1) + ' %'), tn(ff == null ? '—' : ff.toFixed(1) + ' %'),
       tn(er == null ? '—' : sgn(er, 2) + ' °C')]));
     set('k-above', KT.integ_above_ktrim.toString());
-    set('k-prior', `<b>What 0.5.0 did with the same arithmetic unbounded.</b> Arming from a hand-set 100 % `
+    set('k-prior', `<b>What the earlier firmware did with the same arithmetic unbounded.</b> Arming from a hand-set 100 % `
       + `fan preseeded <b>${sgn(pr.preseed, 1)} duty points</b> and pinned the fan at its 73 % ceiling for `
       + `<b>${pr.pinned_min} minutes</b> while the die was already <b>${pr.deficit} °C below</b> setpoint — `
       + `20.1 minutes to settle, against 6.5 for the same law at a different setpoint. And on a cold start `
@@ -727,8 +727,8 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
         t: 'the one added parameter',
         s: 'a lumped heatsink capacity, fitted jointly with the curve. Everything else the sensor '
          + 'needs, the feedforward already knew' }
-    ].map(x => `<div class="tile"><div class="num">${x.num}<span class="unit">${x.unit}</span></div>`
-      + `<div class="t">${x.t}</div><div class="s">${x.s}</div></div>`).join('');
+    ].map(x => `<div class="finding"><div class="num">${x.num}<small>${x.unit ? ' ' + x.unit : ''}</small></div>`
+      + `<div class="t"><b>${x.t}</b></div><p>${x.s}</p></div>`).join('');
 
     lines('ch-model', { h: 280, label: 'the fitted curve and its time constant',
       x0: 0, x1: 76, y0: 6, y1: 22.5, xt: [0, 10, 20, 30, 40, 50, 60, 70],
@@ -828,7 +828,7 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
       { title: 'Core clock (MHz) — flat at 400 for the whole run', h: 95, lo: 250, hi: 450, ticks: [300, 400], series: [{ k: 'clk', name: 'neural core', c: 's4' }] },
       /* Eight states in 0.6.0.  kSaturated was split into kFloor (3) and
          kCeiling (4) because it meant two opposite things: every idle in the
-         0.5.0 run reported "saturated" while sitting at the 9.5 % floor with a
+         earlier run reported "saturated" while sitting at the 9.5 % floor with a
          slack setpoint.  5 and 6 are what separate arm 2 from arm 3. */
       { title: 'Loop state (0 off · 1 settling · 2 holding · 3 floor · 4 ceiling · 5 open · 6 degraded · 7 fault)',
         h: 120, lo: -0.3, hi: 7.3, ticks: [0, 2, 4, 6],
