@@ -21,7 +21,7 @@ second copy here would be free to drift from the firmware that runs.
       --probe    docs/data/ra6m5-loadprobe-20261123.csv \
       --fit      docs/data/ra6m5-softsensor-fit-20261123.csv \
       --validate docs/data/ra6m5-loop-tc-20261123.csv \
-      --validate logs/mb-benchmark-20261122-221548.csv \
+      --validate docs/data/ra6m5-loop-4setpoint-20261122.csv \
       --out      docs/reports/ra6m5-soft-sensor
 """
 import argparse, csv, json, math, os, re

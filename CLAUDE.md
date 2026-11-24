@@ -1448,9 +1448,13 @@ disagrees exactly when a request was refused or a fallback fired.
   which is the one case it is informative.
 
 **MEASURED 2026-11-22/23, four setpoints over 225 minutes**, on 0.5.0. The run
-data is `logs/mb-benchmark-20261122-221548.csv` — **keep it**: it is half of
+data is `logs/mb-benchmark-20261122-221548.csv`, curated since as
+`docs/data/ra6m5-loop-4setpoint-20261122.csv` — **keep both**: it is half of
 the 47 282 thermocouple-labelled samples that exist, and the first where duty
-came from a closed loop rather than a ladder. The corpus is **21 179** (the
+came from a closed loop rather than a ladder. An earlier curated copy was
+called `ra6m5-smart-loop-20261122.csv` and was deleted with the report that
+used it; that name referred to the retired three-mode firmware, which is why
+the new one describes the RUN (a closed loop held at four setpoints) instead. The corpus is **21 179** (the
 2026-11-22 fan ladder, `docs/data/ra6m5-thermal-hailo8-20261122.csv`) +
 **13 502** (this 0.5.0 run) + **12 601** (the 2026-11-23 three-arm run,
 `docs/data/ra6m5-loop-tc-20261123.csv`) — and all 12 601 of the last one carry
@@ -1461,7 +1465,10 @@ fan-off brackets are a check that conditions returned, not a source of model
 inputs. All of that advice was followed and it held — see **The soft sensor**.
 Two more runs are curated since: `docs/data/ra6m5-softsensor-fit-20261123.csv`
 (14 932, the fitting run) and `docs/data/ra6m5-loadprobe-20261123.csv` (4 267,
-the eight-model load probe), bringing the corpus to **66 481**.
+the eight-model load probe), bringing the corpus to **66 481**. **Every input
+to the soft-sensor fit now lives in `docs/data/` under a name that says what
+the run was**, so `tools/ra6m5-report-softsensor.py` reproduces its page from
+the curated tree alone and never reaches into `logs/`.
 - **The loop works.** 70/85 °C die and 60 °C heatsink setpoints, plus the
   mode's own 95 °C, all held to **≤ 0.03 °C of standing error** over ten
   minutes each, settling in 6.5–11.8 min (the plant arriving, not the
