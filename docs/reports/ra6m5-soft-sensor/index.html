@@ -83,7 +83,18 @@ svg.chart .note { fill: var(--fg-2); font-size: 11px; }
 .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
 .tip { position: fixed; pointer-events: none; background: var(--surface); color: var(--fg); border: 1px solid var(--rule); border-radius: 6px; padding: 6px 9px; font-family: var(--font-mono); font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.12); z-index: 20; white-space: nowrap; }
 footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--fg-2); display: grid; gap: 6px; }
-@media (max-width: 520px) { body { font-size: 15px; } .finding .num { font-size: 24px; } }pre.eq { font-family: var(--font-mono); font-size: 13px; line-height: 1.7; margin: 0;
+@media (max-width: 520px) { body { font-size: 15px; } .finding .num { font-size: 24px; } }.panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; }
+.panels > figure { margin: 0; min-width: 0; }
+/* The per-series legend is suppressed inside a trellis on purpose: every
+   unthrottled tread is drawn in the same colour, so the legend would be N
+   identical swatches. The figcaption carries what distinguishes a panel, and
+   the hover tooltip still names the individual tread. */
+.panels .panel-label { display: none; }
+.panels figcaption { font-size: 12px; color: var(--fg-2); padding: 2px 2px 6px;
+  display: flex; gap: 8px; justify-content: space-between; align-items: baseline; }
+.panels figcaption b { color: var(--fg); font-size: 13px; }
+.panels figcaption .r { font-family: var(--font-mono); white-space: nowrap; }
+pre.eq { font-family: var(--font-mono); font-size: 13px; line-height: 1.7; margin: 0;
   padding: 14px 16px; background: var(--bg); border: 1px solid var(--rule);
   border-radius: 6px; overflow-x: auto; color: var(--fg); }
 .finding .t { font-size: 13px; }
@@ -122,6 +133,9 @@ footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule);
 <section>
   <div class="head"><h2>Step 2 — is there a load axis at all? (eight models)</h2>
     <p class="prose muted">The ladder measures <code>R<sub>conv</sub></code> at <b>one</b> load, so nothing in it tests whether the plant is really linear in watts. Before fitting anything, it was worth knowing whether this card's eight models even draw different power — on the day this ran, only ResNet-50 had ever been benchmarked on it, and every other figure was an estimate from GOP×fps.</p></div>
+  <div class="chart-card"><h3>Every model's own warm-up, one panel each</h3>
+    <p class="sub">Heatsink rise above board air, on a clock that restarts with each 5-minute tread — so treads taken an hour apart lie on top of each other. <b>Identical axes on all eight</b>, which is the point: the <em>shape</em> is the same every time and only the height changes. Fan pinned at 73 % throughout, so the only thing differing between panels is the load.</p>
+    <div class="panels" id="probe-panels"></div></div>
   <div class="tbl-wrap"><table id="modtbl">
     <thead><tr><th>Model</th><th class="n">GOP/frame</th><th class="n">fps</th><th class="n">rail W</th><th class="n">TOPS</th><th class="n">die °C</th><th class="n">R<sub>conv</sub></th></tr></thead>
     <tbody></tbody></table></div>
@@ -143,6 +157,9 @@ footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule);
         <thead><tr><th class="n">duty</th><th class="n">R<sub>conv</sub></th><th class="n">spread</th><th class="n">n</th><th class="n">τ</th></tr></thead>
         <tbody></tbody></table></div></div>
   </div>
+  <div class="chart-card"><h3>One panel per fan speed, every tread at that speed drawn on it</h3>
+    <p class="sub">Same quantity and same axes as above. Within a panel the treads differ only in frame-rate cap — so they <b>ought to coincide</b>, and where they fan apart something else is going on. <b>Red is throttled.</b> Note the 20.6 % panel: three of its four treads sat on the card's thermal limit while reporting their commanded frame rate exactly.</p>
+    <div class="panels" id="fit-panels"></div></div>
   <div class="prose" style="display:grid;gap:12px">
     <p id="p-cap">—</p>
     <p id="p-throttle">—</p>
@@ -352,8 +369,38 @@ d tc/dt = (tc_ss − tc) / tau            one state: the model's memory of the h
       + `73 % and the table is right to stop there.`);
   }
 
+  /* ---------- small multiples ---------- */
+  // lines() takes an element id, so each panel gets a figure with its own
+  // host div created here. Axes are passed identically to every panel on
+  // purpose -- a trellis whose panels rescale individually is a trellis that
+  // cannot be compared, which is the only reason to draw one.
+  function panelGrid(gridId, t, panels, o) {
+    const grid = document.getElementById(gridId);
+    panels.forEach((pn, i) => {
+      const fig = document.createElement('figure');
+      const cap = document.createElement('figcaption');
+      cap.innerHTML = o.caption(pn);
+      const host = document.createElement('div');
+      host.id = `${gridId}-${i}`;
+      fig.appendChild(cap); fig.appendChild(host); grid.appendChild(fig);
+      lines(host.id, {
+        w: 470, h: 200, label: o.label(pn), x0: 0, x1: t[t.length - 1],
+        y0: 0, y1: o.ymax, xt: o.xt, yt: o.yt, yf: v => v.toFixed(0),
+        xname: 'seconds into the tread', x: t,
+        series: o.series(pn), xtip: v => v.toFixed(0) + ' s' });
+    });
+  }
+
   /* ---------- step 2: the load probe ---------- */
   {
+    const PP = P.panels;
+    panelGrid('probe-panels', PP.t, PP.rows, {
+      ymax: PP.ymax, xt: [0, 100, 200], yt: [0, 10, 20, 30, 40, 50].filter(v => v <= PP.ymax),
+      caption: pn => `<b>${pn.model}</b><span class="r">${pn.w.toFixed(2)} W · `
+        + `${pn.plateau.toFixed(1)} °C · R ${pn.rconv.toFixed(2)}</span>`,
+      label: pn => `${pn.model}: heatsink rise above air against time into the tread`,
+      series: pn => [{ k: 'y', name: `${pn.model} · ${pn.w.toFixed(2)} W`, c: 's1', w: 2,
+                       y: pn.y, tf: v => v.toFixed(2) + ' °C above air' }] });
     P.models.forEach(m => row('#modtbl', [
       td(m.model), tn(m.gop == null ? '—' : m.gop.toFixed(2)), tn(m.fps.toFixed(0)),
       tn('<b>' + m.w.toFixed(3) + '</b>'), tn(m.tops == null ? '—' : m.tops.toFixed(2)),
@@ -372,6 +419,19 @@ d tc/dt = (tc_ss − tc) / tau            one state: the model's memory of the h
 
   /* ---------- step 3: the fitting run ---------- */
   {
+    const FP = F.panels;
+    panelGrid('fit-panels', FP.t, FP.rows, {
+      ymax: FP.ymax, xt: [0, 200, 400, 600],
+      yt: [0, 20, 40, 60, 80].filter(v => v <= FP.ymax),
+      caption: pn => `<b>fan ${pn.duty.toFixed(1)} %</b><span class="r">`
+        + `${pn.rows.length} treads${pn.n_thr ? ` · <span style="color:var(--s2)">`
+        + `${pn.n_thr} throttled</span>` : ''}</span>`,
+      label: pn => `every tread at ${pn.duty.toFixed(1)} % fan duty`,
+      series: pn => pn.rows.map(x => ({
+        k: x.cap + x.model, c: x.thr ? 's2' : 's1', w: x.thr ? 2.2 : 1.6,
+        dash: x.thr ? '4 3' : 'none', alpha: x.thr ? 1 : 0.85,
+        name: `${x.model} · cap ${x.cap} · ${x.w.toFixed(2)} W${x.thr ? ' · THROTTLED' : ''}`,
+        y: x.y, tf: v => v.toFixed(2) + ' °C above air' })) });
     F.caps.rows.forEach(c => row('#captbl', [
       tn(c.cap === 'max' ? '<b>none</b>' : c.cap), tn(c.fps.toFixed(0)),
       tn('<b>' + c.w_corr.toFixed(3) + '</b>'), tn(c.mj.toFixed(2))]));

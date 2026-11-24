@@ -112,6 +112,18 @@ class Run:
         return out
 
 
+def overlay(block, step, nmax):
+    """One tread as (heatsink - air) on a clock that starts at the tread, so
+    treads taken hours apart can be laid over each other. Rise above air
+    rather than raw heatsink, because that is the quantity the model predicts
+    and it divides out whatever ambient was doing that afternoon."""
+    y = []
+    for i in range(0, min(len(block), nmax), step):
+        d = block[i]
+        y.append(None if (d['hs'] is None or d['air'] is None) else round(d['hs'] - d['air'], 2))
+    return y
+
+
 def throttled_pct(block):
     clk = [d['clk'] for d in block if d['clk'] is not None]
     return 100.0 * sum(1 for c in clk if c < 399.5) / len(clk) if clk else None
@@ -292,7 +304,28 @@ def main():
     seenm = set()
     uniq = [m for m in mods if not (m['model'] in seenm or seenm.add(m['model']))]
     uniq.sort(key=lambda m: m['w'])
-    out['probe'] = dict(models=uniq, n_treads=len(mods),
+    # ONE PANEL PER MODEL, all on identical axes. Eight curves on one plot
+    # would need eight distinguishable colours and would hide exactly what
+    # matters -- that the SHAPE is the same every time and only the height
+    # changes. Small multiples put that comparison in the reader's eye instead
+    # of in a legend.
+    STEP, NMAX = 2, 299
+    pan = []
+    for (st, md, _), blk in P.segments():
+        if st != 'running' or len(blk) < 120:
+            continue
+        tail = blk[-60:]
+        y = overlay(blk, STEP, NMAX)
+        pan.append(dict(model=md, w=r(mean([x['p'] for x in tail]), 3),
+                        plateau=y[-1], y=y))
+    seeno = set()
+    pan = [x for x in pan if not (x['model'] in seeno or seeno.add(x['model']))]
+    pan.sort(key=lambda x: -x['plateau'])
+    for x in pan:
+        x['rconv'] = r(x['plateau'] / x['w'], 3)
+    out['probe'] = dict(panels=dict(t=list(range(0, NMAX, STEP)), rows=pan,
+                                    ymax=5 * math.ceil(max(x['plateau'] for x in pan) / 5)),
+                        models=uniq, n_treads=len(mods),
                         w_lo=min(m['w'] for m in uniq), w_hi=max(m['w'] for m in uniq))
     out['probe']['spread'] = r(out['probe']['w_hi'] / out['probe']['w_lo'], 1)
 
@@ -309,9 +342,11 @@ def main():
         air = mean([x['air'] for x in blk[-60:]])
         thr = throttled_pct(blk)
         treads.append(dict(t=len(treads) + 1, model=md, cap=(cap or 'max'),
+                           n_rows=len(blk),
                            duty=r(duty, 2), w=r(winf, 3), tc=r(tcinf, 2), air=r(air, 2),
                            tau=r(tau, 0), thr=r(thr, 1),
                            fps=r(mean([x['fps'] for x in blk[-60:]]), 1),
+                           cap_n=('max' if not cap else str(int(float(cap)))),
                            die=r(max(x['die'] for x in blk if x['die'] is not None), 1),
                            rconv=r((tcinf - air) / winf, 4)))
     out['fit'] = dict(treads=treads, n=len(treads))
@@ -374,6 +409,35 @@ def main():
             ident.append(dict(model=x['model'], duty=duty, w=x['w'], rconv=x['rconv'],
                               base=r(base, 4), pct=r(100 * (x['rconv'] - base) / base, 2)))
     out['fit']['identity'] = ident
+
+    # ONE PANEL PER FAN DUTY, every tread at that duty drawn on it. Within a
+    # panel the curves SHOULD coincide -- they differ only in frame-rate cap,
+    # which the cap table shows does almost nothing to the power -- so a panel
+    # where they fan apart is telling you something. The 20.6 % panel is the
+    # whole point: three of its four treads throttled and sit well above the
+    # one that did not, while reporting their commanded frame rate exactly.
+    STEP2, NMAX2 = 5, 780
+    blocks = [(k, b) for k, b in F.segments() if k[0] == 'running' and len(b) > 120]
+    panels = []
+    for duty in sorted({round(t['duty'], 1) for t in treads}, reverse=True):
+        rows = []
+        for t in treads:
+            if round(t['duty'], 1) != duty:
+                continue
+            blk = next(b for (st, md, cap), b in blocks
+                       if md == t['model'] and (cap or 'max') == t['cap']
+                       and abs(mean([x['duty'] for x in b]) - t['duty']) < 0.05
+                       and len(b) == t['n_rows'])
+            rows.append(dict(cap=t['cap_n'], model=t['model'], w=t['w'],
+                             thr=bool(t['thr'] and t['thr'] > 0), die=t['die'],
+                             y=overlay(blk, STEP2, NMAX2)))
+        rows.sort(key=lambda x: (x['thr'], -(x['w'] or 0)))
+        panels.append(dict(duty=duty, rows=rows,
+                           n_thr=sum(1 for x in rows if x['thr'])))
+    ym = max(max(v for v in x['y'] if v is not None)
+             for pn in panels for x in pn['rows'])
+    out['fit']['panels'] = dict(t=list(range(0, NMAX2, STEP2)), rows=panels,
+                                ymax=10 * math.ceil(ym / 10))
 
     # ---- 4. the model, and the nodes the fit MOVED -------------------------
     OLD = {0.0: 16.48, 9.5: 16.17, 20.6: 15.20, 30.2: 12.97, 39.7: 11.29,
