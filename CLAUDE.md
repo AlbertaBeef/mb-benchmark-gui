@@ -317,6 +317,23 @@ Three layers, cleanly separated. Keep it that way.
   (`hailo.api`, `axelera.cores`, `qualcomm.perf`), plus an `accelerators =`
   whitelist.
 
+  **`fps = <n>` | `max` caps the frame rate from a plan** (2026-11-23), and it
+  is the one honest way to vary a card's POWER without changing anything else:
+  same model, same artifact, same layer mix, only the rate. Varying load by
+  swapping models confounds it with where on the die the heat appears. Like the
+  fan it is **not per-card** — `BenchEngine::start()` takes one cap for the
+  whole run — so it sits beside `fan` in `AutomationSettings` and drives the
+  Frame Rate widgets through `apply_automation_settings()` like everything else.
+  - **Only honest where the producer is `run_frame()`** — Hailo and DeepX. On
+    the other three the SDK's threads free-run and the cap bit only on
+    *counting* until `FramePacer` landed; see **the frame-rate cap was cosmetic
+    on three backends** below. Confirm the rail moved before trusting a capped
+    figure.
+  - **The spin clamps at `kMaxFps` = 1000, silently.** The Hailo does 1372, so
+    full rate is `fps = max` and never a number above 1000. The effective cap is
+    in the CSV every tick as `bench_target_fps` (empty = max) — read that, not
+    the plan, exactly as you read `<port>_FAN_DUTY` and not the requested duty.
+
   **The RA6M5 fan is settable too, and it is the one plan key that is not
   per-card** (2026-11-19) — one fan cools whatever is in front of it, so it
   sits beside `benchmark`/`idle` rather than under a `<vendor>.` prefix.
@@ -343,9 +360,12 @@ Three layers, cleanly separated. Keep it that way.
     such board logs that once and carries on.
 
   **`fan.mode` hands the fan to the board's own control loop instead**
-  (2026-11-22, **rewritten 2026-11-23 for firmware ≥ 0.6.0**) — `off` / `on`,
-  with `fan.tc` / `fan.nn` (`on` / `off`) choosing where the loop's one
-  temperature comes from, and `fan.target` in °C **or `auto`**. The loop runs on
+  (2026-11-22, **rewritten 2026-11-23 for firmware ≥ 0.7.0**) — `off` / `on`,
+  with **`fan.thermocouple` (alias `fan.tc`) = `off` | `real` | `model`**
+  choosing where the loop's one temperature comes from, and `fan.target` in °C
+  **or `auto`**. **`fan.nn` is REFUSED at load**, not ignored, with a pointer to
+  the new spelling: a plan that silently ran the wrong arm would be worse than
+  one that fails. `fan.tc = on` is still accepted and means `real`. The loop runs on
   the RA6M5, so it keeps cooling the card when this app exits or crashes; see
   **The RA6M5 probe board** below and `firmware/mb-probe-ra6m5/Control.h`.
   **`fan.input` is gone** — the setpoint is always the estimated on-die
@@ -1344,19 +1364,47 @@ whether it was defaulted.
 
 **Power is mandatory, the thermocouple is substitutable — the reverse of
 0.5.0.** `ctl.src` reports which of three sources the loop actually used:
-**0 measured** (the thermocouple, closed loop with PI), **1 inferred** (a
-learned estimate of it, closed loop with PI), **2 none** (open loop, the
+**0 measured** (the thermocouple, closed loop with PI), **1 modelled** (a
+fitted estimate of it, closed loop with PI), **2 none** (open loop, the
 feedforward alone and no PI at all). The control law is identical for the first
 two; only where `tc_` comes from changes — a soft sensor is a drop-in for one
-input, not a second controller. `tc` wins when both are enabled, so `nn` is
-also the fallback for *losing* the thermocouple.
+input, not a second controller.
+
+**ONE SELECTOR SINCE 0.7.0, and `ctl.tc` is now the REQUEST while `ctl.src`
+stays the RESULT.** 0.6.0 had `ctl.tc` and `ctl.nn` as two *effective* bools,
+which made four combinations for three meanings and, being effective, only
+restated `ctl.src` — they told a reader nothing the one enum did not. Now:
+
+| `ctl.tc` | normal | thermocouple lost |
+|---|---|---|
+| `off` | open loop, feedforward only | — |
+| `real` | measured | the model if one exists, else open loop · `degraded` |
+| `model` | modelled | — (it is not using the probe) |
+
+**Degradation is automatic, not configured** — `real` → `model` → open loop was
+0.6.0's `tc on, nn on`, and making it a choice only invited someone to switch
+the fallback off. **`model` deliberately does not fall back to the probe**:
+asking for the estimate while one is fitted is exactly what the experiment
+does, and preferring the probe would make that arm unmeasurable. The pair
+disagrees exactly when a request was refused or a fallback fired.
 - **`ctl.src` kept its column name and changed its meaning** in 0.6.0 (it was
   die-vs-heatsink). A pre-0.6.0 log's values do not mean this. `kProtocol`
-  went 1 → 2 to say so.
-- **`ctl.nn` has no model yet.** The enable, the provenance plumbing and the
-  experiment landed first. `ctl.nn on` is accepted, answers `(no model compiled
-  in)`, and the channel reports **0** with `ctl.state = 6` — so a run
-  configured for the inferred source can never be read as one that got it.
+  went 1 → 2 to say so, and **2 → 3 in 0.7.0** when `ctl.nn` was removed and
+  `ctl.tc` went from bool to enum.
+- **`ctl.nn` is gone and the command is REFUSED**, with a pointer to
+  `ctl.tc off|real|model`. `ctl.model_ready` replaces the host-side guessing it
+  enabled — see the `nn_available` entry under **Known issues**.
+- **There is no model yet.** The selector, the provenance plumbing and the
+  experiment landed first. `ctl.tc model` is accepted, answers `(no model
+  compiled in)`, and reports `ctl.model_ready = 0`, `ctl.src = 2` against
+  `ctl.tc = 2`, `ctl.state = 6` — so a run configured for the model can never
+  be read as one that got it.
+- **The firmware hook is `model_estimate()`, not `nn_*`.** The evidence says
+  the first fit should be a first-order thermal model with a learned time
+  constant — three or four physically interpretable parameters, monotone in
+  duty, which `invert_curve` provably is and a net is not. Naming a hook after
+  a technique has to be undone when the technique changes; naming it after the
+  role does not.
 - **Open loop reports `nan` for `ctl.in` and `ctl.err`**: nothing is measured,
   so quoting an error would invent one. `ctl.die_est` equals `ctl.target` by
   construction while unclamped, and diverges exactly when the fan saturates,
@@ -1404,7 +1452,7 @@ inputs.
 tested the substitution itself. Data `docs/data/ra6m5-loop-tc-20261123.csv`,
 report `docs/reports/ra6m5-loop/`, plan
 `config/automation-thermal-hailo-tc.conf`. **One** setpoint (90 °C), one load,
-three arms differing only in `fan.tc` / `fan.nn`, each bracketed by 30 minutes
+three arms differing only in `fan.thermocouple`, each bracketed by 30 minutes
 of fan-off idle (`fan.idle = 0`).
 
 - **`kTrim` works and the 0.5.0 defect is gone.** Arm 1 armed from a fan held
@@ -1481,6 +1529,97 @@ of fan-off idle (`fan.idle = 0`).
   the duty-dependence question below. Throughput: **1372.29 ± 0.42 fps** over
   5 394 loaded samples, 400 MHz flat, **0.00 % throttled**, hottest die
   **90.28 °C** with 4.72 °C of margin to the 95 °C bound.
+
+**MEASURED 2026-11-23, the LOAD PROBE — eight models, 71 minutes, fan pinned at
+73 %.** Log `logs/mb-benchmark-20261123-192601.csv`, plan
+`config/automation-hailo-load-probe.conf`. This exists because **only ResNet-50
+had ever run on this card** — every other model's power was an estimate from
+GOP/frame × fps. It is the prerequisite for the soft sensor's W axis, since the
+fan ladder characterises `Rconv(duty)` across 59 duty levels but at **one** load.
+
+| model | GOP | fps | **rail W** | TOPS | of 26 | die | tc−air | Rconv |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| OSNet x1.0 | 1.96 | 214.6 | **1.116** | 0.42 | 1.6 % | 30.9 | 7.77 | 6.97 |
+| SCRFD-500M | 1.47 | 1302.2 | **3.100** | 1.91 | 7.4 % | 48.5 | 20.76 | 6.70 |
+| YOLOv8m | 78.94 | 67.2 | **3.218** | 5.30 | 20.4 % | 48.8 | 20.85 | 6.48 |
+| ArcFace | 0.88 | 5195.2 | **3.907** | 4.57 | 17.6 % | 55.5 | 25.95 | 6.64 |
+| SCRFD-2.5G | 6.86 | 1059.2 | **4.094** | 7.27 | 27.9 % | 57.2 | 27.24 | 6.65 |
+| ResNet-50 | 8.174 | 1372.3 | **4.383** | 11.22 | 43.1 % | 60.3 | 29.64 | 6.76 |
+| SCRFD-10G | 26.68 | 441.4 | **5.058** | 11.78 | 45.3 % | 64.9 | 33.16 | 6.56 |
+| YOLOv8s | 28.60 | 491.6 | **7.712** | 14.06 | 54.1 % | 85.9 | 48.32 | 6.27 |
+| ResNet-50 *(repeat)* | 8.174 | 1372.3 | **4.371** | 11.22 | 43.1 % | 59.5 | 28.97 | 6.63 |
+
+- **THE W SPREAD IS 6.9× — 1.116 to 7.712 W.** The worry this run was launched
+  to settle (that eight models would all land in the 4.2–4.9 W band the ladder
+  already covered) is dead: models alone give a wide, usable load axis and the
+  `fps` cap is not needed to create one. Rail power is read from the **last
+  minute** of each tread, never the mean.
+- **Five minutes is enough, and the naive check says otherwise — don't use it.**
+  A least-squares slope over the last 60 s reads +1.8 °C/min on YOLOv8s and
+  flags every tread as unsettled. That is wrong: an exponential fit gives
+  τ = **56–82 s** for the heatsink (47–112 s for the die), so 299 s is
+  **3.7–5.3 time constants** and the extrapolated shortfall is ≤ **0.91 °C** of
+  heatsink and ≤ **0.2 %** of watts. **A decaying exponential still has slope
+  while sitting within a degree of its asymptote** — fit the exponential, don't
+  regress the tail.
+- **Rconv at 73 % duty = 6.63 ± 0.18 °C/W (±2.7 %) across the whole 6.9× load
+  range**, computed against each tread's own neighbouring fan-on idles so both
+  session drift and EMC2101 self-heating cancel. **The ladder measured 6.746
+  °C/W at the same duty a day earlier** — two independent sessions, 1.7 % apart.
+  That is the strongest evidence yet that `tc = air + W·Rconv(duty)` is the
+  right form.
+- **But the linearity is NOT settled, and the honest answer is "the middle
+  holds".** Over the seven treads between 3.1 and 5.1 W the through-origin form
+  fits to **0.33 °C rms with exponent n = 1.009** — dead linear. Pooling all
+  nine pulls it to n = 0.955 with a 1.89 °C residual at YOLOv8s, and pointwise
+  Rconv falls −0.092 (°C/W) per W (R² = 0.71). **Drop either endpoint and the
+  trend vanishes** (R² = 0.006, n = 1.009), and each endpoint has its own
+  defect: OSNet's total rise is only 7.77 °C, so the ±0.25 °C air error is 3 %
+  of it, and YOLOv8s is the one tread with a real extrapolation shortfall. **Two
+  points cannot establish a curvature.** The fitting run has to put several
+  loads across the full 1–8 W range, not rely on model identity to spread them.
+- **The replicate pair bounds it: 0.27 % in watts, 0.67 °C in heatsink rise,
+  2.0 % in Rconv.** ResNet-50 ran first and last, deliberately, in a scrambled
+  power order so session drift could not alias onto load. The scrambling worked
+  (power vs tread index is uncorrelated by construction) and the two treads
+  agree to −0.0120 W. **Do not read the two treads' 1.10 °C die difference as
+  drift** — tread 1 started from a 42.7 °C card (the plan-level fan is applied
+  only while a benchmark is active, so the `start` pause ran at 0 %) and was
+  *falling* at the end, where tread 9 started cold and was still rising. The
+  **power** bracket is valid because power settles fast; the temperature bracket
+  is not.
+- **The EMC2101 is contaminated by the card, and this run bounds it at ≤ 0.25
+  °C.** Raw, it rises 0.077 °C per watt of card power (R² = 0.44) — but most of
+  that is the session's own 0.74 °C downward drift masquerading as a power
+  effect. Differenced against the neighbouring idles it falls to **0.039 °C/W
+  with R² = 0.27**, i.e. ≤ 0.25 °C over the full 6.6 W span, comparable to its
+  own scatter. So it is bounded, not measured. It is still the feedforward's
+  `air`, and it is still the bias a soft sensor cannot correct (see above).
+- **YOLOv8s is the binding load: 86.4 °C die at the fan's ceiling**, 400 MHz
+  flat, **0.00 % throttled**, 8.65 °C of margin to the 95 °C bound. Safe — but
+  it pins the fan.
+- **THE (W, duty) SPACE IS A TRIANGLE, NOT A RECTANGLE**, and this is what
+  decides the fitting run's shape. Combining each load with the ladder's
+  `Rconv(duty)` at the 95 °C bound, the lowest duty each load survives is:
+  OSNet/SCRFD-500M/YOLOv8m **0 %**, ArcFace 9.5 %, SCRFD-2.5G 17.5 %,
+  ResNet-50 **27 %**, SCRFD-10G 33.3 %, YOLOv8s **66.7 %**. So "hold a few
+  fixed duties and step the load within each" is **not realisable across the
+  full range** — the heavy loads exist only at high duty and the low duties only
+  carry light loads. A fitting run must either accept a triangular design or use
+  the `fps` cap to put a *chosen* wattage at a low duty, which is the one thing
+  model-swapping cannot do.
+- **Utilisation tracks model size, not model identity — the same pattern the
+  Hexagon NSP shows.** 1.6 % of nameplate on a 1.96 GOP model against 54 % on
+  28.6 GOP. YOLOv8s's **14.06 TOPS is the highest achieved figure this card has
+  ever produced here**, above ResNet-50's 11.22, so the 43 % in the utilisation
+  table is not this card's ceiling.
+- **The fitting run this sized is `config/automation-hailo-soft-sensor-fit.conf`**
+  (4 h 08 m, 24 treads, four duties x a shared cap ladder). Its header carries
+  the triangle, the per-duty soak derived from tau scaling with Rconv, and the
+  three questions it settles. **Read it before writing any other fixed-duty
+  thermal plan** — the two design traps it encodes are that the heavy loads
+  exist only at high duty, and that the ladder's own low-duty data is
+  *throttled* data and so not a clean plant measurement.
 
 **`ctl.rint` stays at 1.709 — the planned retune to 1.627 is REFUTED.** That
 figure came from a hand-driven session and the plan said to adopt it if it
@@ -2536,12 +2675,35 @@ IQ-9075 carries a Hailo-8 as well, running the same artifacts:
 | Hailo-8 on IQ-9075 | 801 | 6.2 TOPS | 23.8% |
 
 Same card, same HEF, **59% of the frame rate**. On OSNet it is far worse —
-214 fps, 0.42 TOPS, **1.6%** of nameplate — because a 1.96 GOP model on a card
-this fast is entirely host-bound, and the IQ-9075's Kryo cores are much weaker
-than the EPYC's. So: **never compare a frame rate across the two hosts**, and
-treat this board's Hailo numbers as a floor rather than a measurement of the
-card. (Both figures here use 7.72 GOP for ResNet-50, per the v1 note above; the
+214 fps, 0.42 TOPS, **1.6%** of nameplate. So: **never compare a frame rate
+across the two hosts**, and treat this board's Hailo numbers as a floor rather
+than a measurement of the card. (Both figures here use 7.72 GOP for ResNet-50, per the v1 note above; the
 M.2 table's 43% uses 8.17 and is not directly comparable to the 40.6% here.)
+
+**OSNet's 214 fps is NOT host-bound — that explanation is REFUTED (2026-11-23).**
+This file said the figure was low "because a 1.96 GOP model on a card this fast
+is entirely host-bound, and the IQ-9075's Kryo cores are much weaker than the
+EPYC's". The load probe ran the same `osnet_x1_0.hef` **on the 128-core EPYC**,
+async depth 8, and measured **214.6 fps** — within 0.3 % of the aarch64 board's
+214. A host-bound workload cannot be indifferent to a host that large.
+
+The cross-host ratios in fact run the *other* way, and they are consistent with
+per-frame host overhead rather than with host weakness:
+
+| model | EPYC | IQ-9075 | ratio | host calls/s on EPYC |
+| --- | ---: | ---: | ---: | ---: |
+| ResNet-50 | 1372.3 | 801 | 58 % | 1372 |
+| YOLOv8s | 491.6 | 359 | 73 % | 492 |
+| OSNet x1.0 | 214.6 | 214 | **100 %** | 215 |
+
+The *fastest* model is the most host-sensitive and the slowest is not sensitive
+at all — exactly backwards from "small models are host-bound". So OSNet's 214 fps
+is a property of the **artifact**, not of either host: it is 6.4× slower than
+ResNet-50 while being 4.2× lighter, i.e. ~27× worse per op, and at 215 frames a
+second there is almost no host work left to be bound by. The HEF is 6.76 MB
+against ResNet-50's 17.98 MB. Unexplained, and worth a look if OSNet ever
+matters — but **do not attribute it to the host**, and do not cite OSNet as
+evidence about either machine's CPU.
 
 ## Build / verify
 
@@ -3272,6 +3434,7 @@ see **API modes**.
 | GUI appears frozen / shows no telemetry in a screenshot | **Not a bug.** GTK4 throttles rendering for an unfocused window, so `xwd` returns a stale first frame | Raise + focus before capture; verify with a temporary `g_message` in `on_tick` before believing a screenshot |
 | DeepX "only 32 fps" on YOLOv8s | **Not a bug.** Sync-mode artifact; 4.6× in async | Always state the API mode with a number |
 | Every open-loop step logged `ctl.state = 6 degraded`; `kOpen` (5) unreachable | The NaN check on the inferred estimate sat **after** the if/else instead of inside the `kInferred` branch — and `pv_tc` is NaN in the `kNone` branch too, so `if (isnan(pv_tc)) src = kNone` fired unconditionally. Nothing in the code read wrong. **Caught on hardware (bench test T6), not in review**, and critical: `ctl.state` 5-vs-6 is the *only* channel separating a deliberate open-loop arm from one that asked for the learned estimate and did not get it. Had it shipped, the 2026-11-23 run would have measured the same arm three times with no way to say so | Test moved inside the `kInferred` branch. **Bench-test every state a plan distinguishes arms by**, and distrust a provenance channel until a command has forced each of its values |
+| The GUI's `NN` box ungreyed itself precisely when the board had NO model, and the whole Fan control row started fully live | Two bugs, one screenshot. (a) `fan_ctl_nn_available_ = s.nn \|\| s.state == 6` — with the estimate requested and no model the firmware reports `nn = 0, state = 6`, so that test was exactly inverted; and `state 6` never meant "a model exists" anyway, being equally what a lost thermocouple looks like. (b) the sensitivity pass lived inside `emit_fan_control()`, which only runs from a widget signal or from automation, so nothing greyed anything until the row was touched | (a) the board publishes `ctl.model_ready` (fw ≥ 0.7.0) and the host reads it instead of inferring an unobservable. (b) `refresh_fan_ctl_sensitivity()` split out and called from the constructor, beside `refresh_depth_sensitivity()` — **it must not emit**, or launching the app would send a fan command and stomp a running loop. **A control's initial sensitivity needs its own call at construction**; coupling it to the emit path means it only ever runs too late |
 
 ## Host specifics
 

@@ -48,15 +48,24 @@ enum class FanMode : int { Off = 0, On = 1 };
 // 0.6.0 reported die-vs-heatsink. A reader of the log cannot afford to guess
 // whether the loop was closed on a measurement or on an estimate, so it now
 // reports that instead.
-enum class FanSrc : int { Measured = 0, Inferred = 1, None = 2 };
+enum class FanSrc : int { Measured = 0, Modelled = 1, None = 2 };
+
+// What the host ASKED the loop to use, distinct from FanSrc above, which is
+// what it managed. `Real` degrades to `Model` and then to open loop; `Model`
+// does not fall back to the probe, because asking for the estimate while one is
+// fitted is exactly what the experiment does.
+enum class FanTc : int { Off = 0, Real = 1, Model = 2 };
 
 struct FanControlStatus {
     bool present = false;        // a board with a loop answered
     FanMode mode = FanMode::Off;
     FanSrc src = FanSrc::None;
     int state = 0;               // see state_name()
-    bool tc = false;             // EFFECTIVE, not requested
-    bool nn = false;             // EFFECTIVE: false while the board has no model
+    FanTc tc = FanTc::Real;      // what was ASKED for; `src` is what was got
+    // Whether a model EXISTS, which `src` cannot say -- it reads `None` both
+    // with no model and with a request of `Off`. Firmware >= 0.7.0; false on an
+    // older board, which then looks the same as "no model".
+    bool model_ready = false;
     bool target_auto = true;     // was the setpoint defaulted or chosen
     double target = 0.0 / 0.0, in = 0.0 / 0.0, die_est = 0.0 / 0.0;
     double err = 0.0 / 0.0, duty = 0.0 / 0.0;
@@ -75,11 +84,16 @@ struct FanControlStatus {
             default: return "off";
         }
     }
+    // NAMES THAT CANNOT BE CONFUSED WITH EACH OTHER. `None` used to print
+    // "model only", meaning "the static feedforward model and nothing else" --
+    // which was clear until `Modelled` existed and made it read as the exact
+    // opposite, i.e. that the soft sensor HAD been used. Renaming a value is
+    // not finished until every other value's name is re-read against it.
     const char* src_name() const {
         switch (src) {
             case FanSrc::Measured: return "thermocouple";
-            case FanSrc::Inferred: return "inferred";
-            default: return "model only";
+            case FanSrc::Modelled: return "model estimate";
+            default: return "open loop, no temperature";
         }
     }
 };
@@ -118,7 +132,7 @@ public:
     //
     // `target` is NaN for "auto": let the board use its own measured per-card
     // bound rather than naming a number here.
-    virtual bool set_fan_control(FanMode /*m*/, bool /*tc*/, bool /*nn*/,
+    virtual bool set_fan_control(FanMode /*m*/, FanTc /*tc*/,
                                  double /*target*/) {
         return false;
     }
@@ -318,7 +332,7 @@ public:
     // Whether any board runs a control loop, how to configure it, and what it
     // is doing. `fan_control_status()` returns the first board that answers.
     bool has_fan_loop() const;
-    bool set_fan_control(FanMode m, bool tc, bool nn, double target);
+    bool set_fan_control(FanMode m, FanTc tc, double target);
     FanControlStatus fan_control_status() const;
 
     int device_count() const { return static_cast<int>(devices_.size()); }

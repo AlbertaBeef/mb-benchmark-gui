@@ -162,15 +162,30 @@ bool apply_fan_key(FanPlan& f, const std::string& knob, const std::string& val,
         }
         return true;
     }
-    // Which source the loop regulates on. Both may be on: the board prefers the
-    // real sensor and uses the estimate as its fallback.
-    if (k == "tc" || k == "nn") {
+    // Which source the loop regulates on -- ONE selector since 0.7.0.
+    // `real` degrades to the model and then to open loop, on the board; that
+    // fallback used to be the `tc on, nn on` combination and is no longer
+    // something a plan can switch off, because nobody would want to.
+    if (k == "tc" || k == "thermocouple") {
         const std::string v = lower(val);
-        int* dst = (k == "tc") ? &f.tc : &f.nn;
-        if (v == "on" || v == "true" || v == "1") *dst = FanPlan::kFlagOn;
-        else if (v == "off" || v == "false" || v == "0") *dst = FanPlan::kFlagOff;
-        else { why = "fan." + k + " must be on or off, got '" + val + "'"; return false; }
+        if (v == "off" || v == "false" || v == "0") f.tc = FanPlan::kTcOff;
+        else if (v == "real" || v == "on" || v == "true" || v == "1")
+            f.tc = FanPlan::kTcReal;   // `on` was 0.6.0's spelling for `real`
+        else if (v == "model") f.tc = FanPlan::kTcModel;
+        else {
+            why = "fan." + k + " must be off, real or model, got '" + val + "'";
+            return false;
+        }
         return true;
+    }
+    // Rejected, not ignored: `fan.nn = on` used to mean "substitute the
+    // estimate", which is now `fan.thermocouple = model`. Silently dropping it
+    // would run the wrong arm, and a plan that fails to load is fatal by design
+    // precisely so an unattended session cannot start misconfigured.
+    if (k == "nn") {
+        why = "fan.nn is gone since 0.7.0 — use fan.thermocouple = model "
+              "(or = real / = off)";
+        return false;
     }
     if (k == "target") {
         // `auto` hands the choice to the board, which holds the measured
@@ -294,6 +309,21 @@ bool apply_setting(AutomationSettings& s, const std::string& key,
     const std::size_t dot = key.find('.');
     if (dot == std::string::npos) {
         if (lower(key) == "fan") return apply_fan_key(s.fan, "", val, why);
+        if (lower(key) == "fps") {
+            // `max` rather than 0, because 0 is a legal-looking number that
+            // means the opposite of what a reader would guess.
+            if (lower(val) == "max" || lower(val) == "off") {
+                s.fps = 0.0;
+                return true;
+            }
+            double v;
+            if (!parse_num(val, v) || v <= 0.0) {
+                why = "fps must be a positive frame rate or 'max', got '" + val + "'";
+                return false;
+            }
+            s.fps = v;
+            return true;
+        }
         why = "unknown key '" + key + "'";
         return false;
     }
@@ -324,8 +354,7 @@ void FanPlan::overlay(const FanPlan& o) {
     if (o.max   != kUnset) max   = o.max;
     if (o.idle  != kUnset) idle  = o.idle;
     if (o.mode  != kModeUnset) mode = o.mode;
-    if (o.tc    != kFlagUnset) tc   = o.tc;
-    if (o.nn    != kFlagUnset) nn   = o.nn;
+    if (o.tc    != kTcUnset)   tc   = o.tc;
     if (o.target_auto != kFlagUnset) target_auto = o.target_auto;
     // NaN compares unequal to everything including itself, so the sentinel
     // test here is isnan() rather than the `!= kUnset` the others use.
@@ -350,6 +379,8 @@ double FanPlan::at(double t) const {
 void AutomationSettings::overlay(const AutomationSettings& o) {
     for (int i = 0; i < kAccelCount; ++i) accel[i].overlay(o.accel[i]);
     fan.overlay(o.fan);
+    // kFpsUnset is -1 and "max" is 0, so this cannot use a truthiness test.
+    if (o.fps != kFpsUnset) fps = o.fps;
 }
 
 double AutomationPlan::bench_for(std::size_t i) const {

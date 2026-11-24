@@ -36,13 +36,33 @@
 // Three sources for one signal, resolved once per step into `src`:
 //
 //   kMeasured  the physical thermocouple            -> closed loop, PI active
-//   kInferred  a learned estimate of it (ctl.nn)    -> closed loop, PI active
-//   kNone      neither                             -> OPEN loop, feedforward only
+//   kModelled  a fitted estimate of it               -> closed loop, PI active
+//   kNone      neither                               -> OPEN loop, feedforward only
 //
 // The control law is identical for the first two; only where `tc_` comes from
 // changes. That is the point of putting a soft sensor here at all — it is a
-// drop-in for one input, not a second controller. A real sensor is never
-// overridden by an estimate of itself, so kMeasured wins when both are enabled.
+// drop-in for one input, not a second controller.
+//
+// ONE SELECTOR, NOT TWO FLAGS (0.7.0). `ctl.tc` was a bool and `ctl.nn` was a
+// second bool, which made four combinations for three meanings and left the
+// fourth ("use the real sensor and refuse to fall back") as something nobody
+// would ever ask for. It is now a three-valued REQUEST:
+//
+//   ctl.tc off     no temperature input at all      -> open loop, by choice
+//   ctl.tc real    the thermocouple                 -> model, then open, on loss
+//   ctl.tc model   the fitted estimate, deliberately
+//
+// DEGRADATION IS AUTOMATIC, not configured: `real` falls back to the model when
+// one exists and to open loop when it does not. That was 0.6.0's `tc on, nn on`
+// combination, and making it a choice only invited someone to switch the
+// fallback off. `model` does not fall back to the thermocouple — asking for the
+// estimate while a sensor is fitted is exactly what the experiment does, and
+// silently preferring the sensor would make that arm unmeasurable.
+//
+// `ctl.tc` therefore reports what was ASKED FOR and `ctl.src` what was GOT.
+// They were both effective before, which made `ctl.tc`/`ctl.nn` a restatement
+// of `ctl.src` and told a reader nothing new; now "asked for real, got none" is
+// one row of the log.
 //
 // WHY FEEDFORWARD, which every source uses. The plant's dominant pole is 75 s
 // at full fan and ~150 s with the fan off, but power changes instantly:
@@ -121,7 +141,11 @@ public:
     // log cannot afford to guess: whether the loop was closed on a measurement
     // or on an estimate. Same column name, different meaning; an older log's
     // values do not mean this.
-    enum Src : uint8_t { kMeasured = 0, kInferred = 1, kNone = 2 };
+    enum Src : uint8_t { kMeasured = 0, kModelled = 1, kNone = 2 };
+
+    // What the host ASKED for, reported as `ctl.tc`. Distinct from Src above,
+    // which is what the step actually achieved.
+    enum TcWant : uint8_t { kTcOff = 0, kTcReal = 1, kTcModel = 2 };
 
     // kFloor and kCeiling replace 0.5.0's single kSaturated, which was set from
     // "the output is clamped" — true at both rails and meaning opposite things
@@ -143,8 +167,7 @@ public:
 
     // ---- settings, all reachable from the host as `ctl.<key>` -------------
     Mode mode = kOff;
-    bool tc_want = true;       // ctl.tc  — use the physical thermocouple
-    bool nn_want = false;      // ctl.nn  — substitute the learned estimate
+    TcWant tc_want = kTcReal;  // ctl.tc off|real|model — the REQUEST
     double target = kAutoTarget;
     bool target_auto = true;   // whether `target` was chosen or defaulted
     double rint = 1.709;       // C/W, measured
@@ -195,13 +218,20 @@ public:
     void set_target(double c) { target = c; target_auto = false; }
     void set_target_auto() { target = kAutoTarget; target_auto = true; }
 
-    // Soft-sensor substitute for the thermocouple. Not implemented yet: the
-    // enable, the provenance plumbing and the experiment land first, and the
-    // model is trained on the data that experiment produces. `nn_ready()` is
-    // what keeps `ctl.nn on` honest in the meantime — the host is told the
-    // substitution is not happening rather than being quietly given arm 2.
-    bool nn_ready() const { return false; }
-    double nn_estimate(double /*w*/, double /*air*/, double /*duty*/) const {
+    // Soft-sensor substitute for the thermocouple. Not fitted yet: the
+    // selector, the provenance plumbing and the experiment land first, and the
+    // model is fitted to the data that experiment produces. `model_ready()` is
+    // what keeps `ctl.tc model` honest in the meantime — the host is told the
+    // substitution is not happening rather than being quietly given open loop.
+    //
+    // NOT NAMED `nn_*`, deliberately. The evidence says the first fit should be
+    // a first-order thermal model with a learned time constant — three or four
+    // physically interpretable parameters, monotone in duty, which invert_curve
+    // provably is and a net is not. Naming the hook after a technique would
+    // have to be undone the moment the technique changed; naming it after the
+    // ROLE (the signal came from a model, not a sensor) does not.
+    bool model_ready() const { return false; }
+    double model_estimate(double /*w*/, double /*air*/, double /*duty*/) const {
         return NAN;
     }
 
@@ -235,31 +265,33 @@ public:
 
         // ---- resolve the one signal, and say where it came from ------------
         // `degraded` means "running, but not the way it was asked to" — a lost
-        // thermocouple, an NN that has no model, or a missing air reading. It
+        // thermocouple, a model that is not there, or a missing air reading. It
         // is deliberately distinct from kOpen, which is running open-loop
         // BY CHOICE and is not a fault at all.
         double pv_tc = NAN;
         bool degraded = false;
-        if (tc_want && tc_ok) {
+        if (tc_want == kTcReal && tc_ok) {
             src = kMeasured;
             pv_tc = tc_;
-        } else if (nn_want && nn_ready()) {
-            src = kInferred;
-            pv_tc = nn_estimate(w_, air_, duty);
-            degraded = true;          // an estimate is never the asked-for case
+        } else if (tc_want != kTcOff && model_ready()) {
+            src = kModelled;
+            pv_tc = model_estimate(w_, air_, duty);
+            // Asking for `model` and getting it is NOT degradation. Asking for
+            // `real` and landing here is: the fallback fired.
+            degraded = (tc_want == kTcReal);
             // A model that declined to answer this step: fall the rest of the
             // way to open loop rather than closing on a NaN. Tested HERE and
             // not after the if/else — `pv_tc` is NaN in the kNone branch too,
             // so a shared check made kOpen unreachable and reported every
             // open-loop step as degraded. Caught on hardware, not in review:
-            // arm 2 and arm 3 of the thermocouple plan are told apart by
-            // exactly this state, so both would have read 6.
-            if (isnan(pv_tc)) src = kNone;
+            // arms 2 and 3 of the thermocouple plan are told apart by exactly
+            // this state, so both would have read 6.
+            if (isnan(pv_tc)) { src = kNone; degraded = true; }
         } else {
             src = kNone;
             // Wanting something and not having it is degradation; wanting
-            // neither is just open-loop operation.
-            degraded = (tc_want && !tc_ok) || (nn_want && !nn_ready());
+            // nothing is just open-loop operation.
+            degraded = (tc_want != kTcOff);
         }
 
         if (src == kNone) {
@@ -326,9 +358,10 @@ public:
         Serial.print(mode == kOff ? "off" : "on");
         Serial.print(" src="); Serial.print(src_name());
         Serial.print(" state="); Serial.print(state_name());
-        Serial.print(" tc="); Serial.print(tc_want ? "on" : "off");
-        Serial.print(" nn="); Serial.print(nn_want ? (nn_ready() ? "on" : "on(no model)")
-                                                   : "off");
+        Serial.print(" tc="); Serial.print(tc_want_name());
+        if (tc_want != kTcOff && !model_ready())
+            Serial.print(tc_want == kTcModel ? " (no model compiled in)"
+                                             : " (no model to fall back to)");
         Serial.print(" target="); Serial.print(target, 2);
         Serial.print(target_auto ? " (auto)" : " (set)");
         Serial.print(" in="); print_d(in_c, 2);
@@ -402,8 +435,16 @@ public:
     const char* src_name() const {
         switch (src) {
             case kMeasured: return "measured";
-            case kInferred: return "inferred";
+            case kModelled: return "modelled";
             default: return "none";
+        }
+    }
+
+    const char* tc_want_name() const {
+        switch (tc_want) {
+            case kTcReal: return "real";
+            case kTcModel: return "model";
+            default: return "off";
         }
     }
 

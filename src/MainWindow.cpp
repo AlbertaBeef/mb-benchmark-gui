@@ -37,6 +37,11 @@ namespace {
 
 // "Let the board choose its own setpoint" travels as NaN, so the host never
 // asserts a temperature for a card it cannot identify. See Control.h.
+// One spelling of the three source values, so the live note and the automation
+// note cannot drift apart. The board's own `ctl.tc` uses these same words.
+const char* fan_tc_name(FanTc t) {
+    return t == FanTc::Model ? "model" : t == FanTc::Off ? "off" : "real";
+}
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
 // Legend cells drop the family suffix: on the Power graph every cell is watts,
@@ -367,7 +372,7 @@ MainWindow::MainWindow(AutomationPlan plan)
         log_.note(b);
     });
     controls_->signal_fan_control_changed().connect(
-        [this](FanMode m, bool tc, bool nn, double target) {
+        [this](FanMode m, FanTc tc, double target) {
             // Logged for the same reason the duty is: it changes what the
             // temperature columns are measuring, and the ctl.* columns are the
             // confirmation. The board's own readback is what the panel shows.
@@ -380,10 +385,10 @@ MainWindow::MainWindow(AutomationPlan plan)
                 else std::snprintf(tgt, sizeof tgt, "%.1f °C", target);
                 std::snprintf(b, sizeof b,
                               "fan control loop on, estimated die target %s "
-                              "(thermocouple %s, learned estimate %s)",
-                              tgt, tc ? "on" : "off", nn ? "on" : "off");
+                              "(source %s)",
+                              tgt, fan_tc_name(tc));
             }
-            if (!probes_.set_fan_control(m, tc, nn, target))
+            if (!probes_.set_fan_control(m, tc, target))
                 std::strcat(b, " — no board accepted it");
             log_.note(b);
         });
@@ -1205,7 +1210,7 @@ void MainWindow::apply_automation_idle_fan() {
     if (probes_.has_fan_loop() &&
         (auto_fan_mode_ > 0 ||
          probes_.fan_control_status().mode != FanMode::Off)) {
-        controls_->set_fan_control(FanMode::Off, true, false, kNaN);
+        controls_->set_fan_control(FanMode::Off, FanTc::Real, kNaN);
         auto_fan_mode_ = 0;
     }
     auto_fan_idle_ = f.idle;
@@ -1240,31 +1245,30 @@ void MainWindow::apply_automation_fan(double t) {
             if (!auto_fan_warned_) {
                 auto_fan_warned_ = true;
                 log_.note("automation: the plan sets fan.mode, but the board's "
-                          "firmware has no control loop (needs 0.6.0) — ignored");
+                          "firmware has no control loop (needs 0.7.0) — ignored");
             }
             return;
         }
-        // The sources are part of the handover, so a step that changes only
-        // fan.tc / fan.nn has to re-send even though the mode did not move.
-        const int sig = f.mode * 100 + (f.tc == FanPlan::kFlagOff ? 0 : 1) * 10
-                                     + (f.nn == FanPlan::kFlagOn ? 1 : 0);
+        // The source is part of the handover, so a step that changes only
+        // fan.thermocouple has to re-send even though the mode did not move.
+        const int tcw = (f.tc == FanPlan::kTcUnset) ? FanPlan::kTcReal : f.tc;
+        const int sig = f.mode * 100 + tcw * 10;
         if (auto_fan_mode_ == sig) return;      // already handed over
         auto_fan_mode_ = sig;
-        // Unstated means the board's own defaults: the thermocouple on, the
-        // learned substitute off, and the measured per-card bound as the
-        // setpoint. NaN is how "auto" reaches set_fan_control().
-        const bool tc = f.tc != FanPlan::kFlagOff;
-        const bool nn = f.nn == FanPlan::kFlagOn;
+        // Unstated means the board's own default: the real thermocouple, with
+        // the measured per-card bound as the setpoint. NaN is how "auto"
+        // reaches set_fan_control().
+        const FanTc tc = static_cast<FanTc>(tcw);
         const double target = (f.target_auto == FanPlan::kFlagOn) ? kNaN : f.target;
-        controls_->set_fan_control(FanMode::On, tc, nn, target);
+        controls_->set_fan_control(FanMode::On, tc, target);
         char b[224];
         char tgt[32];
         if (std::isnan(target)) std::snprintf(tgt, sizeof tgt, "auto");
         else std::snprintf(tgt, sizeof tgt, "%.1f °C", target);
         std::snprintf(b, sizeof b,
                       "automation: fan control loop on, regulating the estimated "
-                      "die at %s (thermocouple %s, learned estimate %s)",
-                      tgt, tc ? "on" : "off", nn ? "on" : "off");
+                      "die at %s (source %s)",
+                      tgt, fan_tc_name(tc));
         log_.note(b);
         return;
     }
@@ -1275,7 +1279,7 @@ void MainWindow::apply_automation_fan(double t) {
     if (f.mode == FanPlan::kModeOff && auto_fan_mode_ != 0) {
         auto_fan_mode_ = 0;
         if (probes_.has_fan_loop()) {
-            controls_->set_fan_control(FanMode::Off, true, false, kNaN);
+            controls_->set_fan_control(FanMode::Off, FanTc::Real, kNaN);
             log_.note("automation: fan control loop off");
         }
     }

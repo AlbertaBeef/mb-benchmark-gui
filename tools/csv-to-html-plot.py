@@ -163,7 +163,14 @@ _METRIC_RE = re.compile(
     # capture is non-greedy, so with TEMP first "usb 1-1.1_CTL_TARGET"
     # would split as device "usb 1-1.1_CTL" + metric "TARGET" and invent
     # a phantom device. Same trap as INA228_TEMP, same fix.
-    r"|CTL_MODE|CTL_SRC|CTL_STATE|CTL_TC|CTL_NN|CTL_AUTO"
+    # CTL_MODEL_READY before CTL_MODE, longest-first like every other group
+    # here -- the `$` anchor means CTL_MODE cannot actually swallow it, but an
+    # unrecognised column is SILENTLY SKIPPED rather than warned about, so a
+    # missing entry costs a trace with nothing to show for it.
+    # CTL_NN and CTL_NN_READY are kept for logs written before firmware 0.7.0,
+    # the same reason the bare `_INA228` spelling is still accepted.
+    r"|CTL_MODEL_READY|CTL_MODE|CTL_SRC|CTL_STATE|CTL_TC|CTL_AUTO"
+    r"|CTL_NN_READY|CTL_NN"
     r"|CTL_TARGET|CTL_IN|CTL_DIE_EST"
     r"|CTL_ERR|CTL_DUTY|CTL_FF|CTL_INTEG|CTL_SAT"
     r"|POW|TEMP|TS\d+|T\d+|N\d+-\d+|SYS|AI\d+|PCIE\d+|TOTAL|INA228"
@@ -262,16 +269,20 @@ def _classify_metric(met):
     # The duty it commanded, scaled onto the airflow chart like the fan's own.
     if met == "ctl_duty":
         return "airflow"
-    # The rest — mode, src, state, tc, nn, auto, err, ff, integ, sat — are
-    # logged and deliberately not plotted: three are enumerations, three are
+    # The rest — mode, src, state, tc, model_ready, auto, err, ff, integ, sat —
+    # are logged and deliberately not plotted: several are enumerations, several
     # booleans, and the others are controller internals that share no axis with
     # anything. Same deliberate omission as charge below, not an oversight.
     #
-    # `ctl_src` is worth reading by hand even though it is not drawn: since
-    # firmware 0.6.0 it says whether the loop was closed on a MEASURED
-    # thermocouple (0), on an inferred one (1), or ran open with no feedback at
-    # all (2). Before 0.6.0 the same column meant die-vs-heatsink, so its values
-    # in an older log do not mean this.
+    # TWO of them are worth reading by hand even though they are not drawn, and
+    # they are a PAIR: since firmware 0.7.0 `ctl_tc` is what the host ASKED for
+    # (0 off, 1 real, 2 model) and `ctl_src` is what the loop GOT (0 measured,
+    # 1 modelled, 2 none). They disagree exactly when a request was refused or a
+    # fallback fired, which no single column could say.
+    #
+    # Older logs: before 0.7.0 `ctl_tc` was an effective BOOLEAN and `ctl_nn`
+    # was its sibling; before 0.6.0 `ctl_src` meant die-vs-heatsink. Values in
+    # those logs do not mean what they mean now.
     if met.startswith("ctl_"):
         return None
     # Charge is read and logged but deliberately not plotted: it is coulombs,

@@ -56,8 +56,7 @@ Lines, `\n`-terminated, space-separated `key=value`. Text on purpose: `cat
 | `fan <percent>` | EMC2101 duty 0-100. **Refused while a control mode is active** |
 | `ctl` | print one `I ctl …` status line |
 | `ctl.mode off\|on` | the control loop; see below |
-| `ctl.tc on\|off` | use the physical thermocouple |
-| `ctl.nn on\|off` | substitute a learned estimate of it |
+| `ctl.tc off\|real\|model` | where the loop's one temperature comes from. `real` falls back to `model`, then to open loop. `on` is accepted as `real` (0.6.0's spelling) |
 | `ctl.target <C>\|auto` | setpoint, -40..150, or the board's measured bound |
 | `ctl.rint <C/W>` | die-estimate coefficient (default 1.709, the Hailo-8's) |
 | `ctl.kp` / `ctl.ki` | PI gains (1.0 and 0.01) |
@@ -107,10 +106,10 @@ a clean first period rather than an hour of accumulated samples.
 | `max31855.fault_bits` | mask | OR over the period: 1 open circuit, 2 short to GND, 4 short to VCC |
 | `max31855.n` / `.err` | count | samples / frames failing the reserved-bit check |
 | `ctl.mode` | enum | 0 off, 1 on |
-| `ctl.src` | enum | **0 measured, 1 inferred, 2 none** — see below |
+| `ctl.src` | enum | **0 measured, 1 modelled, 2 none** — what it GOT. See below |
 | `ctl.state` | enum | 0 off, 1 settling, 2 holding, 3 floor, 4 ceiling, 5 open, 6 degraded, 7 fault |
-| `ctl.tc` | bool | thermocouple in use — **effective**, not requested |
-| `ctl.nn` | bool | learned estimate in use — 0 while the board has no model |
+| `ctl.tc` | enum | **0 off, 1 real, 2 model** — what was ASKED FOR |
+| `ctl.model_ready` | bool | whether the board carries a model at all |
 | `ctl.auto` | bool | was the setpoint defaulted (1) or named (0) |
 | `ctl.target` | °C | setpoint; `nan` while off |
 | `ctl.in` | °C | the quantity actually regulated; `nan` in open loop |
@@ -121,7 +120,7 @@ a clean first period rather than an hour of accumulated samples.
 | `ctl.integ` | % | integrator state |
 | `ctl.sat` | count | steps clamped at a duty limit, this period |
 
-### The control loop (fw ≥ 0.6.0)
+### The control loop (fw ≥ 0.7.0)
 
 Closed-loop fan control running **on the board**. Everything it needs is here —
 the heatsink thermocouple, the card's rail watts and board air — so it keeps
@@ -156,14 +155,35 @@ Three sources for one signal, resolved once per step and reported as `ctl.src`:
 | `ctl.src` | `tc_` from | loop | PI |
 |---|---|---|---|
 | 0 measured | the physical thermocouple | closed | yes |
-| 1 inferred | a learned estimate (`ctl.nn`) | closed | yes |
+| 1 modelled | a fitted estimate of it | closed | yes |
 | 2 none | neither | **open** | no |
 
 The control law is identical for the first two; only where `tc_` comes from
 changes. That is the point of putting a soft sensor here — it is a drop-in for
-one input, not a second controller. **`ctl.tc` wins when both are on**: a real
-sensor is never overridden by an estimate of itself, so `ctl.nn` doubles as the
-fallback for *losing* the thermocouple.
+one input, not a second controller.
+
+**ONE SELECTOR SINCE 0.7.0, and `ctl.tc` is now the REQUEST.** It was a bool
+beside a second bool `ctl.nn`, which made four combinations for three meanings
+and left the fourth — "use the probe and refuse to fall back" — as something
+nobody would ask for. Both were *effective* values, so they only restated
+`ctl.src` and told a reader nothing new.
+
+| `ctl.tc` | normal | thermocouple lost |
+|---|---|---|
+| `off` | open loop, feedforward only | — |
+| `real` | measured | the model if one exists, else open loop · `degraded` |
+| `model` | modelled | — (it is not using the probe) |
+
+**Degradation is automatic, not configured.** `real` → `model` → open loop was
+0.6.0's `tc on, nn on` combination; making it a choice only invited someone to
+switch the fallback off. `model` deliberately does *not* fall back to the
+thermocouple: asking for the estimate while a probe is fitted is exactly what
+the experiment does, and silently preferring the probe would make that arm
+unmeasurable.
+
+**So `ctl.tc` and `ctl.src` are a pair** — asked-for against got. They disagree
+exactly when a request was refused or a fallback fired, which neither column
+could express on its own.
 
 **Open loop is the feedforward alone.** `duty = invert_curve((target − rint·W −
 air) / W)`, with no PI — there is no second temperature to feed back, and
@@ -179,11 +199,25 @@ authority, which is the one case it is needed.
 reported die-vs-heatsink before; a log from 0.5.0 or earlier does not mean what
 the table above says.
 
-**`ctl.nn` has no model yet.** The enable, the provenance plumbing and the
-experiment landed first; the model is trained on the data that experiment
-produces. `ctl.nn on` is accepted and answers `(no model compiled in)`, and the
-channel reports **0** with `ctl.state = 6` (degraded) — so a run configured for
-the inferred source can never be mistaken in the log for one that got it.
+**`ctl.nn` IS GONE (0.7.0) and the command is refused** with a pointer to
+`ctl.tc off|real|model`, rather than ignored — a plan that silently ran the
+wrong arm would be worse than one that fails to load. `kProtocol` went 2 → 3
+to say the channel set changed; a pre-0.7.0 log carries `ctl.nn` and a
+`ctl.tc` that is an effective bool, and does not mean what the table above says.
+
+**There is no model yet.** The selector, the provenance plumbing and the
+experiment landed first; the model is fitted to the data that experiment
+produces. `ctl.tc model` is accepted and answers `(no model compiled in)`,
+`ctl.model_ready` reports **0**, `ctl.src` reports **2 none** against a
+`ctl.tc` of **2 model**, and `ctl.state` is **6** (degraded) — so a run
+configured for the model can never be mistaken in the log for one that got it.
+
+**Not named `nn_*` in the firmware either, deliberately.** The evidence says
+the first fit should be a first-order thermal model with a learned time
+constant — three or four physically interpretable parameters, monotone in duty,
+which `invert_curve` provably is and a net is not. Naming the hook after a
+technique would have to be undone the moment the technique changed; naming it
+after the *role* does not.
 
 **What the board cannot see is core clock or frame rate**: those are PCIe-side.
 So the loop holds a die temperature *believed* to be below the throttle knee —

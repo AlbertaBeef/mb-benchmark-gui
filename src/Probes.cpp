@@ -1768,18 +1768,27 @@ public:
                 return it == kv.end() ? std::string() : it->second;
             };
             if (line == "I end") {
-                // 1 = fw <= 0.5.x, 2 = fw >= 0.6.0. Both are accepted: the
-                // channel list is read from the board's own declare() block, so
-                // an older board simply has fewer columns.
+                // 1 = fw <= 0.5.x, 2 = fw 0.6.x, 3 = fw >= 0.7.0. Every one is
+                // accepted: the channel list is read from the board's own
+                // declare() block, so an older board simply has fewer columns
+                // and the two places that care about the difference test
+                // `proto_` directly.
                 //
-                // THIS WAS `proto != 1` AND WOULD HAVE HIDDEN THE BOARD
-                // COMPLETELY the moment 0.6.0 was flashed — the probe fails
-                // discovery, so no INA228, no airflow, no fan, no loop and no
-                // columns, with one line in the startup note to explain it.
-                // A protocol bump has to be accepted by the host BEFORE the
-                // firmware that sends it is flashed.
-                if (proto != 1 && proto != 2) {
-                    error = "unsupported protocol " + std::to_string(proto);
+                // ** kMaxProto MUST BE RAISED IN THE SAME COMMIT AS kProtocol
+                // ** IN mb-probe-ra6m5.ino. Rejecting here hides the board
+                // COMPLETELY — no INA228, no airflow, no fan, no loop and no
+                // columns — with one line in the startup note to explain it.
+                // This has now happened TWICE: once when the check still read
+                // `proto != 1` and 0.6.0 was flashed, and again on 2026-11-23
+                // when 0.7.0 bumped to 3 and this list was not widened. The
+                // symptom both times was the whole Telemetry row vanishing,
+                // which does not look like a protocol problem.
+                static constexpr int kMaxProto = 3;
+                if (proto < 1 || proto > kMaxProto) {
+                    error = "unsupported protocol " + std::to_string(proto) +
+                            " (this host understands up to " +
+                            std::to_string(kMaxProto) +
+                            "; rebuild it to match the firmware)";
                     return false;
                 }
                 proto_ = proto;
@@ -2097,10 +2106,12 @@ public:
     // is nothing for that ordering to protect, and the reverse is safer.
     // Each setting is independent and idempotent, so re-sending all of them
     // costs nothing and keeps one code path for "apply this configuration".
-    bool set_fan_control(FanMode m, bool tc, bool nn, double target) override {
+    bool set_fan_control(FanMode m, FanTc tc, double target) override {
         if (ctl_metrics_.empty()) return false;
-        bool ok = link_->send(std::string("ctl.tc ") + (tc ? "on" : "off"));
-        ok = link_->send(std::string("ctl.nn ") + (nn ? "on" : "off")) && ok;
+        const char* tcw = tc == FanTc::Real    ? "real"
+                          : tc == FanTc::Model ? "model"
+                                               : "off";
+        bool ok = link_->send(std::string("ctl.tc ") + tcw);
         // NaN means "auto": let the board name its own measured per-card bound
         // rather than this host asserting a number for a card it cannot see.
         if (std::isnan(target)) {
@@ -2133,13 +2144,17 @@ public:
                     ? FanSrc::None
                     : static_cast<FanSrc>(static_cast<int>(i));
         s.state = static_cast<int>(std::isnan(st) ? 0 : st);
-        // The EFFECTIVE flags, straight from the board — `ctl.nn` reads 0 while
-        // no model is compiled in, so the UI greys its own control from this
-        // rather than offering something the firmware will not do.
-        const double tc = link_->value("ctl.tc"), nn = link_->value("ctl.nn");
+        // `ctl.tc` is the REQUEST since 0.7.0 and `ctl.src` the result, so the
+        // UI drives its own control from the former and reports the latter.
+        const double tc = link_->value("ctl.tc");
         const double au = link_->value("ctl.auto");
-        s.tc = !std::isnan(tc) && tc != 0.0;
-        s.nn = !std::isnan(nn) && nn != 0.0;
+        s.tc = std::isnan(tc) ? FanTc::Real
+                              : static_cast<FanTc>(static_cast<int>(tc));
+        // Absent on a pre-0.7.0 board, where it reads NaN and so false. A board
+        // actually USING the model is kept as a floor: it obviously has one,
+        // whatever it does or does not publish.
+        const double mr = link_->value("ctl.model_ready");
+        s.model_ready = (!std::isnan(mr) && mr != 0.0) || s.src == FanSrc::Modelled;
         s.target_auto = std::isnan(au) || au != 0.0;
         s.target = link_->value("ctl.target");
         s.in = link_->value("ctl.in");
@@ -2153,12 +2168,13 @@ private:
     // Declared order is the CSV column order; it mirrors the firmware's own
     // declare() block in mb-probe-ra6m5.ino.
     static constexpr const char* kCtlChannels[] = {
-        "ctl.mode", "ctl.src", "ctl.state", "ctl.tc", "ctl.nn", "ctl.auto",
-        "ctl.target", "ctl.in", "ctl.die_est", "ctl.err", "ctl.duty",
+        "ctl.mode", "ctl.src", "ctl.state", "ctl.tc", "ctl.model_ready",
+        "ctl.auto", "ctl.target", "ctl.in", "ctl.die_est", "ctl.err", "ctl.duty",
         "ctl.ff", "ctl.integ", "ctl.sat"};
     static const char* ctl_unit(const std::string& ch) {
         if (ch == "ctl.mode" || ch == "ctl.src" || ch == "ctl.state") return "enum";
-        if (ch == "ctl.tc" || ch == "ctl.nn" || ch == "ctl.auto") return "bool";
+        if (ch == "ctl.tc") return "enum";   // 0 off, 1 real, 2 model
+        if (ch == "ctl.model_ready" || ch == "ctl.auto") return "bool";
         if (ch == "ctl.sat") return "count";
         if (ch == "ctl.duty" || ch == "ctl.ff" || ch == "ctl.integ") return "%";
         return "°C";
@@ -2485,9 +2501,9 @@ bool Probes::has_fan_loop() const {
     return false;
 }
 
-bool Probes::set_fan_control(FanMode m, bool tc, bool nn, double target) {
+bool Probes::set_fan_control(FanMode m, FanTc tc, double target) {
     bool any = false;
-    for (auto& d : devices_) any = d->set_fan_control(m, tc, nn, target) || any;
+    for (auto& d : devices_) any = d->set_fan_control(m, tc, target) || any;
     return any;
 }
 

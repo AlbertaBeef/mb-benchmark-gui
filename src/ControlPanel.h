@@ -145,8 +145,8 @@ public:
     // Apply a configuration as if the user had chosen it, so the widgets keep
     // showing what is actually in force and there stays one path to the board.
     // Automation uses it.
-    void set_fan_control(FanMode m, bool tc, bool nn, double target);
-    sigc::signal<void(FanMode, bool, bool, double)>& signal_fan_control_changed() {
+    void set_fan_control(FanMode m, FanTc tc, double target);
+    sigc::signal<void(FanMode, FanTc, double)>& signal_fan_control_changed() {
         return sig_fan_ctl_;
     }
 
@@ -155,6 +155,13 @@ private:
     // meaningless, and emits once. One place so the widgets and the board can
     // never disagree about what was asked for.
     void emit_fan_control();
+    // Greys whatever the current selection makes meaningless, and EMITS
+    // NOTHING. Split out of emit_fan_control() 2026-11-23: the constructor has
+    // to run this so the row does not start fully live, and calling the
+    // emitting version there would send a fan command at startup and stomp a
+    // loop the board is already running -- which launching this app must never
+    // do (CLAUDE.md: "launching the app never stops a running fan").
+    void refresh_fan_ctl_sensitivity();
     // `apply_fan_mode_defaults()` was here and is deliberately gone — see the
     // comment above emit_fan_control() in the .cpp for what it was for and why
     // one mode removes the need for it.
@@ -296,20 +303,25 @@ private:
     // fan_syncing_ and exists for the same reason: a status readback drives
     // these widgets, and without it that would echo straight back to the board.
     Gtk::Box* fan_ctl_row_ = nullptr;
-    Gtk::ComboBoxText fan_ctl_mode_;
+    // A CHECK BUTTON, not a two-item combo: the loop is on or it is not, and
+    // this section already spells every instrument switch `Enabled` so it reads
+    // as one kind of control (POWER-Z, PMD2, INA228 all do).
+    Gtk::CheckButton fan_ctl_mode_;
     // The two sources for the one signal the loop regulates on, plus whether
     // the setpoint is the board's own measured bound. Check buttons, not a
-    // combo: tc and nn are not exclusive — with both on the board prefers the
+    // ONE combo since 0.7.0: off | real | model. Two check buttons made four
+    // combinations for three meanings, and the board now degrades `real` to the
     // real sensor and keeps the estimate as its fallback.
-    Gtk::CheckButton fan_ctl_tc_, fan_ctl_nn_, fan_ctl_auto_;
+    Gtk::ComboBoxText fan_ctl_tc_;
+    Gtk::CheckButton fan_ctl_auto_;
     Gtk::SpinButton fan_ctl_target_;
     Gtk::Label fan_ctl_status_;
     bool fan_ctl_syncing_ = false;
     // Whether the BOARD says it carries a model. Not a compile-time guess:
-    // the firmware reports `ctl.nn` effective, so this follows the readback and
-    // the NN box greys when there is nothing behind it.
-    bool fan_ctl_nn_available_ = false;
-    sigc::signal<void(FanMode, bool, bool, double)> sig_fan_ctl_;
+    // the firmware publishes `ctl.model_ready`, so this follows the readback
+    // and the Model entry is refused when there is nothing behind it.
+    bool fan_ctl_model_available_ = false;
+    sigc::signal<void(FanMode, FanTc, double)> sig_fan_ctl_;
     std::map<std::string, Gtk::CheckButton*> pmd2_boxes_;
     bool running_ = false;
     bool busy_ = false;   // workers from a previous run still shutting down

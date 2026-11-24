@@ -12,7 +12,7 @@
 //     OK <cmd> | E <message>
 //   host -> device:
 //     info | period <ms> | reset_acc | rescan | fan <percent>
-//     ctl | ctl.mode off|on | ctl.tc on|off | ctl.nn on|off
+//     ctl | ctl.mode off|on | ctl.tc off|real|model
 //     ctl.target <C>|auto | ctl.rint <C/W> | ctl.kp <v> | ctl.ki <v>
 //     ctl.min <%> | ctl.max <%>
 //
@@ -42,13 +42,19 @@
 
 static const char* kFwName = "mb-probe-ra6m5";
 // 0.5.0 added the on-board control loop and its ctl.* channels, additively.
-// 0.6.0 bumps kProtocol to 2: no channel is removed, but `ctl.src` now reports
-// the regulated signal's PROVENANCE (measured / inferred / none) where it used
+// 0.7.0 bumps kProtocol to 3: `ctl.nn` is REMOVED and `ctl.tc` changes from a
+// bool to a three-valued request (0 off, 1 real, 2 model). The two booleans made
+// four combinations for three meanings, and both were EFFECTIVE values, so they
+// only restated `ctl.src`. Now `ctl.tc` is what was asked for and `ctl.src` is
+// what was got, which is a fact neither could express before.
+//
+// 0.6.0 bumped kProtocol to 2: no channel was removed, but `ctl.src` reports
+// the regulated signal's PROVENANCE (measured / modelled / none) where it used
 // to report die-vs-heatsink, and `ctl.mode` has two values rather than three.
 // A host reading an 0.6.0 board with 0.5.0 assumptions would misread both, so
 // the version has to say so.
-static const char* kFwVersion = "0.6.0";
-static const int kProtocol = 2;
+static const char* kFwVersion = "0.7.0";
+static const int kProtocol = 3;
 
 static Ina228 ina;
 static Fs3000 fs;
@@ -180,11 +186,17 @@ static void print_info() {
     // that board can never grow. They read `nan` while the mode is off.
     if (emc.present && tcx.present) {
         declare("ctl.mode", "enum");    // 0 off, 1 on
-        declare("ctl.src", "enum");     // 0 measured, 1 inferred, 2 none
+        declare("ctl.src", "enum");     // 0 measured, 1 modelled, 2 none  (GOT)
         declare("ctl.state", "enum");   // 0 off 1 settling 2 holding 3 floor
                                         // 4 ceiling 5 open 6 degraded 7 fault
-        declare("ctl.tc", "bool");      // EFFECTIVE, not requested
-        declare("ctl.nn", "bool");      // EFFECTIVE: 0 while no model is loaded
+        declare("ctl.tc", "enum");      // 0 off, 1 real, 2 model  (ASKED FOR)
+        // WHETHER A MODEL EXISTS AT ALL, which neither of the two above can
+        // say: `ctl.src` reads `none` both when no model is compiled in and
+        // when the request was `off`. The host was inferring this from
+        // `ctl.nn || ctl.state == 6` and getting it exactly backwards --
+        // `state 6` is what a REFUSED request looks like, and is also what a
+        // lost thermocouple looks like. Publish it instead.
+        declare("ctl.model_ready", "bool");
         declare("ctl.auto", "bool");    // was the setpoint defaulted or chosen
         declare("ctl.target", "C");
         declare("ctl.in", "C");         // the quantity actually regulated
@@ -260,12 +272,12 @@ static void report(uint32_t now) {
         kv("ctl.mode", (long)ctl.mode);
         kv("ctl.src", (long)ctl.src);
         kv("ctl.state", (long)ctl.state);
-        // The EFFECTIVE flags, not what was asked for. `ctl.nn` reads 0 while
-        // no model is compiled in, so a run configured for the inferred source
-        // cannot be mistaken in the log for one that got it — the state says
+        // `ctl.tc` is the REQUEST and `ctl.src` is the RESULT, so a run
+        // configured for the model cannot be mistaken in the log for one that
+        // got it — the two disagree, and the state says
         // `degraded` and this says 0.
-        kv("ctl.tc", (long)(ctl.src == Control::kMeasured));
-        kv("ctl.nn", (long)(ctl.src == Control::kInferred));
+        kv("ctl.tc", (long)ctl.tc_want);
+        kv("ctl.model_ready", (long)ctl.model_ready());
         kv("ctl.auto", (long)ctl.target_auto);
         kv("ctl.target", ctl.mode == Control::kOff ? NAN : ctl.target, 2);
         kv("ctl.in", ctl.in_c, 3);
@@ -310,30 +322,39 @@ static void handle_ctl(const char* key, const char* arg) {
         Serial.println(arg);
         return;
     }
-    // The two sources for the regulated signal. Both may be on: a real sensor
-    // is never overridden by an estimate of itself, so `tc` wins and `nn`
-    // becomes the fallback for losing it. `ctl.src` reports which was used.
-    if (!strcmp(key, "tc") || !strcmp(key, "nn")) {
-        const bool is_nn = key[0] == 'n';
+    // ONE selector for the regulated signal's source. `real` degrades to the
+    // model and then to open loop; `model` does not fall back to the sensor,
+    // because asking for the estimate while a probe is fitted is exactly what
+    // the experiment does. `ctl.src` reports which was actually used.
+    if (!strcmp(key, "tc")) {
         if (!has) {
-            Serial.print("E ctl."); Serial.print(key); Serial.println(" needs on|off");
+            Serial.println("E ctl.tc needs off|real|model");
             return;
         }
-        bool v;
-        if (!strcmp(arg, "on")) v = true;
-        else if (!strcmp(arg, "off")) v = false;
+        Control::TcWant v;
+        if (!strcmp(arg, "off")) v = Control::kTcOff;
+        else if (!strcmp(arg, "real")) v = Control::kTcReal;
+        else if (!strcmp(arg, "model")) v = Control::kTcModel;
+        // `on`/`off` were 0.6.0's spelling. Accept `on` as `real` rather than
+        // failing a plan that predates the rename: it meant exactly that.
+        else if (!strcmp(arg, "on")) v = Control::kTcReal;
         else {
-            Serial.print("E ctl."); Serial.print(key); Serial.println(" must be on|off");
+            Serial.println("E ctl.tc must be off|real|model");
             return;
         }
-        if (is_nn) ctl.nn_want = v; else ctl.tc_want = v;
-        Serial.print("OK ctl."); Serial.print(key);
-        Serial.print(' '); Serial.print(arg);
+        ctl.tc_want = v;
+        Serial.print("OK ctl.tc "); Serial.print(ctl.tc_want_name());
         // Accepted either way, but say so when it will not take effect — the
-        // host greys its own control from this, and a plan that asked for the
-        // inferred source deserves to know it is not getting it.
-        if (is_nn && v && !ctl.nn_ready()) Serial.print(" (no model compiled in)");
+        // host drives its own control from this, and a plan that asked for the
+        // model deserves to know it is not getting it.
+        if (v != Control::kTcOff && !ctl.model_ready())
+            Serial.print(v == Control::kTcModel ? " (no model compiled in)"
+                                                : " (no model to fall back to)");
         Serial.println();
+        return;
+    }
+    if (!strcmp(key, "nn")) {
+        Serial.println("E ctl.nn is gone since 0.7.0 — use ctl.tc off|real|model");
         return;
     }
     // `auto` restores the measured per-card bound; a number pins it and is

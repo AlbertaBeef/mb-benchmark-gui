@@ -89,9 +89,13 @@ struct FanPlan {
     // choice. See firmware/mb-probe-ra6m5/Control.h.
     static constexpr int kModeUnset = -1, kModeOff = 0, kModeOn = 1;
     static constexpr int kFlagUnset = -1, kFlagOff = 0, kFlagOn = 1;
+    // fan.thermocouple (alias fan.tc) = off | real | model. ONE selector, not
+    // the two booleans 0.6.0 had: those made four combinations for three
+    // meanings, and the fourth ("use the probe and refuse to fall back") is
+    // something nobody would ask for. Degradation is automatic on the board.
+    static constexpr int kTcUnset = -1, kTcOff = 0, kTcReal = 1, kTcModel = 2;
     int mode = kModeUnset;
-    int tc = kFlagUnset;          // fan.tc — use the physical thermocouple
-    int nn = kFlagUnset;          // fan.nn — substitute the learned estimate
+    int tc = kTcUnset;            // fan.thermocouple — the source REQUEST
     int target_auto = kFlagUnset; // fan.target = auto: the board's own bound
     // NaN, not kUnset: a setpoint of -1 °C is silly but legal (the firmware
     // accepts -40..150), and reusing -1 as the sentinel would quietly swallow
@@ -122,6 +126,29 @@ struct FanPlan {
 struct AutomationSettings {
     AccelSettings accel[kAccelCount];
     FanPlan fan;
+    // `fps = <n>` / `fps = max` — the frame-rate cap, which is the one honest
+    // way to vary the CARD'S POWER without changing anything else: same model,
+    // same artifact, same layer mix, only the rate. Varying load by swapping
+    // models confounds it with where on the die the heat appears.
+    //
+    // NOT per-card, so it sits here beside `fan` rather than in AccelSettings:
+    // BenchEngine::start() takes one cap for the whole run, and the UI control
+    // is a single Frame Rate row.
+    //
+    // ONLY HONEST WHERE THE PRODUCER IS run_frame() — Hailo and DeepX. On
+    // MemryX, Axelera and Qualcomm the SDK's own threads free-run and the cap
+    // bit only on COUNTING until FramePacer landed (CLAUDE.md, "The frame-rate
+    // cap was cosmetic on three backends"): a "300 fps" row carried the watts
+    // of a 1796 fps run. Check the rail moved before trusting a capped figure.
+    // THE SPIN CLAMPS AT 1000 (kMaxFps) AND DOES SO SILENTLY, like every other
+    // automation setting — so `fps = 1200` on a card that does 1372 quietly
+    // becomes 1000, a 20 % error in exactly the quantity a load sweep is
+    // varying. Full rate is `fps = max`, never a big number. The effective cap
+    // is logged every tick as the CSV's `bench_target_fps` (empty = max), so
+    // read that back rather than the plan, the same rule as `<port>_FAN_DUTY`
+    // against the requested percent.
+    static constexpr double kFpsUnset = -1.0;   // 0 means "max speed", so -1
+    double fps = kFpsUnset;
     void overlay(const AutomationSettings& o);
 };
 
