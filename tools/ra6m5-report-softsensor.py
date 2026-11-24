@@ -470,13 +470,26 @@ def main():
             w_hi=r(max(d['p'] for d in lr if d['p'] is not None), 2)))
         if out['valid']['series'] is None:
             S = dict(t=[], tc=[], est=[], stat=[], duty=[], w=[])
+            # Decimate on ELAPSED TIME, not `s % step`. `s` is a float from
+            # total_seconds() -- 1.001, 2.003, ... -- so a modulo test matches
+            # only s == 0.0 and silently yields a one-point series. It did
+            # exactly that, and a chart with one point draws nothing at all.
+            last = None
             for i, d in enumerate(V.rows):
-                if d['s'] % a.step:
+                if last is not None and d['s'] - last < a.step:
                     continue
+                last = d['s']
                 S['t'].append(round(d['s'] / 60.0, 2))
                 S['tc'].append(r(d['hs'], 2)); S['est'].append(r(dyn[i], 2))
                 S['stat'].append(r(sta[i], 2)); S['duty'].append(r(d['duty'], 1))
                 S['w'].append(r(d['p'], 2))
+            vals = [v for k in ('tc', 'est', 'stat') for v in S[k] if v is not None]
+            S['ymin'] = 5 * math.floor(min(vals) / 5)
+            S['ymax'] = 5 * math.ceil(max(vals) / 5)
+            S['tmax'] = max(S['t'])
+            if len(S['t']) < 100:
+                raise SystemExit(f"{path}: timeline decimated to {len(S['t'])} points "
+                                 "-- a chart cannot be drawn from that; check --step")
             out['valid']['series'] = S
             out['valid']['series_file'] = os.path.basename(path)
 

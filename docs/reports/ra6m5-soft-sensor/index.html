@@ -185,7 +185,7 @@ d tc/dt = (tc_ss − tc) / tau            one state: the model's memory of the h
   <div class="head"><h2>Step 5 — does it work? (on data the fit never saw)</h2>
     <p class="prose muted">Both runs below are closed-loop sessions where the fan duty was decided moment to moment by the controller, which is a far harder test than a staircase: the model has to track a plant whose cooling is changing underneath it. Neither contributed a single sample to the fit.</p></div>
   <div class="chart-card"><h3>The model against the probe it replaces</h3>
-    <p class="sub">Grey: the real thermocouple. Blue: the fitted model, given only rail watts, board air and the applied fan duty. Amber: the <em>same curve</em> with the time constant removed — what you get if you treat a slow plant as if it responded instantly.</p>
+    <p class="sub">Grey: the real thermocouple. Blue: the fitted model, given only rail watts, board air and the applied fan duty. Amber: the <em>same curve</em> with the time constant removed — what you get if you treat a slow plant as if it responded instantly. <b>The whole run is shown</b>, including the three unforced fan-off brackets that frame the arms — those are the model's weakest ground, and the rms figures in the table below are the <em>loaded</em> windows.</p>
     <div id="ch-valid"></div></div>
   <div class="tbl-wrap"><table id="validtbl">
     <thead><tr><th>Held-out run</th><th class="n">duty range</th><th class="n">W range</th><th class="n">model rms</th><th class="n">bias</th><th class="n">worst cold</th><th class="n">static-form rms</th></tr></thead>
@@ -498,9 +498,10 @@ d tc/dt = (tc_ss − tc) / tau            one state: the model's memory of the h
   {
     const S = V.series;
     lines('ch-valid', { h: 340, label: `estimate against probe · ${V.series_file}`,
-      x0: 0, x1: Math.max(...S.t), y0: 20, y1: 95,
-      xt: [0, 30, 60, 90, 120, 150, 180, 210].filter(v => v <= Math.max(...S.t)),
-      yt: [30, 45, 60, 75, 90], yf: v => v.toFixed(0),
+      x0: 0, x1: S.tmax, y0: S.ymin, y1: S.ymax,
+      xt: [0, 30, 60, 90, 120, 150, 180, 210].filter(v => v <= S.tmax),
+      yt: [45, 55, 65, 75, 85].filter(v => v > S.ymin && v < S.ymax),
+      yf: v => v.toFixed(0),
       xname: 'minutes into the run', x: S.t,
       series: [{ k: 'st', name: 'same curve, no time constant', c: 's4', w: 1.4, y: S.stat,
                  tf: v => v.toFixed(1) + ' °C' },
