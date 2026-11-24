@@ -302,7 +302,7 @@ def main():
     below = [x for x in tr if abs(x['duty'] - ((knee or 73.0) - 1.5873)) < 0.3]
     out['ceiling']['rpm_below'] = round(below[0]['rpm'], 0) if below else None
 
-    # ---------------- plant gain, for the control loop --------------------
+    # ---------------- thermal gain, for the control loop --------------------
     fullt = [x for x in tr if x['thr'] == 0.0]
     gain = []
     for x, y in zip(fullt, fullt[1:]):

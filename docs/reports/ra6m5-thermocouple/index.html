@@ -180,7 +180,7 @@ footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule);
         <tbody></tbody></table></div>
       <p class="small muted" style="padding:0 2px">Fitted on ln(excess) over the first 600 s, cut off below 0.5 °C of excess where both sensors are quantising rather than cooling.</p></div>
   </div>
-  <p class="prose"><b>76.7 s against 74.7 s, both at R² 0.996.</b> Within the fit's own precision the die and the heatsink have the same time constant — they cool as a single lumped body. That follows directly from the split: the resistance <em>inside</em> the assembly (1.7 °C/W) is a quarter of the resistance <em>out</em> of it (6.8 °C/W), so heat redistributes internally much faster than it escapes, and the two never get a chance to separate. It is the small-Biot-number case, and it is a convenient thing to know before designing a controller: <b>the heatsink is not a hidden slow pole.</b> One 75-second time constant describes the plant.</p>
+  <p class="prose"><b>76.7 s against 74.7 s, both at R² 0.996.</b> Within the fit's own precision the die and the heatsink have the same time constant — they cool as a single lumped body. That follows directly from the split: the resistance <em>inside</em> the assembly (1.7 °C/W) is a quarter of the resistance <em>out</em> of it (6.8 °C/W), so heat redistributes internally much faster than it escapes, and the two never get a chance to separate. It is the small-Biot-number case, and it is a convenient thing to know before designing a controller: <b>the heatsink is not a hidden slow pole.</b> One 75-second time constant describes the thermal response.</p>
   <p class="prose small muted">Both sensors settle 5.6–5.8 °C above board air at 0.81 W, which is 7 °C/W — in line with the loaded R<sub>tot</sub> of 8.5 and the remaining difference is the spreading term that disappears at idle, as above.</p>
 </section>
 
@@ -237,8 +237,8 @@ footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule);
 
 <section>
   <div class="head"><h2>What this means for the control loop</h2>
-    <p class="prose muted">The next phase is closed-loop fan control on this board. These are the plant parameters the run measured, rather than the ones that would have to be guessed.</p></div>
-  <div class="chart-card"><h3>Plant gain: °C of die per point of duty</h3>
+    <p class="prose muted">The next phase is closed-loop fan control on this board. These are the thermal parameters the run measured, rather than the ones that would have to be guessed.</p></div>
+  <div class="chart-card"><h3>Thermal gain: °C of die per point of duty</h3>
     <p class="sub">Level to level, full-rate levels only so the throttle does not contaminate the gain.</p>
     <div id="gain"></div></div>
   <div class="prose" style="display:grid;gap:12px">
@@ -246,7 +246,7 @@ footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule);
       <li><b>Usable actuator range is 9.5–73 %, not 0–100 %.</b> Everything above 73 % is open-loop dead travel; an integrator allowed to wander up there will wind up and then take a long time to come back down. Clamp the output at the measured ceiling.</li>
       <li><b>Total authority is 40.2 °C</b> at full rate, from 100.8 °C at 30 % duty to 60.6 °C at the ceiling. That is a lot of range, and it means a loop targeting the 95 °C the earlier study recommended for zero throttling has comfortable margin.</li>
       <li><b>Gain is strongly non-linear: −1.8 °C per duty-point at 30 %, −0.6 at 70 %.</b> A fixed-gain controller tuned at the hot end will be sluggish at the cold end and vice versa. It falls below 0.5 °C/point above 66.7 % and below 0.1 above 76.2 %.</li>
-      <li><b>One time constant, about 75 s, describes the plant</b> — the cool-down section is the evidence, and the heatsink is not a second slower pole. That is a comfortable amount of phase margin for a loop sampling at 1 Hz.</li>
+      <li><b>One time constant, about 75 s, describes the thermal response</b> — the cool-down section is the evidence, and the heatsink is not a second slower pole. That is a comfortable amount of phase margin for a loop sampling at 1 Hz.</li>
       <li><b>The heatsink is the better sensor to close the loop on, if a choice exists.</b> It carries the same information as the die, 7.8 °C below it with a drop that depends only on power, and it is not subject to the hysteretic clock decisions that make the die temperature jump for reasons the controller did not cause.</li>
       <li><b>Leakage is positive feedback</b> at 18.7 mW/°C, so a hot die costs power which makes it hotter. It is stable here but it is a term worth having in any model, and it is why the throttle-release divergence above took two hours to wash out.</li>
     </ul>
@@ -571,8 +571,8 @@ footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule);
       tb.appendChild(tr); });
   }
 
-  /* ---------- plant gain ---------- */
-  lines('gain', { label: 'Plant gain against duty', h: 280, x: TC.gain.map(g => g.duty),
+  /* ---------- thermal gain ---------- */
+  lines('gain', { label: 'Thermal gain against duty', h: 280, x: TC.gain.map(g => g.duty),
     x0: 25, x1: 100, y0: -2.2, y1: 0.4, xt: [30, 40, 50, 60, 70, 80, 90, 100], yt: [-2, -1.5, -1, -0.5, 0],
     yf: v => v + ' °C', zero: 0, xname: 'applied fan duty (%)', xtip: v => v.toFixed(1) + ' % duty',
     tf: v => v.toFixed(2) + ' °C per duty-point',

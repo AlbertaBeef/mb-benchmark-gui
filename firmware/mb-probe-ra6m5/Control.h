@@ -64,7 +64,7 @@
 // of `ctl.src` and told a reader nothing new; now "asked for real, got none" is
 // one row of the log.
 //
-// WHY FEEDFORWARD, which every source uses. The plant's dominant pole is 75 s
+// WHY FEEDFORWARD, which every source uses. The dominant thermal pole is 75 s
 // at full fan and ~150 s with the fan off, but power changes instantly:
 // measured at load-on, the rail went 0.85 -> 4.23 W in one second while the
 // heatsink moved 0.30 C in two. A loop that waits for the thermocouple is two
@@ -76,8 +76,8 @@
 //
 // WHY THE PI's AUTHORITY IS BOUNDED — see kTrim. This is the fix for every
 // failure that run found, and they were all one defect: the error during any
-// approach is "model error" plus "the plant has not got there yet", and nothing
-// separated them, so the PI demanded the fan compensate for the plant's own
+// approach is "model error" plus "the heatsink has not got there yet", and nothing
+// separated them, so the PI demanded the fan compensate for the thermal system's own
 // time constant. Measured, both signs:
 //
 //   * arming from a hand-set 100 % fan preseeded the integrator to +103.4 duty
@@ -87,7 +87,7 @@
 //     itself: over-cooling shrinks the error, and the unwind rate is
 //     proportional to it.
 //   * on a cold start the feedforward correctly asked for 33.2 % at 4.33 W and
-//     kp*err subtracted 29.7 points for being 30 C below a setpoint the plant
+//     kp*err subtracted 29.7 points for being 30 C below a setpoint the heatsink
 //     had not had time to reach. Output 2.7 %, floored at 9.5, fan idle for
 //     40 s, die overshot to +3.5 C, ten minutes to recover.
 //
@@ -125,7 +125,7 @@
 //            out of the fit entirely: 0.52 and 0.87 C rms on their loaded
 //            windows, unbiased (-0.03 and +0.28 C). It is the SAME curve the
 //            feedforward inverts, which is deliberate -- one table, so the
-//            predictor and the observer cannot disagree about the plant.
+//            predictor and the observer cannot disagree about the hardware.
 //
 // THE 0.7.0 REFIT ALSO CORRECTED THE FEEDFORWARD, and this is worth knowing
 // before trusting any pre-0.7.0 log of a light-load step. The old curve took
@@ -133,7 +133,7 @@
 // THROTTLED: below 23.8 % duty the card sits on its thermal limit, so the
 // heatsink reading there is set by the limit and not by the fan. Those nodes
 // were wrong by up to 32 % -- the table claimed 16.17 C/W at the 9.5 % floor
-// where the plant delivers 21.28 -- i.e. the feedforward believed the fan was
+// where the hardware delivers 21.28 -- i.e. the feedforward believed the fan was
 // half again as effective at its floor as it is. Above 30.2 % the ladder is
 // clean and nothing moved by more than 1.1 %, so a run held at 32-61 % duty
 // (which is every loop run on disk) is unaffected.
@@ -192,7 +192,7 @@ public:
     double rint = 1.709;       // C/W, measured
     double kp = 1.0;           // duty-% per C
     double ki = 0.01;          // duty-% per C per second; kp/ki = 100 s, and the
-                               // plant's pole is 75-150 s, so Ti ~= tau
+                               // thermal pole is 75-150 s, so Ti ~= tau
     double min_duty = 9.5;     // the ramp studies' first tread
     double max_duty = 73.0;    // measured ceiling; above it the fan does nothing
 
@@ -259,7 +259,7 @@ public:
     // WHY THE DYNAMICS ARE NOT OPTIONAL. The static form -- `air + W*R(duty)`,
     // evaluated fresh each step, which is what the open-loop branch's own
     // die_est does -- scores rms 7.3-9.0 C on the held-out runs with
-    // excursions to 43 and 72 C, because it has no memory and a 70-180 s plant
+    // excursions to 43 and 72 C, because it has no memory and a 70-180 s heatsink
     // settles slowly. The same curve with this one pole scores 0.52-0.87 C.
     // Do not "simplify" this back to the algebraic form.
     //
@@ -278,7 +278,7 @@ public:
     //     (YOLOv8s, 4.2 % of its heatsink rise). Hot over-cools, so this term
     //     alone is in the safe direction. The board cannot observe it -- which
     //     model is running is PCIe-side.
-    //   session drift -- the plant itself moves ~1-2 % in R_conv between
+    //   session drift -- the hardware itself moves ~1-2 % in R_conv between
     //     sessions, and THAT term reads COLD. On the two held-out runs the
     //     estimate was below the probe on 15.5 % and 60.0 % of loaded samples,
     //     worst excursion -2.34 C.
@@ -300,7 +300,7 @@ public:
 
     // The steady state this operating point implies. Pure, and the one piece
     // the open-loop branch shares, so the two can never disagree about where
-    // the plant is heading.
+    // the heatsink is heading.
     double model_steady(double w, double air, double duty) const {
         return air + w * rconv_at(duty);
     }
@@ -584,7 +584,7 @@ private:
     // DATA: with the fan at 0-23.8 % the card sits on its thermal limit, so
     // 100 % of those samples are below 400 MHz and the heatsink reading is
     // pinned by the limit rather than set by the fan. Those treads measure the
-    // throttle, not the plant. The ladder is clean only from 30.2 % up, where
+    // throttle, not the thermal response. The ladder is clean only from 30.2 % up, where
     // it reads 0.0 % throttled, and the nodes at and above 30.2 % moved by at
     // most 1.1 % as a result -- so this is a low-duty correction, not a
     // re-measurement of the whole curve.

@@ -110,7 +110,7 @@ pre.eq { font-family: var(--font-mono); font-size: 13px; line-height: 1.7; margi
 <header>
   <div class="eyebrow">mb-benchmark-gui · telemetry hardware</div>
   <h1>Fitting a soft sensor</h1>
-  <p class="lede">The RA6M5 board runs a closed-loop fan controller that regulates the accelerator's <em>estimated die temperature</em>, and it needs one temperature to do it: a thermocouple bonded between the heatsink fins. This page is about replacing that sensor with a <b>model</b> — so the loop still works on a board where the probe was never fitted, or where it fails mid-run. Four runs went into it: <b>two to characterise the plant</b>, <b>one to fit on</b>, and <b>two held back</b> to test the result on data the fit never saw. The finished model adds exactly <b id="l-param">—</b> parameter to what the controller already knew, and predicts the probe it replaces to <b id="l-rms">—</b> on held-out data.</p>
+  <p class="lede">The RA6M5 board runs a closed-loop fan controller that regulates the accelerator's <em>estimated die temperature</em>, and it needs one temperature to do it: a thermocouple bonded between the heatsink fins. This page is about replacing that sensor with a <b>model</b> — so the loop still works on a board where the probe was never fitted, or where it fails mid-run. Four runs went into it: <b>two to characterise the thermal response</b>, <b>one to fit on</b>, and <b>two held back</b> to test the result on data the fit never saw. The finished model adds exactly <b id="l-param">—</b> parameter to what the controller already knew, and predicts the probe it replaces to <b id="l-rms">—</b> on held-out data.</p>
   <div class="meta">
     <span>Host: AMD EPYC ROMED8-2T</span><span>Hailo-8 M.2</span><span>RA6M5 probe board · EMC2101 fan, MAX31855 thermocouple, INA228 rail</span><span id="meta-fw">—</span>
   </div>
@@ -131,7 +131,7 @@ pre.eq { font-family: var(--font-mono); font-size: 13px; line-height: 1.7; margi
 
 <section>
   <div class="head"><h2>Step 1 — how well does the fan cool? (the 59-level ladder)</h2>
-    <p class="prose muted">The plant is <code>heatsink − air = W × R<sub>conv</sub>(duty)</code>: the heatsink sits above ambient by the card's watts times a thermal resistance the fan controls. Walking the fan from 0 to 100 % in 59 steps, five minutes each, measures that resistance — <b>but only where the card is not throttling</b>.</p></div>
+    <p class="prose muted">The thermal path is <code>heatsink − air = W × R<sub>conv</sub>(duty)</code>: the heatsink sits above ambient by the card's watts times a thermal resistance the fan controls. Walking the fan from 0 to 100 % in 59 steps, five minutes each, measures that resistance — <b>but only where the card is not throttling</b>.</p></div>
   <div class="chart-card"><h3>Convective resistance against fan duty</h3>
     <p class="sub">Each marker is one 5-minute level, read over its last 60 s. <b>Blue</b> is usable data. <b>Orange</b> is the low-duty end where the card was pinned on its thermal limit, so the heatsink reading there is set by the limit and not by the fan — it looks like a continuation of the curve and is not one. The <b>dashed green</b> line is the nine-node table the firmware ended up carrying, which is why it departs from the orange markers rather than following them.</p>
     <div id="ch-ladder"></div></div>
@@ -140,7 +140,7 @@ pre.eq { font-family: var(--font-mono); font-size: 13px; line-height: 1.7; margi
 
 <section>
   <div class="head"><h2>Step 2 — is there a load axis at all? (eight models)</h2>
-    <p class="prose muted">The ladder measures <code>R<sub>conv</sub></code> at <b>one</b> load, so nothing in it tests whether the plant is really linear in watts. Before fitting anything, it was worth knowing whether this card's eight models even draw different power — on the day this ran, only ResNet-50 had ever been benchmarked on it, and every other figure was an estimate from GOP×fps.</p></div>
+    <p class="prose muted">The ladder measures <code>R<sub>conv</sub></code> at <b>one</b> load, so nothing in it tests whether the heatsink's rise is really linear in watts. Before fitting anything, it was worth knowing whether this card's eight models even draw different power — on the day this ran, only ResNet-50 had ever been benchmarked on it, and every other figure was an estimate from GOP×fps.</p></div>
   <div class="chart-card"><h3>All eight models, overlaid</h3>
     <p class="sub">Heatsink rise above board air, on a clock that restarts with each 5-minute tread — so eight treads taken over 71 minutes lie on top of each other. The fan is pinned at 73 % throughout, so <b>the only thing differing between these curves is the load</b>. Two things to see: every curve is the <em>same exponential shape</em> with the same time constant, and the height each settles at is simply proportional to the watts. That is the whole modelling assumption, in one picture, before any model was fitted.</p>
     <div id="probe-overlay"></div></div>
@@ -160,7 +160,7 @@ pre.eq { font-family: var(--font-mono); font-size: 13px; line-height: 1.7; margi
         <thead><tr><th class="n">cap</th><th class="n">fps</th><th class="n">rail W</th><th class="n">mJ/frame</th></tr></thead>
         <tbody></tbody></table></div></div>
     <div class="chart-card"><h3>R<sub>conv</sub> at four fan duties</h3>
-      <p class="sub">From an exponential fit to each whole tread, not a tail average. ResNet-50 only, so the spread is the plant's and not a mix of models.</p>
+      <p class="sub">From an exponential fit to each whole tread, not a tail average. ResNet-50 only, so the spread is the hardware's and not a mix of models.</p>
       <div class="tbl-wrap"><table id="dutytbl">
         <thead><tr><th class="n">duty</th><th class="n">R<sub>conv</sub></th><th class="n">spread</th><th class="n">n</th><th class="n">τ</th></tr></thead>
         <tbody></tbody></table></div></div>
@@ -179,7 +179,7 @@ pre.eq { font-family: var(--font-mono); font-size: 13px; line-height: 1.7; margi
   <div class="head"><h2>Step 4 — the model</h2>
     <p class="prose muted">Three lines. The first two are what the feedforward controller already computed; only the third is new.</p></div>
   <div class="chart-card"><h3>What the board runs</h3>
-    <pre class="eq">tc_ss   = air + W × R_conv(duty)        the steady state the plant is heading for
+    <pre class="eq">tc_ss   = air + W × R_conv(duty)        the steady state the heatsink is heading for
 tau     = R_conv(duty) × C              the time constant, from the same curve
 d tc/dt = (tc_ss − tc) / tau            one state: the model's memory of the heatsink</pre>
     <p class="sub">So the entire addition is <b>C</b>, a lumped heatsink heat capacity, fitted jointly with the curve. There is no neural network here and deliberately so: this is monotone in duty by construction, has four numbers a person can check, and runs in a handful of float operations on a 250 ms tick.</p></div>
@@ -191,9 +191,9 @@ d tc/dt = (tc_ss − tc) / tau            one state: the model's memory of the h
 
 <section>
   <div class="head"><h2>Step 5 — does it work? (on data the fit never saw)</h2>
-    <p class="prose muted">Both runs below are closed-loop sessions where the fan duty was decided moment to moment by the controller, which is a far harder test than a staircase: the model has to track a plant whose cooling is changing underneath it. Neither contributed a single sample to the fit.</p></div>
+    <p class="prose muted">Both runs below are closed-loop sessions where the fan duty was decided moment to moment by the controller, which is a far harder test than a staircase: the model has to track a heatsink whose cooling is changing underneath it. Neither contributed a single sample to the fit.</p></div>
   <div class="chart-card"><h3>The model against the probe it replaces</h3>
-    <p class="sub">Grey: the real thermocouple. Blue: the fitted model, given only rail watts, board air and the applied fan duty. Amber: the <em>same curve</em> with the time constant removed — what you get if you treat a slow plant as if it responded instantly. <b>The whole run is shown</b>, including the three unforced fan-off brackets that frame the arms — those are the model's weakest ground, and the rms figures in the table below are the <em>loaded</em> windows.</p>
+    <p class="sub">Grey: the real thermocouple. Blue: the fitted model, given only rail watts, board air and the applied fan duty. Amber: the <em>same curve</em> with the time constant removed — what you get if you treat a slow thermal system as if it responded instantly. <b>The whole run is shown</b>, including the three unforced fan-off brackets that frame the arms — those are the model's weakest ground, and the rms figures in the table below are the <em>loaded</em> windows.</p>
     <div id="ch-valid"></div></div>
   <div class="tbl-wrap"><table id="validtbl">
     <thead><tr><th>Held-out run</th><th class="n">duty range</th><th class="n">W range</th><th class="n">model rms</th><th class="n">bias</th><th class="n">worst cold</th><th class="n">static-form rms</th></tr></thead>
@@ -348,7 +348,7 @@ d tc/dt = (tc_ss − tc) / tau            one state: the model's memory of the h
        s: `rms over the loaded windows of two runs held out of the fit entirely. The heatsink rises 30–50 °C above air under load, so this is 1–2 % of the signal being measured.` },
      { num: '×' + (Math.min(...statRms) / Math.max(...rmss)).toFixed(0), unit: 'worse',
        t: 'without the time constant',
-       s: `the identical curve, evaluated as if the plant responded instantly, scores ${Math.min(...statRms).toFixed(1)}–${Math.max(...statRms).toFixed(1)} °C rms. Nearly all of the accuracy is in the one state, not in the curve.` },
+       s: `the identical curve, evaluated as if the heatsink responded instantly, scores ${Math.min(...statRms).toFixed(1)}–${Math.max(...statRms).toFixed(1)} °C rms. Nearly all of the accuracy is in the one state, not in the curve.` },
      { num: sgn(worstCold, 1), unit: '°C',
        t: 'worst it under-reads',
        s: 'the only direction that costs safety margin: believing the heatsink cooler than it is means under-cooling. Hence a 90 °C setpoint for the model, not the 95 °C the real probe earned.' },
@@ -445,7 +445,7 @@ d tc/dt = (tc_ss − tc) / tau            one state: the model's memory of the h
       + `this card's power — a point step 3 makes again the hard way. Two things follow. `
       + `R<sub>conv</sub> comes out at ${Math.min(...P.models.map(m => m.rconv)).toFixed(2)}–`
       + `${Math.max(...P.models.map(m => m.rconv)).toFixed(2)} °C/W across that whole range, which is `
-      + `the first evidence that the plant really is linear in watts. And the heavy loads only exist `
+      + `the first evidence that the heatsink's rise really is linear in watts. And the heavy loads only exist `
       + `at high fan speed: at ${P.w_hi.toFixed(2)} W the die already sits at `
       + `${P.models[P.models.length - 1].die.toFixed(0)} °C with the fan at its ceiling. `
       + `<b>The (watts, duty) space is a triangle, not a rectangle</b> — which is exactly why the `
@@ -518,7 +518,7 @@ d tc/dt = (tc_ss − tc) / tau            one state: the model's memory of the h
     const moved = M.nodes.filter(n => n.pct != null && Math.abs(n.pct) >= 4);
     set('p-nodes', `<b>Three nodes changed by up to ${Math.max(...moved.map(n => Math.abs(n.pct))).toFixed(0)} %, `
       + `and that is the throttled ladder data being thrown out.</b> The old table claimed `
-      + `${moved[0].old.toFixed(2)} °C/W at the fan's 9.5 % floor where the plant actually delivers `
+      + `${moved[0].old.toFixed(2)} °C/W at the fan's 9.5 % floor where the true resistance is `
       + `${M.nodes.find(n => n.duty === 9.5).rconv.toFixed(2)} — so the controller believed the fan `
       + `half again as effective at its floor as it is. Everything at or above `
       + `${L.clean_from.toFixed(1)} % moved by at most 1.1 %, so this is a low-duty correction and not `
@@ -557,7 +557,7 @@ d tc/dt = (tc_ss − tc) / tau            one state: the model's memory of the h
       + `transient is in flight: ${Math.min(...V.runs.map(r => r.static.rms)).toFixed(1)}–`
       + `${Math.max(...V.runs.map(r => r.static.rms)).toFixed(1)} °C rms with excursions past `
       + `${Math.max(...V.runs.map(r => Math.max(Math.abs(r.static.worst_cold), Math.abs(r.static.worst_hot)))).toFixed(0)} °C, `
-      + `because a 70–${Math.max(...M.nodes.map(n => n.tau)).toFixed(0)} s plant simply does not `
+      + `because a 70–${Math.max(...M.nodes.map(n => n.tau)).toFixed(0)} s heatsink simply does not `
       + `arrive when the fan changes. Add one state and one fitted capacity and the same curve tracks `
       + `the probe to ${Math.min(...rmss).toFixed(2)}–${Math.max(...rmss).toFixed(2)} °C.`);
   }
@@ -572,7 +572,7 @@ d tc/dt = (tc_ss − tc) / tau            one state: the model's memory of the h
       + `settled fan duty within half a point of what the real probe commanded.`);
     set('c-2', `<b>2 — The dynamics matter far more than the curve.</b> Dropping the single time `
       + `constant costs a factor of ${(Math.min(...V.runs.map(r => r.static.rms)) / Math.max(...rmss)).toFixed(0)} `
-      + `in accuracy. If you take one thing from this: a static lookup of a slow thermal plant is not `
+      + `in accuracy. If you take one thing from this: a static lookup of a slow thermal system is not `
       + `a sensor, however good the lookup is.`);
     set('c-3', `<b>3 — Most of the work was deciding which data to throw away.</b> ${L.n_throttled} `
       + `of ${L.n_levels} ladder levels were throttled and unusable; ${F.throttled.length} of `
@@ -582,7 +582,7 @@ d tc/dt = (tc_ss − tc) / tau            one state: the model's memory of the h
     set('c-4', `<b>4 — The error budget is two-sided, and only one side is dangerous.</b> Model `
       + `identity is one-sided and safe: the curve is fitted to ResNet-50, which has the highest `
       + `convective resistance of the models measured, so every other load reads hot and over-cools. `
-      + `Session-to-session drift in the plant reads <em>cold</em> — worst case `
+      + `Session-to-session drift in the thermal resistance reads <em>cold</em> — worst case `
       + `<b>${sgn(worstCold, 2)} °C</b> — and the throttle boundary sits as little as 3.9 °C above the `
       + `firmware's 95 °C default. So the model gets a 90 °C setpoint; the real probe earned 95 °C `
       + `over 13 247 samples and the estimate has not.`);

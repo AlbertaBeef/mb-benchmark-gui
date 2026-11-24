@@ -218,7 +218,7 @@ Two consequences for reading a log. `ctl.tc model` is now **honoured** rather
 than refused, so `ctl.src` reports **1 modelled** and `ctl.state` is a normal
 running state — it is no longer true that a run asking for the model can be
 identified by getting `2 none` and `6 degraded`. And the estimate reads *cold*
-by up to 2.3 C when the plant drifts, which is the direction that costs
+by up to 2.3 C when the thermal resistance drifts, which is the direction that costs
 throttle margin, so **regulate on the model at 90 C rather than `ctl.target
 auto`** (95 C); the real probe earned 95, the estimate has not.
 
@@ -261,9 +261,9 @@ Four things that are load-bearing:
 
 - **The PI may trim the feedforward by at most `kTrim` (15) duty points.** This
   is the fix for every failure the 0.5.0 run found, and they were all one
-  defect: the error during an approach is "model error" plus "the plant has not
+  defect: the error during an approach is "model error" plus "the heatsink has not
   got there yet", and nothing separated them, so the PI demanded the fan
-  compensate for the plant's own time constant. Both signs were measured —
+  compensate for the thermal time constant. Both signs were measured —
   arming from a hand-set 100 % fan preseeded the integrator to **+103.4 points**
   and pinned the fan at its ceiling for 9.4 min with the die already 10.3 °C
   *below* setpoint; and on a cold start `kp·err` subtracted 29.7 points from a

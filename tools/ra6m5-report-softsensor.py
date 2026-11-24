@@ -380,7 +380,7 @@ def main():
     duties = []
     for duty in sorted(byduty, reverse=True):
         # ResNet-50 ONLY. Pooling models here would fold the model-identity
-        # effect (up to 3.5 %) into what is meant to be the plant's own spread,
+        # effect (up to 3.5 %) into what is meant to be the hardware's own spread,
         # and that effect is reported separately below.
         g = [x for x in byduty[duty] if x['model'] == 'ResNet-50']
         if not g:
