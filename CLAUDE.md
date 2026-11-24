@@ -418,8 +418,8 @@ Three layers, cleanly separated. Keep it that way.
     asking for a duty, since the firmware refuses one while the loop is on.
     **What it turned out to BE worth, 2026-11-23: an ambient probe.** Repeated
     before, between and after the arms it holds the card at a fixed ~0.86 W
-    with no forced air, so differencing the brackets separates a plant change
-    from a controller difference — which that run needed, because the plant
+    with no forced air, so differencing the brackets separates a hardware change
+    from a controller difference — which that run needed, because the thermal resistance
     moved. Give it the full `idle`/`end` duration rather than trimming it: the
     closing bracket of that run had **not settled after 30 minutes**, and
     learning that is what stopped a 0.016 °C result being reported as real.
@@ -1433,7 +1433,8 @@ disagrees exactly when a request was refused or a fallback fired.
   `ctl.state` is a normal running state — a run asking for the model can no
   longer be identified by its getting `src = 2` and `state = 6`. And the three
   arms of `automation-thermal-hailo-tc.conf` are no longer two baselines plus a
-  repeat: arm 3 now measures what it was written to measure.
+  repeat: **arm 3 has now run on the model** — see **the substitution run**
+  below for what it cost.
 - **The firmware hook is `model_estimate()`, not `nn_*` — and the fit
   vindicated the name.** The prediction was that the first fit should be a
   first-order thermal model with a learned time constant: three or four
@@ -1460,25 +1461,27 @@ the new one describes the RUN (a closed loop held at four setpoints) instead. Th
 `docs/data/ra6m5-loop-tc-20261123.csv`) — and all 12 601 of the last one carry
 a thermocouple reading even in the arms where it was not in the control path,
 because the MAX31855 is always sampled and always logged. **Train and validate
-a soft sensor on the LOADED windows**, where the plant repeats to ~1 %; the
+a soft sensor on the LOADED windows**, where the thermal response repeats to ~1 %; the
 fan-off brackets are a check that conditions returned, not a source of model
 inputs. All of that advice was followed and it held — see **The soft sensor**.
 Two more runs are curated since: `docs/data/ra6m5-softsensor-fit-20261123.csv`
 (14 932, the fitting run) and `docs/data/ra6m5-loadprobe-20261123.csv` (4 267,
-the eight-model load probe), bringing the corpus to **66 481**. **Every input
+the eight-model load probe), and **12 601** more on 2026-11-24
+(`docs/data/ra6m5-loop-model-20261124.csv`, the substitution run), bringing the
+corpus to **79 082**. **Every input
 to the soft-sensor fit now lives in `docs/data/` under a name that says what
 the run was**, so `tools/ra6m5-report-softsensor.py` reproduces its page from
 the curated tree alone and never reaches into `logs/`.
 - **The loop works.** 70/85 °C die and 60 °C heatsink setpoints, plus the
   mode's own 95 °C, all held to **≤ 0.03 °C of standing error** over ten
-  minutes each, settling in 6.5–11.8 min (the plant arriving, not the
+  minutes each, settling in 6.5–11.8 min (the heatsink arriving, not the
   controller deciding — the fan moves inside one second). **0.00 % throttled,
   400 MHz and 1372.3 ± 0.47 fps across all 7 192 loaded samples**, hottest die
   94.88 °C. So the 95 °C bound holds under a controller, not just a ladder.
 - **Every failure it found was ONE defect, and 0.6.0 fixes it with one
-  constant.** The error during any approach is "model error" plus "the plant
+  constant.** The error during any approach is "model error" plus "the heatsink
   has not got there yet", and nothing separated them, so the PI demanded the
-  fan compensate for the plant's own time constant. Both signs were measured:
+  fan compensate for the thermal time constant. Both signs were measured:
   arming from a hand-set 100 % fan preseeded the integrator to **+103.4 duty
   points** and pinned the fan at its 73 % ceiling for **9.4 minutes** while the
   die was already 10.3 °C *below* setpoint (20.1 min to settle, against 6.5 for
@@ -1534,7 +1537,7 @@ of fan-off idle (`fan.idle = 0`).
   Open loop's smaller *mean* is two model errors partly cancelling — luck, not
   accuracy.
 - **The closed-loop estimator's bias is ENTIRELY the R_int error**, which is
-  the cleanest confirmation of the observer yet: at its held duty the plant
+  the cleanest confirmation of the observer yet: at its held duty the card
   measures 1.6387 °C/W, and `(1.709 − 1.6387) × 4.8764 W = +0.3428 °C` against
   a measured **+0.3430**, residual **+0.0002**. Nothing else contributes.
 - **ARMS 2 AND 3 ARE A REPLICATE PAIR and they bound everything: 0.67 °C.**
@@ -1576,6 +1579,71 @@ of fan-off idle (`fan.idle = 0`).
   the duty-dependence question below. Throughput: **1372.29 ± 0.42 fps** over
   5 394 loaded samples, 400 MHz flat, **0.00 % throttled**, hottest die
   **90.28 °C** with 4.72 °C of margin to the 95 °C bound.
+
+**MEASURED 2026-11-24, THE SUBSTITUTION RUN — the same three arms, 210 minutes,
+on 0.7.0 WITH A MODEL COMPILED IN.** Data
+`docs/data/ra6m5-loop-model-20261124.csv`, report `docs/reports/ra6m5-loop/`,
+plan `config/automation-thermal-hailo-tc.conf` **unchanged** — its own
+sequencing note said to re-run it as written once a model existed, and that is
+what this is. Arm 1 `tc = real`, arm 2 `tc = off`, arm 3 `tc = model`, one
+setpoint (90 °C), one load, four fan-off brackets. **The first log on this rig
+in which the fan was driven by an estimate rather than a measurement**:
+`ctl.src = 1 modelled` on 1 798 of arm 3's 1 799 rows, `ctl.model_ready = 1`
+throughout.
+
+- **THE SUBSTITUTION COSTS NOTHING AT STEADY STATE THAT THIS RIG CAN DETECT.**
+  Settled duty **36.276 % on the model against 36.284 % on the probe** —
+  **0.008 duty points**, 0.005 of one 1.587 % EMC2101 level. The actuator
+  cannot express a difference that small, so the two loops asked the fan for
+  the same thing. Settled die differs by +0.399 °C raw, of which 0.290 °C is a
+  measured ambient shift between the bracketing baselines, leaving
+  **+0.110 °C**. Both are inside the noise floor.
+- **THE COST IS THE APPROACH, and it is the half the replay could not see.**
+  Arm 3 reached the setpoint in **282 s against 467** and overshot
+  **+0.786 °C against +0.179**. The estimate reads the heatsink **0.59 °C cold
+  on average across the arm, on 94 % of its samples and worst −2.40 °C during
+  the climb**, against 0.22 °C once settled — so a loop regulating it believes
+  it has margin it has not got, under-cools, arrives early and sails past. One
+  pole holds a setpoint; it does not arrive at one. A 185 s difference is far
+  outside run-to-run noise, so unlike the steady-state figures **this one is
+  real** — and it is the one that matters, because an overshoot is what meets
+  the throttle boundary. **Quote the transient, not the null result, when
+  asked what the soft sensor costs.**
+- **THIS RUN CANNOT MEASURE ITS OWN NOISE FLOOR, and that is structural.** Once
+  a model exists all three arms are distinct configurations, so there is no
+  replicate pair. The **±0.67 °C** bound is carried forward from the 11-23 run,
+  where arms 2 and 3 were an accidental pair — `tools/ra6m5-report-loop.py
+  --prior <csv>` computes it from that file rather than taking it on trust.
+  **A run that answers its question loses the ability to check itself**; plan
+  for the bound to come from somewhere, and prefer it derived.
+- **The session was far better behaved than 11-23's, which is why the
+  comparison is clean.** `R_conv` across the three loaded arms spans
+  **0.039 %** (11.9478 / 11.9505 / 11.9459) against 0.96 % on 11-23, so
+  nothing in the hardware moved between arms. The four fan-off brackets read
+  **42.173 → 42.331 → 42.463 → 42.462 °C** die at a repeating 0.857 W:
+  **the closing bracket settled**, matching the third to **0.001 °C**, where
+  11-23's was still falling 0.197 °C across its last 300 s. Natural-convection
+  resistance moved **−1.23 %** against 11-23's 8.1 %.
+- **BRACKET 1 IS NOT A PEER OF THE OTHER THREE — do not pool them.** It is the
+  only bracket that approaches ambient from *below* (app just launched, cold
+  card, first slice 33.4 °C); every later one sheds a hot soak from above. It
+  is still the correct ambient reference for arm 1 because it is the bracket
+  that precedes it, but it is the weak link in that correction and the report
+  flags it as such. The same asymmetry caught the load probe, whose two
+  ResNet-50 treads' 1.10 °C die difference is *not* drift.
+- **The estimator's bias reproduced across a reflash and a day: +0.319 °C**
+  on arm 1 against 11-23's +0.343, i.e. 0.024 °C apart, and it is still
+  entirely the R_int error (1.6437 measured vs 1.709 configured at 4.876 W
+  predicts +0.318; residual **+0.001**).
+- **The 90 °C decision was right and is now evidenced.** Hottest die of the
+  whole run **90.79 °C**, in arm 3's overshoot — 4.21 °C of margin to the 95 °C
+  bound. At `ctl.target auto` that arm would have peaked near 95.8 against a
+  throttle boundary measured as low as 98.9. **Regulate the model at 90.**
+- Throughput identical in all three arms: **1372.28 ± 0.41 fps** over 5 394
+  loaded samples, 400 MHz flat, **0.00 % throttled**. R_int **1.6437 / 1.6377 /
+  1.6365** at 36.3–36.5 % duty — consistent with 11-23, and once again **one
+  operating point**, so the duty-dependence question is still open and still
+  needs one setpoint at two loads.
 
 **MEASURED 2026-11-23, the LOAD PROBE — eight models, 71 minutes, fan pinned at
 73 %.** Log `logs/mb-benchmark-20261123-192601.csv`, plan
@@ -1666,7 +1734,7 @@ fan ladder characterises `Rconv(duty)` across 59 duty levels but at **one** load
   three questions it settles. **Read it before writing any other fixed-duty
   thermal plan** — the two design traps it encodes are that the heavy loads
   exist only at high duty, and that the ladder's own low-duty data is
-  *throttled* data and so not a clean plant measurement.
+  *throttled* data and so not a clean measurement of the thermal response.
 
 **MEASURED 2026-11-23/24, THE SOFT-SENSOR FITTING RUN — 24 treads, 4 h 08 m,
 four fixed duties.** Log `logs/mb-benchmark-20261123-205436.csv`, plan
@@ -1690,7 +1758,7 @@ valid.
   | 20.60 % | 15.813 | **1** | 176.0 | 11.13 |
 
   **ResNet-50 treads only** — pooling models here would fold the
-  model-identity effect below into what is meant to be the plant's own spread.
+  model-identity effect below into what is meant to be the hardware's own spread.
   Three independent sessions now agree at 73 %: ladder 6.746, load probe
   6.63 ± 0.18, this run 6.682. These are the figures
   `tools/ra6m5-report-softsensor.py` prints; it is the reproducible
@@ -1742,7 +1810,7 @@ budget; `docs/reports/ra6m5-loop/` scores it per arm.
 **It adds exactly ONE parameter to what the feedforward already knew**:
 `kHeatCapacity = 10.4 J/°C`, a lumped heatsink capacity, fitted jointly with
 the curve. It is the **same table** `invert_curve()` inverts, deliberately —
-one table, so the predictor and the observer cannot disagree about the plant.
+one table, so the predictor and the observer cannot disagree about the hardware.
 
 - **Fitted on 26 094 samples** (the 11-22 ladder's unthrottled region plus the
   11-23 fitting run) to 0.51 °C rms, and **validated on 20 698 held out of the
@@ -1752,16 +1820,20 @@ one table, so the predictor and the observer cannot disagree about the plant.
   form.** The static version, `air + W*Rconv(duty)` evaluated fresh each step,
   which is exactly what the open-loop branch's own `die_est` computes, scores
   **rms 7.0-9.0 °C with excursions to 43 and 72 °C**. Same curve, one pole
-  added: 0.52-0.87 °C. A memoryless estimate of a 70-165 s plant is wrong by
+  added: 0.52-0.87 °C. A memoryless estimate of a 70-165 s heatsink is wrong by
   the whole of whatever transient is in flight.
 - **C IS A CONSTANT.** `tau = R*C` holds to **0.1 %** between 50.8 and 73 %
   duty. The apparent C = 12.8 J/°C at 33.3 % is an artifact of the per-tread
-  `tau/R` arithmetic, not a plant property: letting C vary as `(R/R73)^a` made
+  `tau/R` arithmetic, not a physical property: letting C vary as `(R/R73)^a` made
   the held-out error strictly worse for every a > 0.
-- **WHAT IT IS WORTH**, by replaying the arm that ran closed on the real probe
-  and substituting the model: the loop commands a settled **37.29 % duty
-  against the firmware's own 37.72 %** — 0.43 duty points, ~0.6 °C of die.
-  That is the cost of losing the probe.
+- **WHAT IT IS WORTH, PREDICTED: 0.43 duty points.** Replaying the arm that
+  ran closed on the real probe and substituting the model, the loop commands a
+  settled **37.29 % duty against the firmware's own 37.72 %** — ~0.6 °C of die.
+- **WHAT IT IS WORTH, MEASURED 2026-11-24: 0.008 duty points, i.e. nothing.**
+  The replay was pessimistic by **50x**. See **the substitution run** below;
+  the short version is that at steady state the two loops put the fan in the
+  same place to three decimals, and the real cost is in the APPROACH, which
+  the replay could not see because it replayed a settled arm.
 - **THE ERROR BUDGET IS TWO-SIDED, and the cold side is the one that matters.**
   Model identity is one-sided and safe: the curve is fitted to ResNet-50, which
   has the HIGHEST convective resistance of the four loads measured, so every
@@ -1789,7 +1861,7 @@ curve's three lowest nodes.** `curve_rconv()` had taken all nine nodes from the
 fan ladder, and **the ladder's bottom treads are THROTTLED**: below 23.8 % duty
 the card sits on its thermal limit, so 100 % of those samples are under 400 MHz
 and the heatsink reading is pinned by the limit rather than set by the fan.
-They measure the throttle, not the plant.
+They measure the throttle, not the thermal response.
 
 | duty | old | new | provenance of the new value |
 | ---: | ---: | ---: | --- |
@@ -1808,7 +1880,7 @@ trend, agreeing with the tach.
 **`ctl.rint` stays at 1.709 — the planned retune to 1.627 is REFUTED.** That
 figure came from a hand-driven session and the plan said to adopt it if it
 reproduced. It does not: at rest the four held setpoints measure **1.619–1.742
-°C/W**, and 1.627 is below the whole range (the hand-run was reading a plant
+°C/W**, and 1.627 is below the whole range (the hand-run was reading a system
 still in motion, where the fast pole puts the die transiently nearer the
 heatsink). 1.709 sits inside the band, which is why the estimator's error flips
 sign with fan duty and **never exceeded 0.68 °C** over 2 400 steady-state
@@ -3073,6 +3145,21 @@ basis on which the estimator can be scored.
   should catch, not create. Its model section scores the estimate on the
   three-arm run, which is **held out of the fit**, so those numbers measure the
   model and not its own residual.
+- **`ra6m5-report-loop.py --prior <csv>` carries the repeatability bound
+  forward** (2026-11-24). It is needed the moment a model exists: all three
+  arms become distinct configurations, so `out['repeat']` is None and the run
+  cannot bound itself. `--prior` points at an earlier run of the same plan,
+  finds **its** two open arms and derives the figure from that file — the same
+  rule as every other number on these pages, rather than a constant typed into
+  the HTML. The script still handles both shapes: given the 11-23 run it
+  produces `repeat` and no `substitution`; given the 11-24 run, the reverse.
+  **The page must guard every reference to a nullable key** — see the verifier
+  entry below for what that cost before it was checked.
+- **`ra6m5-report-verify.py` is the regression test for all three pages**, and
+  it is not optional diligence: three of the four rendering defects in these
+  reports were caught by the user and not by me. Run it after any edit to a
+  page or a generator, and re-run the generator afterwards to confirm
+  `data.js` is **byte-identical**. Details under **THERE IS NO JS RUNTIME**.
 - **`ra6m5-report-loop.py` was rewritten 2026-11-23 for 0.6.0** and the old
   four-setpoint shape would have broken on the three-arm run in four places,
   each worth knowing: the changed enums; `nan` in `_CTL_IN`/`_CTL_ERR` for the
@@ -3095,7 +3182,23 @@ basis on which the estimator can be scored.
   browser. Verify a generated page by **asserting against the data**: every
   `LOOP.*` path resolves in the JSON, every row key used in a `forEach` body
   exists in that list's elements, every element id referenced exists, every
-  declared table gets filled, tags balance. Then screenshot it. Headless
+  declared table gets filled, tags balance. **`tools/ra6m5-report-verify.py`
+  does all of that** — point it at one or more report directories; it finds the
+  root const itself, so it serves all three pages. Two of its checks exist
+  because the cheaper version of them shipped a defect:
+  - **It asserts CONTENT, not only shape.** A series of fewer than two points
+    fails. The soft-sensor page shipped an empty chart whose every structural
+    check passed, because **a one-point series resolves perfectly** — the
+    decimation had collapsed it. Checking that a reference resolves is not
+    checking there is something to draw.
+  - **It is GUARD-AWARE, by brace-matching.** A null top-level key is
+    legitimate (`repeat` is null on any run whose arms are all distinct), so
+    references to it are allowed *provided every one is inside a guard on that
+    alias*. It found eight unguarded `RP.*` dereferences when the 11-24 run
+    made `repeat` null — and, worse, the whole drift verdict sitting inside an
+    `if (RP)` block it had no business being in, which would have silently
+    dropped that analysis rather than erroring.
+  Then screenshot it. Headless
   Firefox here is a **snap**, so it refuses a second instance while the user
   has one open — check `ps` for whose it is and **never kill theirs**.
 
