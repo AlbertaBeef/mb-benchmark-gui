@@ -84,12 +84,16 @@ svg.chart .note { fill: var(--fg-2); font-size: 11px; }
 .tip { position: fixed; pointer-events: none; background: var(--surface); color: var(--fg); border: 1px solid var(--rule); border-radius: 6px; padding: 6px 9px; font-family: var(--font-mono); font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.12); z-index: 20; white-space: nowrap; }
 footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--fg-2); display: grid; gap: 6px; }
 @media (max-width: 520px) { body { font-size: 15px; } .finding .num { font-size: 24px; } }.panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; }
+/* `wide` is one panel per row at the column's full width, for a trellis whose
+   panels each carry several curves that nearly coincide -- at 280 px those are
+   indistinguishable. */
+.panels.wide { grid-template-columns: 1fr; gap: 18px; }
 .panels > figure { margin: 0; min-width: 0; }
-/* The per-series legend is suppressed inside a trellis on purpose: every
-   unthrottled tread is drawn in the same colour, so the legend would be N
-   identical swatches. The figcaption carries what distinguishes a panel, and
-   the hover tooltip still names the individual tread. */
-.panels .panel-label { display: none; }
+/* The per-series legend is suppressed in the SMALL trellis on purpose: each
+   of those panels holds one curve and the figcaption already names it, so a
+   legend would just repeat it in less room. The wide panels keep theirs --
+   they hold up to nine treads and the legend is how you tell which is which. */
+.panels:not(.wide) .panel-label { display: none; }
 .panels figcaption { font-size: 12px; color: var(--fg-2); padding: 2px 2px 6px;
   display: flex; gap: 8px; justify-content: space-between; align-items: baseline; }
 .panels figcaption b { color: var(--fg); font-size: 13px; }
@@ -374,6 +378,7 @@ d tc/dt = (tc_ss − tc) / tau            one state: the model's memory of the h
   // cannot be compared, which is the only reason to draw one.
   function panelGrid(gridId, t, panels, o) {
     const grid = document.getElementById(gridId);
+    if (o.wide) grid.classList.add('wide');
     panels.forEach((pn, i) => {
       const fig = document.createElement('figure');
       const cap = document.createElement('figcaption');
@@ -382,7 +387,7 @@ d tc/dt = (tc_ss − tc) / tau            one state: the model's memory of the h
       host.id = `${gridId}-${i}`;
       fig.appendChild(cap); fig.appendChild(host); grid.appendChild(fig);
       lines(host.id, {
-        w: 470, h: 200, label: o.label(pn), x0: 0, x1: t[t.length - 1],
+        w: o.w || 470, h: o.h || 200, label: o.label(pn), x0: 0, x1: t[t.length - 1],
         y0: 0, y1: o.ymax, xt: o.xt, yt: o.yt, yf: v => v.toFixed(0),
         xname: 'seconds into the tread', x: t,
         series: o.series(pn), xtip: v => v.toFixed(0) + ' s' });
@@ -419,7 +424,8 @@ d tc/dt = (tc_ss − tc) / tau            one state: the model's memory of the h
   {
     const FP = F.panels;
     panelGrid('fit-panels', FP.t, FP.rows, {
-      ymax: FP.ymax, xt: [0, 200, 400, 600],
+      wide: true, w: 940, h: 300,
+      ymax: FP.ymax, xt: [0, 100, 200, 300, 400, 500, 600, 700],
       yt: [0, 20, 40, 60, 80].filter(v => v <= FP.ymax),
       caption: pn => `<b>fan ${pn.duty.toFixed(1)} %</b><span class="r">`
         + `${pn.rows.length} treads${pn.n_thr ? ` · <span style="color:var(--s2)">`
