@@ -83,7 +83,11 @@ svg.chart .note { fill: var(--fg-2); font-size: 11px; }
 .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
 .tip { position: fixed; pointer-events: none; background: var(--surface); color: var(--fg); border: 1px solid var(--rule); border-radius: 6px; padding: 6px 9px; font-family: var(--font-mono); font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.12); z-index: 20; white-space: nowrap; }
 footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--fg-2); display: grid; gap: 6px; }
-@media (max-width: 520px) { body { font-size: 15px; } .finding .num { font-size: 24px; } }.panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; }
+@media (max-width: 520px) { body { font-size: 15px; } .finding .num { font-size: 24px; } }:root { --s6: #7c5cd6; --s7: #00959f; --s8: #8c6239; --s9: #6b7f00; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --s6: #8a6ae0; --s7: #119aa6; --s8: #a0764a; --s9: #7d9400; } }
+:root[data-theme="dark"] { --s6: #8a6ae0; --s7: #119aa6; --s8: #a0764a; --s9: #7d9400; }
+.panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; }
 /* `wide` is one panel per row at the column's full width, for a trellis whose
    panels each carry several curves that nearly coincide -- at 280 px those are
    indistinguishable. */
@@ -137,9 +141,9 @@ pre.eq { font-family: var(--font-mono); font-size: 13px; line-height: 1.7; margi
 <section>
   <div class="head"><h2>Step 2 — is there a load axis at all? (eight models)</h2>
     <p class="prose muted">The ladder measures <code>R<sub>conv</sub></code> at <b>one</b> load, so nothing in it tests whether the plant is really linear in watts. Before fitting anything, it was worth knowing whether this card's eight models even draw different power — on the day this ran, only ResNet-50 had ever been benchmarked on it, and every other figure was an estimate from GOP×fps.</p></div>
-  <div class="chart-card"><h3>Every model's own warm-up, one panel each</h3>
-    <p class="sub">Heatsink rise above board air, on a clock that restarts with each 5-minute tread — so treads taken an hour apart lie on top of each other. <b>Identical axes on all eight</b>, which is the point: the <em>shape</em> is the same every time and only the height changes. Fan pinned at 73 % throughout, so the only thing differing between panels is the load.</p>
-    <div class="panels" id="probe-panels"></div></div>
+  <div class="chart-card"><h3>All eight models, overlaid</h3>
+    <p class="sub">Heatsink rise above board air, on a clock that restarts with each 5-minute tread — so eight treads taken over 71 minutes lie on top of each other. The fan is pinned at 73 % throughout, so <b>the only thing differing between these curves is the load</b>. Two things to see: every curve is the <em>same exponential shape</em> with the same time constant, and the height each settles at is simply proportional to the watts. That is the whole modelling assumption, in one picture, before any model was fitted.</p>
+    <div id="probe-overlay"></div></div>
   <div class="tbl-wrap"><table id="modtbl">
     <thead><tr><th>Model</th><th class="n">GOP/frame</th><th class="n">fps</th><th class="n">rail W</th><th class="n">TOPS</th><th class="n">die °C</th><th class="n">R<sub>conv</sub></th></tr></thead>
     <tbody></tbody></table></div>
@@ -397,13 +401,24 @@ d tc/dt = (tc_ss − tc) / tau            one state: the model's memory of the h
   /* ---------- step 2: the load probe ---------- */
   {
     const PP = P.panels;
-    panelGrid('probe-panels', PP.t, PP.rows, {
-      ymax: PP.ymax, xt: [0, 100, 200], yt: [0, 10, 20, 30, 40, 50].filter(v => v <= PP.ymax),
-      caption: pn => `<b>${pn.model}</b><span class="r">${pn.w.toFixed(2)} W · `
-        + `${pn.plateau.toFixed(1)} °C · R ${pn.rconv.toFixed(2)}</span>`,
-      label: pn => `${pn.model}: heatsink rise above air against time into the tread`,
-      series: pn => [{ k: 'y', name: `${pn.model} · ${pn.w.toFixed(2)} W`, c: 's1', w: 2,
-                       y: pn.y, tf: v => v.toFixed(2) + ' °C above air' }] });
+    // Rows arrive sorted by plateau, so the legend reads in the same order the
+    // curves stack and the eight colours are assigned top-down.
+    // s2 (orange) is deliberately NOT in here: on this page orange means "the
+    // card was throttling", in the ladder chart and in step 3's panels. Keeping
+    // it out of the one chart where nothing is throttling keeps that reading
+    // true everywhere, which is worth a ninth hue.
+    const C8 = ['s1', 's3', 's4', 's5', 's6', 's7', 's8', 's9'];
+    lines('probe-overlay', { w: 940, h: 440,
+      label: 'heatsink rise above air for all eight models, on a tread-relative clock',
+      x0: 0, x1: PP.t[PP.t.length - 1], y0: 0, y1: PP.ymax,
+      xt: [0, 50, 100, 150, 200, 250],
+      yt: [0, 10, 20, 30, 40, 50].filter(v => v <= PP.ymax), yf: v => v.toFixed(0),
+      xname: 'seconds into the tread', x: PP.t,
+      series: PP.rows.map((pn, i) => ({
+        k: pn.model, c: C8[i % C8.length], w: 2.2,
+        name: `${pn.model} · ${pn.w.toFixed(2)} W · ${pn.plateau.toFixed(1)} °C`,
+        y: pn.y, tf: v => v.toFixed(2) + ' °C above air' })),
+      xtip: v => v.toFixed(0) + ' s' });
     P.models.forEach(m => row('#modtbl', [
       td(m.model), tn(m.gop == null ? '—' : m.gop.toFixed(2)), tn(m.fps.toFixed(0)),
       tn('<b>' + m.w.toFixed(3) + '</b>'), tn(m.tops == null ? '—' : m.tops.toFixed(2)),
