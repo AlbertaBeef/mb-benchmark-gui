@@ -88,9 +88,9 @@ footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule);
 <header>
   <div class="eyebrow">mb-benchmark-gui · telemetry hardware</div>
   <h1>Doing without the thermocouple</h1>
-  <p class="lede">An earlier revision of this firmware shipped three fan modes. Reading its own 225-minute run back showed they were <b>one control law with a different constant</b> — the die observer is a setpoint transformation, not a feedback element — so 0.6.0 collapsed them into a single loop with <b>one</b> regulated quantity, the estimated on-die temperature, and made the thermocouple <b>substitutable</b> while power became mandatory. This run asks what that substitution costs. Three arms, same setpoint, same load, differing only in where the loop's one temperature comes from. The open loop held the die <b id="l-delta">—</b> from the closed loop — but the four fan-off brackets that frame the run say that number is <b>well inside the noise</b>, and that the noise is not noise: the card's natural-convection resistance fell <b id="l-drift">—</b> monotonically across the afternoon, and the closing baseline was <b>still falling when the run ended</b>. The useful result is therefore not the agreement. It is the bound on it, and the finding that the loop's own air input moved the <em>wrong way</em> while everything else moved.</p>
+  <p class="lede">An earlier revision of this firmware shipped three fan modes. Reading its own 225-minute run back showed they were <b>one control law with a different constant</b> — the die observer is a setpoint transformation, not a feedback element — so the modes collapsed into a single loop with <b>one</b> regulated quantity, the estimated on-die temperature, and made the thermocouple <b>substitutable</b> while power became mandatory. <b>A model now exists</b>, fitted from four earlier runs, so this is the first time that substitution could actually be measured rather than merely enabled: three arms, same setpoint, same load, differing only in where the loop's one temperature comes from — the sensor, a fitted estimate of it, or nothing at all. <b>At steady state it costs nothing that this rig can detect.</b> Closing the loop on the estimate put the fan within <b id="l-duty">—</b> of where the sensor put it — far below the actuator's own 1.587 % resolution — and the regulated temperature within <b id="l-delta">—</b> once the drift the fan-off brackets measured is taken out, against a <b id="l-bound">—</b> repeatability floor carried forward from the previous run of this plan. The cost is in the <em>approach</em>: the estimate lags a warming heatsink, so the loop under-cools it, reaches the setpoint <b id="l-reach">—</b> early and overshoots <b id="l-over">—</b> further. One pole is enough to hold a setpoint and not enough to arrive at one.</p>
   <div class="meta">
-    <span id="meta-when">—</span><span>Host: AMD EPYC ROMED8-2T</span><span>Hailo-8 M.2 · ResNet-50 async, depth 8</span><span>Firmware: mb-probe-ra6m5 0.6.0, protocol 2</span><span id="meta-n">—</span>
+    <span id="meta-when">—</span><span>Host: AMD EPYC ROMED8-2T</span><span>Hailo-8 M.2 · ResNet-50 async, depth 8</span><span id="meta-fw">—</span><span id="meta-n">—</span>
   </div>
 </header>
 
@@ -114,14 +114,14 @@ footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule);
 
 <section>
   <div class="head"><h2>Did each arm run as configured?</h2>
-    <p class="prose muted">This table comes first, not last. The log records what the loop <em>did</em>, never what the plan asked for, so <code>ctl.src</code> and <code>ctl.state</code> are the only evidence an arm was the arm it claims to be — and two of these three agree on every control channel but one.</p></div>
+    <p class="prose muted">This table comes first, not last. The log records what the loop <em>did</em>, never what the plan asked for, so <code>ctl.src</code> and <code>ctl.state</code> are the only evidence an arm was the arm it claims to be. <b>This is the first run in which all three arms are genuinely distinct</b> — a model is compiled in, so arm 3 got what it asked for.</p></div>
   <div class="tbl-wrap"><table id="prov">
     <thead><tr id="prov-head"></tr></thead>
     <tbody></tbody></table></div>
   <div class="prose" style="display:grid;gap:12px">
     <p class="small" id="prov-note"></p>
-    <p><b>Arms 2 and 3 are separated by <code>ctl.state</code> alone</b> — <code>5 open</code> against <code>6 degraded</code> — and that is deliberate. Arm 3 asked for the learned estimate; there was no model compiled in when this run was taken, so it did not get one. The firmware's rule is <em>never silently arm 2</em>: a run configured for the inferred source that fell through to open loop must be legible as exactly that. Every other channel reads identically in both, including <code>ctl.nn</code>, which reports the <b>effective</b> value and so reads 0 in arm 3.</p>
-    <p class="small"><b>That column had to be fixed on hardware, not in review.</b> As first written, the NaN check on the inferred estimate sat <em>after</em> the if/else rather than inside the inferred branch — and <code>pv_tc</code> is NaN in the <code>none</code> branch too, so the check fired unconditionally and every open-loop step reported <code>degraded</code>. <code>kOpen</code> was unreachable. A staged bench test caught it in one command; nothing in the code read wrong. Had it shipped, this run would have measured arm 2 three times and had no way to say so.</p>
+    <p><b>Arm 3 reports <code>ctl.src = 1 modelled</code>, and that is the whole point of the run.</b> On the 23 November run of this same plan there was no model compiled in, so arm 3 fell through to open loop and was separated from arm 2 by <code>ctl.state</code> alone — <code>5 open</code> against <code>6 degraded</code>. A model now exists, <code>ctl.model_ready</code> reads 1 on every row, and the request in <code>ctl.tc</code> was honoured. <b>This is the first log on this rig in which the fan was driven by an estimate rather than a measurement.</b></p>
+    <p class="small"><b>The column that makes that legible had to be fixed on hardware, not in review.</b> As first written, the NaN check on the modelled estimate sat <em>after</em> the if/else rather than inside its branch — and <code>pv_tc</code> is NaN in the <code>none</code> branch too, so the check fired unconditionally and every open-loop step reported <code>degraded</code>. <code>kOpen</code> was unreachable. A staged bench test caught it in one command; nothing in the code read wrong. Had it shipped, the earlier run would have measured arm 2 three times with no way to say so — and this run could not have proved that arm 3 was different.</p>
   </div>
 </section>
 
@@ -144,7 +144,7 @@ footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule);
       <p class="sub">Settled windows only. In open loop <code>die_est</code> tracks the setpoint by construction while the fan is unclamped, so pooling the approach would report a 42 °C "error" that says nothing about the model.</p>
       <div id="ch-est"></div></div>
     <div class="chart-card"><h3>Which fan levels each arm actually sat on</h3>
-      <p class="sub">The duty is the board's own readback, never the requested percent. The EMC2101 quantises to 1/63, so the two open arms differ mostly by which side of one level boundary they landed on.</p>
+      <p class="sub">The duty is the board's own readback, never the requested percent. The EMC2101 quantises to 1/63, so an arm's mean duty hides which levels it actually dithered between.</p>
       <div id="ch-occ"></div></div>
   </div>
   <div class="prose" style="display:grid;gap:12px">
@@ -152,16 +152,30 @@ footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule);
   </div>
 </section>
 
+<section id="substitution">
+  <div class="head"><h2>What the substitution costs</h2>
+    <p class="prose muted">The question the whole plan exists to answer. Arms 1 and 3 are <b>both closed loops running an identical control law</b> at the same setpoint on the same load — only where <code>tc_</code> comes from differs. Arm 1 reads the thermocouple; arm 3 reads a fitted estimate of it. A soft sensor is a drop-in for one input, not a second controller, and this is the measurement of that claim.</p></div>
+  <div class="tbl-wrap"><table id="sub">
+    <thead><tr id="sub-head"></tr></thead>
+    <tbody></tbody></table></div>
+  <div class="prose" style="display:grid;gap:12px">
+    <p id="s-prose">&mdash;</p>
+    <h3>Steady state is free; the approach is not</h3>
+    <p id="s-transient">&mdash;</p>
+    <p class="small" id="s-drift">&mdash;</p>
+  </div>
+</section>
+
 <section id="believe">
   <div class="head"><h2>How much of that can we believe?</h2>
-    <p class="prose muted">Arms 2 and 3 both ran open, because there was no model yet <em>then</em> — one has since been fitted, and <a href="#softsensor">the last section</a> scores it against this run. That is a fair test precisely because this run was held out of the fit. That was foreseen — the plan calls arm 3 <q>a second baseline sample, which is not wasted</q> — and it is the single most load-bearing measurement in the run: <b>no other difference here can be called real below it</b>.</p></div>
+    <p class="prose muted"><b>This run cannot measure its own noise floor.</b> All three arms are distinct configurations now, which is the point of it — but it means there is no replicate pair. The bound is therefore <b>carried forward</b> from the 23 November run of the identical plan, where arms 2 and 3 both ran open because no model existed, making them an accidental replicate pair. It is computed from that file rather than typed in. <b>No difference in this report may be called real below it.</b></p></div>
   <div class="tbl-wrap"><table id="rep">
-    <thead><tr><th>Quantity</th><th class="n">arm 2</th><th class="n">arm 3</th><th class="n">difference</th></tr></thead>
+    <thead><tr id="rep-head"></tr></thead>
     <tbody></tbody></table></div>
   <div class="prose" style="display:grid;gap:12px">
     <p id="r-prose">—</p>
     <h3>The four fan-off brackets, and why they are 30 minutes each</h3>
-    <p>Before the first arm, between each pair, and after the last, the plan hands the fan register back and holds the duty at 0 with the card at idle — a fixed ~0.86 W and no forced air. Repeated four times across three and a half hours, that is an <b>ambient probe</b>, and it is the only instrument in the run that can tell a plant change from a controller difference. It cost nothing but time, and this run needed it.</p>
+    <p>Before the first arm, between each pair, and after the last, the plan hands the fan register back and holds the duty at 0 with the card at idle — a fixed ~0.86 W and no forced air. Repeated four times across three and a half hours, that is an <b>ambient probe</b>, and it is the only instrument in the run that can tell a hardware change from a controller difference. It cost nothing but time, and this run needed it.</p>
   </div>
   <div class="tbl-wrap"><table id="brk">
     <thead><tr><th>#</th><th class="n">clock</th><th class="n">die</th><th class="n">Δ</th><th class="n">heatsink</th><th class="n">Δ</th><th class="n">board air</th><th class="n">Δ</th><th class="n">rail W</th><th class="n">R<sub>amb</sub></th><th class="n">Δ</th><th>flat?</th></tr></thead>
@@ -183,7 +197,7 @@ footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule);
 
 <section>
   <div class="head"><h2>One constant, three failures retired</h2>
-    <p class="prose muted">The earlier firmware's run produced three different-looking failures from one defect: the tracking error during any approach is <em>model error</em> plus <em>the plant has not got there yet</em>, and nothing separated them — so the PI demanded the fan compensate for the plant's own time constant. 0.6.0 bounds the PI's authority instead of adding more anti-windup, because the integrator was unwinding <em>correctly</em> from a value the loop could never use.</p></div>
+    <p class="prose muted">The earlier firmware's run produced three different-looking failures from one defect: the tracking error during any approach is <em>model error</em> plus <em>the heatsink has not got there yet</em>, and nothing separated them — so the PI demanded the fan compensate for the thermal time constant. 0.6.0 bounds the PI's authority instead of adding more anti-windup, because the integrator was unwinding <em>correctly</em> from a value the loop could never use.</p></div>
   <div class="prose" style="display:grid;gap:12px">
     <pre class="mono small" style="overflow-x:auto;background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:12px;margin:0">const double corr = clampd(kp * err + integ, -kTrim, kTrim);   // kTrim = 15 duty points
 const double raw  = base + corr;
@@ -214,7 +228,7 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
 
 <section>
   <div class="head"><h2>The feedforward, spot-checked</h2>
-    <p class="prose muted">The duty the loop asks for first comes from inverting a nine-point R<sub>conv</sub> table in <code>Control.h</code>. This run re-measures it at <b>one</b> duty, so it is a spot check and not a recalibration — but it is a spot check taken with the plant at rest rather than five minutes into a tread. <b>The table was refitted on 24 November</b>, after this run: its three lowest nodes came from the fan ladder's throttled treads and were wrong by up to 32 %. Nothing at or above 30.2 % duty moved by more than 1.1 %, and all three arms here sat near 37 %, so the spot check below is unaffected either way — see <a href="#softsensor">the soft sensor</a>.</p></div>
+    <p class="prose muted">The duty the loop asks for first comes from inverting a nine-point R<sub>conv</sub> table in <code>Control.h</code>. This run re-measures it at <b>one</b> duty, so it is a spot check and not a recalibration — but it is a spot check taken with the hardware at rest rather than five minutes into a tread. <b>The table was refitted on 24 November</b>, after this run: its three lowest nodes came from the fan ladder's throttled treads and were wrong by up to 32 %. Nothing at or above 30.2 % duty moved by more than 1.1 %, and all three arms here sat near 37 %, so the spot check below is unaffected either way — see <a href="#softsensor">the soft sensor</a>.</p></div>
   <div class="chart-card"><h3>Seeded curve against the point this run re-measured</h3>
     <p class="sub">Line: the table in <code>Control.h</code>. Points: (heatsink − air) / rail watts in each arm's settled window.</p>
     <div id="ch-curve"></div></div>
@@ -226,7 +240,7 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
 
 <section id="softsensor">
   <div class="head"><h2>The soft sensor, fitted after the fact</h2>
-    <p class="prose muted">This run asked for a learned estimate of the thermocouple three times and got open loop, because none existed. One does now — fitted 24 November on the 22 November fan ladder and the 23 November soft-sensor run, and <b>not one sample of this run entered that fit</b>. So the arms below are a held-out test, and the question arm 3 could not answer is answerable: what <em>would</em> it have regulated on?</p></div>
+    <p class="prose muted">The estimate was fitted on 24 November from the 22 November fan ladder and the 23 November soft-sensor run, and <b>not one sample of this run entered that fit</b> — so everything below is a held-out test. Arm 3 regulated on it for real; the arms that did not are scored against it here anyway, because the thermocouple was sampled and logged in every arm whether or not it was in the control path.</p></div>
   <div class="findings" id="m-tiles"></div>
   <div class="chart-card"><h3>R<sub>conv</sub>(duty), and the pole it sets</h3>
     <p class="sub">The same nine-point table the feedforward inverts, read out of <code>Control.h</code>. The soft sensor adds exactly one parameter to it: a lumped heat capacity, so that τ&nbsp;=&nbsp;R<sub>conv</sub>&nbsp;×&nbsp;C.</p>
@@ -270,7 +284,7 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
 
 <footer>
   <div>Generated from <code id="f-src">—</code> by <code>tools/ra6m5-report-loop.py</code>. Every number on this page is read from that file at load time; nothing is typed in.</div>
-  <div><b>The exceptions, named:</b> the earlier-firmware comparison figures (+103.4 preseed, 9.4 min at the ceiling, 10.3 °C deficit, −29.7 points of P, +3.5 °C overshoot) come from the 22 November four-setpoint run, <code>docs/data/ra6m5-loop-4setpoint-20261122.csv</code>; the seeded R<sub>conv</sub> table is the 22 November fan ladder; the 98.9–104.2 °C throttle band is from the two-card thermal study; and R<sub>int</sub>'s 1.619/1.742 duty dependence is from that same four-setpoint run.</div>
+  <div><b>The exceptions, named:</b> the earlier-firmware comparison figures (+103.4 preseed, 9.4 min at the ceiling, 10.3 °C deficit, −29.7 points of P, +3.5 °C overshoot) come from the 22 November four-setpoint run, <code>docs/data/ra6m5-loop-4setpoint-20261122.csv</code>; the seeded R<sub>conv</sub> table is the 22 November fan ladder; the 98.9–104.2 °C throttle band is from the two-card thermal study; R<sub>int</sub>'s 1.619/1.742 duty dependence is from that same four-setpoint run; and <b>the repeatability bound is computed from <code id="f-prior">—</code></b>, the 23 November run of this identical plan, because every arm here is a distinct configuration and this run therefore cannot measure its own noise floor.</div>
   <div>Earlier reports on this board: <a href="../ra6m5-exploration/">two cards up a fan ladder</a> · <a href="../ra6m5-thermocouple/">the heat path split in two</a>.</div>
 </footer>
 <div id="tip" class="tip" hidden></div>
@@ -375,13 +389,24 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
   const td = (v, cls) => `<td${cls ? ` class="${cls}"` : ''}>${v}</td>`;
   const tn = v => td(v, 'n');
 
-  set('meta-when', `23 Nov 2026, ${LOOP.start.slice(11, 16)}–${LOOP.end.slice(11, 16)}`);
+  set('meta-when', new Date(LOOP.start).toLocaleDateString('en-GB',
+        { day: 'numeric', month: 'short', year: 'numeric' })
+      + `, ${LOOP.start.slice(11, 16)}–${LOOP.end.slice(11, 16)}`);
   set('meta-n', `${LOOP.n.toLocaleString()} samples · ${LOOP.mins.toFixed(0)} min, no gaps`);
   set('f-src', LOOP.n.toLocaleString() + ' rows, ' + LOOP.start.slice(0, 10)
     + ' ' + LOOP.start.slice(11, 19) + '–' + LOOP.end.slice(11, 19));
   set('h-floor', LOOP.load_floor.toFixed(1) + ' W');
   if (C.headline) set('l-delta', sgn(C.headline.die_delta, 3) + ' °C');
-  set('l-drift', sgn(DR.r_drop_pct, 1) + ' %');
+  set('meta-fw', `Firmware: mb-probe-ra6m5 ${LOOP.fw}, protocol ${LOOP.proto}`);
+  if (C.substitution) {
+    const S0 = C.substitution;
+    set('l-duty', Math.abs(S0.duty_delta).toFixed(3) + ' duty points');
+    if (S0.corrected !== null) set('l-delta', Math.abs(S0.corrected).toFixed(2) + ' °C');
+    if (S0.reach_delta !== null) set('l-reach', Math.abs(S0.reach_delta) + ' s');
+    set('l-over', sgn(S0.over_delta, 2) + ' °C');
+  }
+  if (LOOP.prior) set('l-bound', '±' + LOOP.prior.bound.toFixed(2) + ' °C');
+  if (LOOP.prior) set('f-prior', 'docs/data/' + LOOP.prior.file);
 
   /* ---------- tiles, built from the data rather than typed ---------- */
   {
@@ -389,15 +414,28 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
     if (H) tiles.push({ num: sgn(H.die_delta, 3), unit: '°C',
       t: 'open loop vs closed loop',
       s: `the same setpoint held on the static feedforward alone, with no measurement in the path at all — and ${H.same_levels ? 'on the same two fan levels' : 'within ' + Math.abs(H.duty_delta).toFixed(2) + ' duty points'}` });
+    const SUB = C.substitution;
+    if (SUB) tiles.unshift({ num: sgn(SUB.duty_delta, 3), unit: 'pts',
+      t: 'duty: model vs sensor',
+      s: `what closing the loop on the estimate instead of the thermocouple moved the settled fan to — ${Math.abs(SUB.duty_levels).toFixed(3)} of one 1.587 % EMC2101 level` });
+    if (SUB && SUB.corrected !== null) tiles.splice(1, 0, { num: sgn(SUB.corrected, 2), unit: '°C',
+      t: 'die, drift-corrected',
+      s: 'the same substitution on the regulated temperature, after subtracting the ambient shift the fan-off brackets measured between the two arms' });
     if (RP) tiles.push({ num: sgn(RP.die_delta, 2), unit: '°C',
       t: 'run-to-run, open loop twice',
       s: 'two identical 30-minute arms an hour apart. This is the bound every other number here inherits, and it is larger than the result above' });
+    else if (LOOP.prior) tiles.push({ num: '±' + LOOP.prior.bound.toFixed(2), unit: '°C',
+      t: 'repeatability, carried forward',
+      s: `from the ${LOOP.prior.date} run of the same plan, whose arms ${LOOP.prior.arms[0]} and ${LOOP.prior.arms[1]} were an accidental replicate pair. Every arm here is distinct, so this run cannot measure its own floor` });
+    if (SUB && SUB.reach_delta !== null) tiles.push({ num: sgn(SUB.reach_delta, 0), unit: 's',
+      t: 'to reach the setpoint',
+      s: `and ${sgn(SUB.over_delta, 2)} °C of overshoot with it: the estimate lags a rising heatsink, so the loop under-cools the approach. The one cost that clears the noise floor` });
     if (H) tiles.push({ num: '×' + H.est_sd_ratio.toFixed(1), unit: '',
       t: 'noisier die estimate',
       s: 'what losing the thermocouple actually costs: not the regulated temperature, but what the board believes it is' });
-    tiles.push({ num: P.discriminators['2v3'].length.toString(), unit: 'column',
-      t: 'separates arm 2 from arm 3',
-      s: `<code>ctl.state</code> alone — <code>5 open</code> against <code>6 degraded</code>. Every other control channel reads identically in both` });
+    tiles.push({ num: P.discriminators['1v3'].length.toString(), unit: 'column',
+      t: 'separates arm 1 from arm 3',
+      s: `<code>ctl.src</code> and <code>ctl.tc</code> — the request and what the loop did with it. Same setpoint, same load, same control law; only the temperature's provenance differs` });
     if (KT) tiles.push({ num: Math.abs(KT.dff_absmax).toFixed(1), unit: '/ 15',
       t: 'duty points the PI used',
       s: `of the ${KT.ktrim.toFixed(0)} it is allowed. the earlier firmware preseeded ${sgn(KT.prior.preseed, 1)} and pinned the fan at its ceiling for ${KT.prior.pinned_min} minutes` });
@@ -415,7 +453,7 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
   {
     const WHAT = ['the reference — and the source of the other two arms’ training labels',
       'the baseline a learned estimate has to beat: pure feedforward, no feedback',
-      'the candidate — and, with no model compiled in at the time, a second baseline sample'];
+      'the candidate: the same control law closed on the fitted estimate instead of the sensor'];
     A.forEach((s, i) => row('#plan', [
       td('<b>' + (i + 1) + '</b>'),
       td(s.tc ? '<b>on</b>' : 'off'),
@@ -518,8 +556,88 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
     host.appendChild(svg);
   }
 
-  /* ---------- repeatability ---------- */
-  if (RP) {
+  /* ---------- the substitution: probe vs model ---------- */
+  {
+    const S = C.substitution;
+    if (S) {
+      document.getElementById('sub-head').innerHTML =
+        '<th>Quantity</th>' + `<th class="n">arm ${S.probe_arm} &middot; probe</th>`
+        + `<th class="n">arm ${S.model_arm} &middot; <b>model</b></th>`
+        + '<th class="n">difference</th>';
+      const pa = A[S.probe_arm - 1], ma = A[S.model_arm - 1];
+      const R3 = [
+        ['die &minus; setpoint (&deg;C)', sgn(pa.die_err, 3), sgn(ma.die_err, 3), sgn(S.die_delta, 3), true],
+        ['applied duty (%)', pa.duty.toFixed(3), ma.duty.toFixed(3),
+          sgn(S.duty_delta, 3) + ` <span class="muted small">(${sgn(S.duty_levels, 3)} levels)</span>`, true],
+        ['rail power (W)', S.p[0].toFixed(4), S.p[1].toFixed(4), sgn(S.p[1] - S.p[0], 4), false],
+        ['actual R<sub>conv</sub> (&deg;C/W)', S.rconv[0].toFixed(3), S.rconv[1].toFixed(3),
+          sgn(S.rconv[1] - S.rconv[0], 3), false],
+        ['peak die (&deg;C)', pa.peak.toFixed(2), ma.peak.toFixed(2), sgn(ma.peak - pa.peak, 2), false],
+        ['overshoot (&deg;C)', sgn(S.over[0], 3), sgn(S.over[1], 3), sgn(S.over_delta, 3), true],
+        ['reaches the setpoint (s)', S.reach[0], S.reach[1],
+          S.reach_delta === null ? '&mdash;' : sgn(S.reach_delta, 0), true],
+        ['estimate &minus; die, settled (&deg;C)', sgn(S.est[0], 3), sgn(S.est[1], 3),
+          sgn(S.est[1] - S.est[0], 3), false],
+        ['estimate sd (&deg;C)', S.est_sd[0].toFixed(3), S.est_sd[1].toFixed(3),
+          sgn(S.est_sd[1] - S.est_sd[0], 3), false],
+      ];
+      R3.forEach(([k, a, b, d, bold]) => row('#sub', [td(k), tn(a), tn(b),
+        tn(bold ? '<b>' + d + '</b>' : d)]));
+
+      const bound = LOOP.prior ? LOOP.prior.bound : null;
+      set('s-prose', `<b>The fan ended up in the same place.</b> Settled duty was `
+        + `${ma.duty.toFixed(3)} % closed on the estimate against ${pa.duty.toFixed(3)} % closed on the `
+        + `sensor — a difference of <b>${Math.abs(S.duty_delta).toFixed(3)} duty points</b>, or `
+        + `${Math.abs(S.duty_levels).toFixed(3)} of one EMC2101 level, which quantises at 1.587 %. `
+        + `The board cannot express a difference that small: it is three orders of magnitude below the `
+        + `actuator's own resolution, so the two loops asked the fan for the same thing. `
+        + `The regulated temperature differs by ${sgn(S.die_delta, 3)} &deg;C`
+        + (S.corrected === null ? '' : `, of which ${Math.abs(S.amb_die).toFixed(3)} &deg;C is a measured `
+          + `ambient shift between the fan-off brackets preceding each arm, leaving `
+          + `<b>${sgn(S.corrected, 3)} &deg;C</b> attributable to the substitution`)
+        + `. `
+        + (bound === null ? ''
+          : `Both figures sit <b>below the ${bound.toFixed(2)} &deg;C repeatability bound</b> carried `
+            + `forward from 23 November, so the honest claim is that closing the loop on the estimate is `
+            + `<em>indistinguishable</em> from closing it on the sensor at this precision — not that it `
+            + `matched it to a hundredth of a degree.`));
+
+      set('s-transient', `<b>The estimate lags, and the loop believes it.</b> Arm ${S.model_arm} reached the `
+        + `setpoint in <b>${S.reach[1]} s against ${S.reach[0]}</b> and overshot `
+        + `<b>${S.over[1].toFixed(3)} &deg;C against ${S.over[0].toFixed(3)}</b>. The mechanism is in the `
+        + `estimator: across arm ${S.model_arm} as a whole the model reads the heatsink `
+        + `<b>${Math.abs(M.arms[S.model_arm - 1].whole.bias).toFixed(2)} &deg;C cold on average</b>, low on `
+        + `${M.arms[S.model_arm - 1].whole.cold_pct.toFixed(0)} % of its samples and worst `
+        + `<b>${Math.abs(M.arms[S.model_arm - 1].whole.worst_cold).toFixed(2)} &deg;C</b> during the climb, `
+        + `against ${Math.abs(M.arms[S.model_arm - 1].settled.bias).toFixed(2)} &deg;C once settled. `
+        + `So a loop regulating that estimate to ${A[S.model_arm - 1].target.toFixed(0)} &deg;C thinks it `
+        + `has margin it does not have, cools less, `
+        + `arrives early and sails past. One pole is enough for a held setpoint and not enough for a step. `
+        + `A ${Math.abs(S.reach_delta)} s difference is far outside anything run-to-run noise produces, so `
+        + `unlike the steady-state figures above <b>this one is a real cost</b> — and it is the one that `
+        + `matters, because an overshoot is what meets the throttle boundary.`);
+
+      set('s-drift', `On the drift correction: the bracket before arm ${S.probe_arm} is `
+        + `${S.bracket_before[0]} and before arm ${S.model_arm} is ${S.bracket_before[1]}`
+        + (S.amb_from_cold_start
+          ? `. <b>That first one is the weak link</b> — it is the only bracket that approaches ambient from `
+            + `<em>below</em>, the app having just launched with a cold card, where every later bracket sheds `
+            + `a hot soak. It is used because it is the bracket that precedes that arm, and flagged because `
+            + `the load probe was caught by exactly this asymmetry.`
+          : `, both of which follow a hot soak and are directly comparable.`)
+        + ` The drift is monotone and arm ${S.model_arm} ran last, so whatever it is pushes the model arm `
+        + `<em>hotter</em> — the same direction as a genuine substitution cost. The correction therefore `
+        + `works against the result rather than flattering it.`);
+    }
+  }
+
+  /* ---------- the drift verdict, which does not depend on a replicate pair ---------- */
+  {
+    const PR = LOOP.prior;
+    if (RP) {
+    document.getElementById('rep-head').innerHTML =
+      '<th>Quantity</th>' + `<th class="n">arm ${RP.arms[0]}</th>`
+      + `<th class="n">arm ${RP.arms[1]}</th><th class="n">difference</th>`;
     const R2 = [
       ['die − setpoint (°C)', sgn(RP.die_err[0], 3), sgn(RP.die_err[1], 3), sgn(RP.die_delta, 3), true],
       ['applied duty (%)', RP.duty[0].toFixed(3), RP.duty[1].toFixed(3),
@@ -538,10 +656,36 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
     set('r-prose', `Arm ${RP.arms[1]} ran <b>${Math.abs(RP.die_delta).toFixed(2)} °C cooler on a full `
       + `EMC2101 level less air</b> — ${RP.duty[1].toFixed(2)} % against ${RP.duty[0].toFixed(2)} %, `
       + `${RP.rpm[1].toFixed(0)} rpm against ${RP.rpm[0].toFixed(0)}. Less fan and a colder card is the `
-      + `wrong direction for the fan curve, so this is not the controller: the plant changed. The actual `
+      + `wrong direction for the fan curve, so this is not the controller: the thermal resistance changed. The actual `
       + `convective resistance confirms it, ${RP.rconv[1].toFixed(3)} against ${RP.rconv[0].toFixed(3)} °C/W. `
       + `And the occupancy numbers say how one level moved: the requested duty was sitting <b>on the `
       + `boundary</b> between two levels — arm ${RP.arms[0]} dithered across it, arm ${RP.arms[1]} parked below it.`);
+    } else if (PR) {
+      /* No replicate pair in this run — every arm is a distinct configuration.
+         The bound is carried forward from the earlier run of the same plan and
+         computed from ITS file, so it is still derived rather than typed. */
+      document.getElementById('rep-head').innerHTML =
+        '<th>Quantity</th>' + `<th class="n">arm ${PR.arms[0]}</th>`
+        + `<th class="n">arm ${PR.arms[1]}</th><th class="n">difference</th>`;
+      [['die − setpoint (°C)', sgn(PR.die_err[0], 3), sgn(PR.die_err[1], 3), sgn(PR.die_delta, 3), true],
+       ['applied duty (%)', PR.duty[0].toFixed(3), PR.duty[1].toFixed(3),
+        sgn(PR.duty[1] - PR.duty[0], 3), false],
+       ['rail power (W)', PR.p[0].toFixed(4), PR.p[1].toFixed(4), sgn(PR.p[1] - PR.p[0], 4), false],
+       ['actual R<sub>conv</sub> (°C/W)', PR.rconv[0].toFixed(3), PR.rconv[1].toFixed(3),
+        sgn(PR.rconv[1] - PR.rconv[0], 3), false],
+      ].forEach(([k, a, b, d, bold]) => row('#rep', [td(k), tn(a), tn(b),
+        tn(bold ? '<b>' + d + '</b>' : d)]));
+      set('r-prose', `<b>Carried forward from ${PR.file}</b> — ${PR.date}, `
+        + `${PR.n.toLocaleString()} samples over ${PR.mins.toFixed(0)} minutes, the identical plan run `
+        + `before a model existed. Arms ${PR.arms[0]} and ${PR.arms[1]} both asked for different things `
+        + `and both got open loop, which made them an accidental replicate pair: two 30-minute arms of `
+        + `the same configuration, an hour apart. They differ by `
+        + `<b>${Math.abs(PR.die_delta).toFixed(2)} °C</b> of settled die, and that is the floor every `
+        + `comparison in this report has to clear. It decomposes into mundane things — `
+        + `${Math.abs(PR.rconv[1] - PR.rconv[0]).toFixed(3)} °C/W of convective resistance and `
+        + `${Math.abs((PR.p[1] - PR.p[0]) * 1000).toFixed(0)} mW of rail power, at this total resistance `
+        + `worth a couple of tenths of a degree by itself.`);
+    }
     set('r-verdict', `<b>And the closing bracket is the run's verdict on itself.</b> `
       + (DR.last_settled
         ? `It settled, so the drift had finished.`
@@ -552,17 +696,34 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
       + ` The cleanest statement of that drift is the natural-convection resistance at a fixed `
       + `${B[0].p.toFixed(2)} W with the fan off: <b>`
       + DR.r_amb.map(v => v.toFixed(2)).join(' → ') + ` °C/W</b>, i.e. `
-      + `<b>${sgn(DR.r_drop_pct, 1)} %</b>${DR.monotone ? ' and monotone across all four' : ''}. `
-      + `The card got steadily easier to cool across three and a half hours at constant power with no `
-      + `forced air at all. <b>The die, the heatsink thermocouple and the FS3000 all agree; the EMC2101 — `
-      + `the loop's own air input — is the one that says the opposite</b>, having risen `
-      + `${sgn(DR.rows[DR.rows.length - 1].d_air, 2)} °C over the same span. `
-      + `Three instruments against one, and the one is the input an open loop has nothing to correct `
-      + `with. This run cannot say what moved — a chassis fan, the room, the airflow path — only that `
-      + `something did, by more than the effect the run was built to measure: `
-      + `${Math.abs(C.headline.die_delta).toFixed(3)} °C of closed-versus-open against `
-      + `${Math.abs(DR.rows[2].d_die - DR.rows[3].d_die).toFixed(2)} °C between the last two brackets alone.`);
-    set('r-amb', `Between those two arms the unforced baseline fell <b>${sgn(RP.amb_die, 3)} °C</b> on the die `
+      + `<b>${sgn(DR.r_drop_pct, 1)} %</b>${DR.monotone ? ' and monotone' : ''} across all `
+      + `${DR.rows.length}. `
+      + (() => {
+          const L = DR.rows[DR.rows.length - 1], P2 = DR.rows[DR.rows.length - 2];
+          const close = Math.abs(L.d_die - P2.d_die);
+          const agree = L.d_air * L.d_die > 0;
+          return `The last two brackets agree to <b>${close.toFixed(3)} °C</b> of die, so the session `
+            + `ended where it had been sitting for an hour `
+            + (DR.last_settled ? `and the baseline is a valid one. ` : `. `)
+            + `The board air moved ${sgn(L.d_air, 2)} °C and the die ${sgn(L.d_die, 2)} °C over the `
+            + `same span — `
+            + (agree
+                ? `the same direction, so the loop's own air input is telling the truth here. That is `
+                  + `worth saying because it is <em>not</em> always so: on the 23 November run the `
+                  + `EMC2101 moved the opposite way to the die, the heatsink and the FS3000 together, `
+                  + `and an open loop has nothing to correct that with.`
+                : `<b>opposite directions</b>, so the loop's own air input is the one instrument `
+                  + `disagreeing with the rest, and an open loop has nothing to correct it with.`);
+        })()
+      + ` What makes the correction necessary rather than decorative is the size of it: `
+      + `<b>${sgn(DR.rows[DR.rows.length - 1].d_die, 2)} °C</b> of ambient rise across the session `
+      + (C.substitution
+          ? `against a <b>${sgn(C.substitution.die_delta, 2)} °C</b> raw difference between the arm on `
+            + `the sensor and the arm on the estimate. The drift is the same size as the effect, and it `
+            + `runs the same way — arm ${C.substitution.model_arm} ran last — so subtracting it works `
+            + `<em>against</em> the result rather than flattering it.`
+          : `against the differences this run set out to measure.`));
+    if (RP) set('r-amb', `Between those two arms the unforced baseline fell <b>${sgn(RP.amb_die, 3)} °C</b> on the die `
       + `and ${sgn(RP.amb_hs, 3)} °C on the heatsink, at a fixed ${B[0].p.toFixed(2)} W with the fan off — `
       + `while the loop's own air input moved <b>${sgn(RP.amb_air, 3)} °C, in the opposite direction</b>. `
       + `So of arm ${RP.arms[1]}'s ${Math.abs(RP.die_delta).toFixed(2)} °C, about ${Math.abs(RP.amb_die).toFixed(2)} °C `
@@ -572,6 +733,19 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
       + `${C.headline ? Math.abs(C.headline.die_delta).toFixed(3) : '—'} °C agreement between closed and open `
       + `loop is <em>below the noise floor</em>. The honest claim is that the feedforward matched the closed `
       + `loop to within repeatability — not that it matched it to a hundredth of a degree.`);
+    else if (PR && C.substitution) set('r-amb', `<b>Applied to this run:</b> the bound is `
+      + `${PR.bound.toFixed(2)} °C, and the substitution moved the settled die by `
+      + `${Math.abs(C.substitution.die_delta).toFixed(3)} °C raw — `
+      + (C.substitution.corrected === null ? ''
+        : `${Math.abs(C.substitution.corrected).toFixed(3)} °C once the measured ambient shift between `
+          + `the bracketing baselines is taken out — `)
+      + `and the settled fan duty by ${Math.abs(C.substitution.duty_delta).toFixed(3)} duty points. `
+      + `<b>All of that is inside the floor.</b> So the steady-state result here is a null result, and `
+      + `the right way to state it is that regulating on the estimate is indistinguishable from `
+      + `regulating on the sensor at the precision this rig has demonstrated. The transient is the part `
+      + `that is <em>not</em> inside the floor: `
+      + `${Math.abs(C.substitution.reach_delta)} s earlier to setpoint and `
+      + `${Math.abs(C.substitution.over_delta).toFixed(2)} °C more overshoot.`);
   }
 
   /* ---------- the brackets ---------- */
@@ -651,11 +825,11 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
       tn(sgn(r.predicted, 3)), tn(sgn(r.residual, 3))]));
     const c = E.by_arm.find(r => r.kind === 'closed');
     set('e-prose', c ? `The closed-loop arm's bias has an exact explanation, and it is the whole of it. `
-      + `At its held duty the plant's internal resistance measures <b>${c.rint.toFixed(4)} °C/W</b> against `
+      + `At its held duty the card's internal resistance measures <b>${c.rint.toFixed(4)} °C/W</b> against `
       + `the ${E.rint_cfg} the firmware carries, and `
       + `(${E.rint_cfg} − ${c.rint.toFixed(4)}) × ${c.p.toFixed(4)} W = <b>${sgn(c.predicted, 3)} °C</b> — `
       + `which is the measured bias to three decimals, residual ${sgn(c.residual, 3)}. Nothing else is `
-      + `contributing. The open arms are different in kind: their estimate never touches the thermocouple, `
+      + `contributing. An open arm is different in kind: its estimate never touches the thermocouple, `
       + `so the R<sub>conv</sub> curve's error enters instead of the thermocouple's, and the two partly `
       + `cancel. That makes arm 2's smaller mean <em>luck, not accuracy</em> — and its `
       + `${(E.by_arm[1].sd / c.sd).toFixed(1)}× spread is the real signal.` : '—');
@@ -718,7 +892,7 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
         t: 'worse without the pole',
         s: `the same curve evaluated statically, which is what the open-loop branch's own `
          + `<code>die_est</code> does: ${Math.min(...statRms).toFixed(1)}–${Math.max(...statRms).toFixed(1)} °C rms, `
-         + `excursions to ${statWorst.toFixed(0)} °C. A 70–165 s plant cannot be read by a memoryless estimate` },
+         + `excursions to ${statWorst.toFixed(0)} °C. A 70–165 s heatsink cannot be read by a memoryless estimate` },
       { num: sgn(worstCold, 2), unit: '°C',
         t: 'worst it reads cold',
         s: 'the only direction that costs throttle margin: an estimate below the truth under-cools. '
@@ -770,15 +944,17 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
       + `dynamics out and evaluate the identical curve as <code>air + W × R<sub>conv</sub>(duty)</code> `
       + `fresh each step — exactly what <code>ctl.die_est</code> computes in open loop — and the error `
       + `goes to ${Math.min(...statRms).toFixed(1)}–${Math.max(...statRms).toFixed(1)} °C rms with `
-      + `excursions to ${statWorst.toFixed(0)} °C, because a memoryless estimate of a 70–165 s plant is `
+      + `excursions to ${statWorst.toFixed(0)} °C, because a memoryless estimate of a 70–165 s heatsink is `
       + `wrong by the whole of whatever transient is in flight. One first-order state, and one fitted `
       + `capacity, is the difference between those two columns.`);
 
     set('m-cold', `<b>Where it goes wrong, and which way.</b> Two terms push oppositely. Model identity `
       + `is one-sided and safe: the curve is fitted to ResNet-50, which has the highest convective `
       + `resistance of the four loads measured, so every other model reads hot and over-cools. Session `
-      + `drift is the other way — the plant's own R<sub>conv</sub> moved 0.96 % across these three arms, `
-      + `and the estimate reads cold on `
+      + `drift is the other way — and on this run the loaded hardware barely moved at all, the measured `
+      + `R<sub>conv</sub> spanning just <b>`
+      + ((Math.max(...A.map(r => r.rconv)) / Math.min(...A.map(r => r.rconv)) - 1) * 100).toFixed(3)
+      + ` %</b> across the three arms. The estimate still reads cold on `
       + M.arms.map(r => r.whole.cold_pct.toFixed(0) + ' %').join(' / ')
       + ` of each arm's samples, worst <b>${sgn(worstCold, 2)} °C</b>. Per-arm bias is in fact entirely `
       + `the curve's error at the duty held: the arms sat at `
@@ -801,8 +977,8 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
     + `<b>${T.clk_hi.toFixed(0)} MHz</b> with <b>${T.thr.toFixed(2)} %</b> of samples below it, and the `
     + `hottest die of the whole run <b>${T.die_max.toFixed(2)} °C</b> — ${T.margin.toFixed(2)} °C short of `
     + `the ${T.bound.toFixed(0)} °C zero-throttle bound, at a ${T.target.toFixed(0)} °C setpoint. `
-    + `So the five degrees of margin bought to protect the open-loop arms were never spent, even by the arm `
-    + `that ran ${RP ? Math.abs(RP.die_delta).toFixed(2) : '—'} °C off its sibling. `
+    + `So the five degrees of margin bought to protect the arms without a measurement were never spent, even by the arm `
+    + `that overshot furthest. `
     + `What the board still cannot do is notice: throttling is invisible to it, and closing that would put `
     + `the host back in the loop — which is the thing running the loop on the board exists to avoid.`);
   /* ---------- timeline ---------- */

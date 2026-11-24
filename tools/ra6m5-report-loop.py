@@ -37,14 +37,19 @@ ladder to fit a mW/C leakage slope against) and new ones appear:
     every other control channel reads identically in both.  If that one
     column had not separated them this run would have measured arm 2 three
     times and been unable to say so.
-  * ARM 2 AND ARM 3 ARE A REPLICATE PAIR, by accident of there being no model
-    compiled in yet, and that is what bounds run-to-run repeatability.  No
-    arm-1-vs-arm-2 difference can be called real below that bound.
+  * THE REPEATABILITY BOUND IS NOT ALWAYS MEASURABLE IN THE RUN ITSELF.  On
+    the 2026-11-23 run arms 2 and 3 were a replicate pair, by accident of
+    there being no model compiled in yet, and their difference bounds every
+    other difference in that report.  Once a model exists all three arms are
+    distinct configurations, so `repeat` is None and the bound has to be
+    CARRIED FORWARD from the earlier run with `--prior`.  It is computed from
+    that file rather than typed in, for the same reason every other number
+    here is.  No arm-to-arm difference may be called real below it.
   * THE FOUR FAN-OFF BRACKETS ARE AN AMBIENT PROBE.  `fan.idle = 0` holds the
     fan off and the card at ~0.86 W for 30 minutes before the first arm,
     between the arms, and after the last.  Differencing them separates a real
-    plant change from a controller difference -- which this run needed, because
-    the plant did move.
+    hardware change from a controller difference -- which this run needed, because
+    the thermal resistance did move.
 
 Conventions shared with `tools/ra6m5-report-tc.py`, for the same reasons:
 
@@ -321,7 +326,7 @@ class Run:
         register back before every pause, so the loop is OFF and the fan is at
         0 %: an unforced thermal baseline at a fixed ~0.86 W.  Repeated four
         times across 3.5 hours, that is an ambient probe, and it is the only
-        instrument in the run that can tell a plant change from a controller
+        instrument in the run that can tell a hardware change from a controller
         difference."""
         return self.blocks(
             lambda d: d['st'] != 'running' and (d['mode'] or 0) == 0
@@ -446,7 +451,7 @@ def describe_arm(block, window, floor):
                     if d['die'] is not None and d['die'] >= tgt - 0.5), None),
         # --- the loop's own error, where it had one ---
         err_mean=r4(mean(lerr)), err_sd=r4(pstdev(lerr)), err_n=len(lerr),
-        # --- plant ---
+        # --- thermal ---
         hs=r4(mean([d['hs'] for d in tl])), air=r4(mean([d['air'] for d in tl])),
         p=r4(mean([d['p'] for d in tl])), p_sd=r4(pstdev([d['p'] for d in tl])),
         duty=r4(mean([d['duty'] for d in tl])), duty_sd=r4(pstdev([d['duty'] for d in tl])),
@@ -556,6 +561,11 @@ def main():
                     help='Control.h, read for the soft sensor\'s constants. They are '
                          'parsed rather than copied so the page cannot quote a model '
                          'the firmware does not have.')
+    ap.add_argument('--prior', help='an earlier run of the SAME plan whose two '
+                    'open arms were a replicate pair, used only for the '
+                    'run-to-run repeatability bound.  Needed once a model is '
+                    'compiled in, because all three arms are then distinct and '
+                    'the run can no longer measure its own noise floor.')
     ap.add_argument('--load-floor', type=float, default=4.7,
                     help='drop settled samples below this rail wattage (default 4.7 W). '
                          'The engine stop sample sits inside the window with the load '
@@ -634,6 +644,49 @@ def main():
             est_absmax_ratio=r4(div(o['est_absmax'], c['est_absmax'])),
             same_levels=sorted(o['occupancy']) == sorted(c['occupancy']))
 
+    # ---- the substitution itself: probe vs model, same setpoint ----------
+    # THE POINT OF THE WHOLE RUN.  Both arms are closed loops with an
+    # identical control law; only where `tc_` comes from differs.  Scored on
+    # the CARD's own sensor, and drift-corrected from the fan-off bracket
+    # immediately before each arm, because the arms are two hours apart and
+    # the session's drift is monotone -- it pushes the later arm hotter, the
+    # same direction as any real substitution cost.
+    def bracket_before(arm):
+        c = [b for b in out['brackets'] if b['t1'] <= arm['t0']]
+        return c[-1] if c else None
+
+    probe = next((s for s in A if s['src'] == 0), None)
+    modl = next((s for s in A if s['src'] == 1), None)
+    out['compare']['substitution'] = None
+    if probe and modl:
+        bp, bm = bracket_before(probe), bracket_before(modl)
+        amb = None if (bp is None or bm is None) else r4(bm['die'] - bp['die'])
+        dd = r4(modl['die_err'] - probe['die_err'])
+        out['compare']['substitution'] = dict(
+            probe_arm=A.index(probe) + 1, model_arm=A.index(modl) + 1,
+            die_delta=dd,
+            duty_delta=r4(modl['duty'] - probe['duty']),
+            duty_levels=r4(div(modl['duty'] - probe['duty'], DUTY_STEP)),
+            same_levels=sorted(modl['occupancy']) == sorted(probe['occupancy']),
+            over=[probe['over'], modl['over']],
+            over_delta=r4(modl['over'] - probe['over']),
+            reach=[probe['reach'], modl['reach']],
+            reach_delta=(None if None in (probe['reach'], modl['reach'])
+                         else modl['reach'] - probe['reach']),
+            est=[probe['est'], modl['est']],
+            est_sd=[probe['est_sd'], modl['est_sd']],
+            rconv=[probe['rconv'], modl['rconv']],
+            p=[probe['p'], modl['p']],
+            bracket_before=[None if bp is None else bp['clock'],
+                            None if bm is None else bm['clock']],
+            # bracket 1 is the ONLY one that approaches from below (cold card,
+            # app just launched); every other sheds a hot soak.  Flagged
+            # rather than silently used, because it is the weak link in this
+            # correction and the load probe was caught by exactly this.
+            amb_from_cold_start=bool(bp is not None and bp is out['brackets'][0]),
+            amb_die=amb,
+            corrected=None if amb is None else r4(dd - amb))
+
     # ---- repeatability: the two open arms are a replicate pair ------------
     # There is no model compiled in, so arm 3 ran open too.  That was foreseen
     # (the plan calls it "a second baseline sample, which is not wasted") and it
@@ -671,6 +724,28 @@ def main():
             bound=r4(abs(o2['die_err'] - o1['die_err'])),
             air_sensor_disagrees=bool(amb is not None and amb_air is not None
                                       and amb * amb_air < 0))
+
+    # ---- the bound carried forward from an earlier replicate pair --------
+    out['prior'] = None
+    if a.prior:
+        PR = Run(a.prior)
+        pa = [describe_arm(b, a.window, a.load_floor) for b in PR.arms()]
+        po = [s for s in pa if s['kind'] == 'open']
+        if len(po) >= 2:
+            out['prior'] = dict(
+                file=os.path.basename(a.prior),
+                date=PR.rows[0]['t'].strftime('%d %b'),
+                n=len(PR.rows), mins=round(PR.rows[-1]['s'] / 60, 1),
+                arms=[pa.index(po[0]) + 1, pa.index(po[1]) + 1],
+                die_err=[po[0]['die_err'], po[1]['die_err']],
+                die_delta=r4(po[1]['die_err'] - po[0]['die_err']),
+                duty=[po[0]['duty'], po[1]['duty']],
+                p=[po[0]['p'], po[1]['p']],
+                rconv=[po[0]['rconv'], po[1]['rconv']],
+                bound=r4(abs(po[1]['die_err'] - po[0]['die_err'])))
+        else:
+            print(f"note: {a.prior} has {len(po)} open arms, not the 2 a "
+                  f"replicate pair needs -- no bound carried forward")
 
     # ---- drift across the whole session, from the fan-off brackets --------
     B = out['brackets']
@@ -712,7 +787,7 @@ def main():
     # 9.4 minutes with the die 10.3 C BELOW setpoint; on a cold start the P term
     # subtracted 29.7 points from a correct feedforward and floored the fan for
     # 40 s, overshooting 3.5 C.  Both were one defect: an unbounded PI fighting
-    # the plant's own time constant.  kTrim = 15 duty points is the whole fix.
+    # the thermal time constant.  kTrim = 15 duty points is the whole fix.
     out['ktrim'] = None
     if closed:
         c = closed[0]
