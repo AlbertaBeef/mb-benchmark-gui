@@ -205,12 +205,31 @@ wrong arm would be worse than one that fails to load. `kProtocol` went 2 → 3
 to say the channel set changed; a pre-0.7.0 log carries `ctl.nn` and a
 `ctl.tc` that is an effective bool, and does not mean what the table above says.
 
-**There is no model yet.** The selector, the provenance plumbing and the
-experiment landed first; the model is fitted to the data that experiment
-produces. `ctl.tc model` is accepted and answers `(no model compiled in)`,
-`ctl.model_ready` reports **0**, `ctl.src` reports **2 none** against a
-`ctl.tc` of **2 model**, and `ctl.state` is **6** (degraded) — so a run
-configured for the model can never be mistaken in the log for one that got it.
+**THE MODEL IS FITTED (2026-11-24) and `ctl.model_ready` now reports 1.** It is
+a first-order lag on the same `R_conv(duty)` curve the feedforward inverts, plus
+one fitted constant — a lumped heatsink capacity, so `tau = R_conv * C` — giving
+`tc_ss = air + W * R_conv(duty)` and `d tc/dt = (tc_ss - tc)/tau`. Fitted on
+26 094 samples (the 11-22 fan ladder's unthrottled region and the 11-23
+soft-sensor run) and validated on 20 698 held out of the fit: **0.52 and 0.87 C
+rms** on their loaded windows. `firmware/mb-probe-ra6m5/Control.h` carries the
+constants and the error budget; `docs/reports/ra6m5-loop/` scores it per arm.
+
+Two consequences for reading a log. `ctl.tc model` is now **honoured** rather
+than refused, so `ctl.src` reports **1 modelled** and `ctl.state` is a normal
+running state — it is no longer true that a run asking for the model can be
+identified by getting `2 none` and `6 degraded`. And the estimate reads *cold*
+by up to 2.3 C when the plant drifts, which is the direction that costs
+throttle margin, so **regulate on the model at 90 C rather than `ctl.target
+auto`** (95 C); the real probe earned 95, the estimate has not.
+
+**The same refit corrected the feedforward.** The curve's three lowest nodes had
+come from the fan ladder's bottom treads, which are *throttled* — below 23.8 %
+duty the card sits on its thermal limit, so the heatsink reading there is set by
+the limit and not by the fan. They were wrong by up to 32 % (16.17 C/W claimed
+at the 9.5 % floor, against 21.28 measured). Nothing at or above 30.2 % duty
+moved by more than 1.1 %, so any run held in the usual 32-61 % band is
+unaffected — but a pre-0.7.0 log of a *light-load* step was using a curve that
+believed the fan was half again as effective at its floor as it is.
 
 **Not named `nn_*` in the firmware either, deliberately.** The evidence says
 the first fit should be a first-order thermal model with a learned time

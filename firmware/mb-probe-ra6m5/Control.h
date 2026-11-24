@@ -118,6 +118,25 @@
 //   gain   = -1.8 C per duty-point at 30 % duty falling to -0.6 at 70 %, a 3x
 //            spread. invert_curve() is what linearises it, which is why kp = 1
 //            works unchanged across 32-61 % duty.
+//   model  = the soft sensor, fitted 2026-11-24 -- `kHeatCapacity` and the
+//            refitted curve_rconv(). Jointly fitted on 26 094 samples (the
+//            11-22 ladder's unthrottled region plus the 11-23 soft-sensor run)
+//            to 0.51 C rms, then validated on 20 698 samples of two runs held
+//            out of the fit entirely: 0.52 and 0.87 C rms on their loaded
+//            windows, unbiased (-0.03 and +0.28 C). It is the SAME curve the
+//            feedforward inverts, which is deliberate -- one table, so the
+//            predictor and the observer cannot disagree about the plant.
+//
+// THE 0.7.0 REFIT ALSO CORRECTED THE FEEDFORWARD, and this is worth knowing
+// before trusting any pre-0.7.0 log of a light-load step. The old curve took
+// all nine nodes from the fan ladder, and the ladder's bottom three treads are
+// THROTTLED: below 23.8 % duty the card sits on its thermal limit, so the
+// heatsink reading there is set by the limit and not by the fan. Those nodes
+// were wrong by up to 32 % -- the table claimed 16.17 C/W at the 9.5 % floor
+// where the plant delivers 21.28 -- i.e. the feedforward believed the fan was
+// half again as effective at its floor as it is. Above 30.2 % the ladder is
+// clean and nothing moved by more than 1.1 %, so a run held at 32-61 % duty
+// (which is every loop run on disk) is unaffected.
 //
 // SCOPE: the feedforward curve and R_int are the Hailo-8's, and kAutoTarget is
 // its measured bound. Another card in the slot has its own heatsink and its own
@@ -207,6 +226,7 @@ public:
         if (m == kOff) {
             state = kIdle; src = kNone; integ = 0;
             in_c = die_est = err = duty = ff = NAN;
+            model_forget();
         } else {
             rearm_ = true;   // next step() seeds the integrator — see below
         }
@@ -218,22 +238,99 @@ public:
     void set_target(double c) { target = c; target_auto = false; }
     void set_target_auto() { target = kAutoTarget; target_auto = true; }
 
-    // Soft-sensor substitute for the thermocouple. Not fitted yet: the
-    // selector, the provenance plumbing and the experiment land first, and the
-    // model is fitted to the data that experiment produces. `model_ready()` is
-    // what keeps `ctl.tc model` honest in the meantime — the host is told the
-    // substitution is not happening rather than being quietly given open loop.
+    // ---- the soft sensor: a stand-in for the heatsink thermocouple -------
     //
-    // NOT NAMED `nn_*`, deliberately. The evidence says the first fit should be
-    // a first-order thermal model with a learned time constant — three or four
-    // physically interpretable parameters, monotone in duty, which invert_curve
-    // provably is and a net is not. Naming the hook after a technique would
-    // have to be undone the moment the technique changed; naming it after the
-    // ROLE (the signal came from a model, not a sensor) does not.
-    bool model_ready() const { return false; }
-    double model_estimate(double /*w*/, double /*air*/, double /*duty*/) const {
-        return NAN;
+    // FITTED 2026-11-24 on 26 094 samples and validated on 20 698 more that
+    // were held out of the fit entirely. It is a FIRST-ORDER LAG, and the order
+    // is the whole point — see below.
+    //
+    //   tc_ss  = air + W * R_conv(duty)          the steady state
+    //   tau    = R_conv(duty) * kHeatCapacity    the pole, from the same curve
+    //   d tc/dt = (tc_ss - tc) / tau
+    //
+    // So it adds exactly ONE parameter to what the feedforward already knew:
+    // the heat capacity. `kHeatCapacity` is a lumped heatsink + thermocouple
+    // capacity, fitted jointly with the curve.
+    //
+    // NOT NAMED `nn_*`, deliberately, and the fit vindicated that: three
+    // physically interpretable numbers beat a net here, and `invert_curve` is
+    // provably monotone where a net is not.
+    //
+    // WHY THE DYNAMICS ARE NOT OPTIONAL. The static form -- `air + W*R(duty)`,
+    // evaluated fresh each step, which is what the open-loop branch's own
+    // die_est does -- scores rms 7.3-9.0 C on the held-out runs with
+    // excursions to 43 and 72 C, because it has no memory and a 70-180 s plant
+    // settles slowly. The same curve with this one pole scores 0.52-0.87 C.
+    // Do not "simplify" this back to the algebraic form.
+    //
+    // WHAT IT IS WORTH, measured by replaying the 11-23 arm that ran closed on
+    // the real probe and substituting this for it: the loop commands a settled
+    // duty of 37.29 % against the firmware's own 37.72 % -- 0.43 duty points,
+    // ~0.6 C of die, against a 5 C margin. That is the cost of losing the
+    // probe, and it is affordable.
+    //
+    // THE ERROR BUDGET, and it does NOT come out one-sided. Two terms push
+    // opposite ways, so do not read either on its own:
+    //
+    //   model identity -- R_conv is fitted to ResNet-50, which has the HIGHEST
+    //     convective resistance of the four models measured, so every other
+    //     load reads HOT: +0.30 C (SCRFD-10G), +0.43 (YOLOv8m), +2.19
+    //     (YOLOv8s, 4.2 % of its heatsink rise). Hot over-cools, so this term
+    //     alone is in the safe direction. The board cannot observe it -- which
+    //     model is running is PCIe-side.
+    //   session drift -- the plant itself moves ~1-2 % in R_conv between
+    //     sessions, and THAT term reads COLD. On the two held-out runs the
+    //     estimate was below the probe on 15.5 % and 60.0 % of loaded samples,
+    //     worst excursion -2.34 C.
+    //
+    // So the honest worst case is the cold one: the loop may believe the
+    // heatsink is ~2.3 C cooler than it is. The throttle boundary is
+    // hysteretic and stochastic between 98.9 and 104.2 C, i.e. as little as
+    // 3.9 C above kAutoTarget, and -2.3 C of that is most of the margin.
+    // RECOMMENDATION: regulate on the model at 90 C, not at `target auto`.
+    // With the real probe 95 C measured 0.00 % throttled over 13 247 samples;
+    // the estimate has not earned that setpoint and this comment is the only
+    // place that distinction is written down.
+    static constexpr double kHeatCapacity = 10.4;   // J/C, fitted
+
+    // True once a curve and a capacity for the card in the slot are compiled
+    // in. Kept as a predicate rather than hard-wired to `true`: both constants
+    // are the Hailo-8's, and the honest answer for another card is `false`.
+    bool model_ready() const { return true; }
+
+    // The steady state this operating point implies. Pure, and the one piece
+    // the open-loop branch shares, so the two can never disagree about where
+    // the plant is heading.
+    double model_steady(double w, double air, double duty) const {
+        return air + w * rconv_at(duty);
     }
+    // The pole at that duty. tau = R*C held to 0.1 % between 50.8 and 73 %
+    // duty on the fit run, which is what says C is a constant and not a
+    // per-duty fudge: letting it vary as (R/R73)^a made the held-out error
+    // strictly worse for every a > 0.
+    double model_tau(double duty) const {
+        return rconv_at(duty) * kHeatCapacity;
+    }
+    // Advance the state by `dt_s` and return the estimate. Stateful by
+    // necessity -- that state IS the model's memory of the heatsink.
+    double model_estimate(double w, double air, double duty, double dt_s) {
+        const double ss = model_steady(w, air, duty);
+        if (isnan(ss)) return NAN;
+        if (isnan(tc_hat_)) { tc_hat_ = ss; return tc_hat_; }
+        const double tau = model_tau(duty);
+        if (!(tau > 0) || !(dt_s > 0)) return tc_hat_;
+        // Clamped so an implausibly long step cannot overshoot past the
+        // steady state and ring; the explicit Euler form is stable for
+        // dt < tau and this is the guard for when it is not.
+        tc_hat_ += clampd(dt_s / tau, 0.0, 1.0) * (ss - tc_hat_);
+        return tc_hat_;
+    }
+    // Bumpless handover. The case this sensor exists for is a thermocouple
+    // that WAS there and went away, so the last thing it said is a far better
+    // seed than the steady state -- which, mid-transient, can be tens of
+    // degrees out.
+    void model_seed(double tc) { tc_hat_ = tc; }
+    void model_forget() { tc_hat_ = NAN; model_ms_ = 0; }
 
     void reset_stats() { sat = write_err = 0; }
 
@@ -273,9 +370,29 @@ public:
         if (tc_want == kTcReal && tc_ok) {
             src = kMeasured;
             pv_tc = tc_;
+            // Drop any model state while the probe is answering, so a later
+            // handover re-seeds from a CURRENT reading rather than from one
+            // the model has been extrapolating on its own since.
+            model_forget();
         } else if (tc_want != kTcOff && model_ready()) {
             src = kModelled;
-            pv_tc = model_estimate(w_, air_, duty);
+            // It is a model of the duty ACTUALLY APPLIED, so it cannot run
+            // before something has applied one; and it needs air, like the
+            // feedforward. Either way one step of open loop covers it and
+            // `ctl.src` says that is what happened.
+            if (isnan(duty) || !air_ok) {
+                pv_tc = NAN;
+            } else {
+                // Seed from the probe's last word whenever there is one, fresh
+                // or not: a probe that went stale 3 s ago is still the best
+                // estimate of where the heatsink was.
+                if (isnan(tc_hat_) && !isnan(tc_)) model_seed(tc_);
+                double dt_s = model_ms_ ? (now - model_ms_) / 1000.0 : 0.0;
+                if (!(dt_s > 0) || dt_s > kStaleMs / 1000.0)
+                    dt_s = kPeriodMs / 1000.0;
+                model_ms_ = now;
+                pv_tc = model_estimate(w_, air_, duty, dt_s);
+            }
             // Asking for `model` and getting it is NOT degradation. Asking for
             // `real` and landing here is: the fallback fired.
             degraded = (tc_want == kTcReal);
@@ -453,15 +570,53 @@ private:
     int last_level_ = -1;   // EMC2101 fan setting last written, 0..63
     double tc_ = NAN, w_ = NAN, air_ = NAN;
     uint32_t tc_ms_ = 0, w_ms_ = 0, air_ms_ = 0;
+    double tc_hat_ = NAN;    // the soft sensor's state: its memory of the sink
+    uint32_t model_ms_ = 0;  // when it was last advanced, for the real dt
 
-    // The measured R_conv-against-duty curve, from the R_conv column of the
-    // 22 Nov Hailo-8 run's 59-tread table. Duty 0 is the settled end of the
-    // 30-minute fan-off soak. Monotonically decreasing, so inverting it is a
-    // scan plus a linear interpolation — and monotone by construction, which a
-    // fitted model would not be. Re-measured at four held setpoints on the
-    // 22/23 Nov run and accurate to 1.7 %, all four in the same direction (the
-    // ladder is very slightly pessimistic about how well the fan cools, which
-    // is the safe direction for a feedforward to err).
+    // The measured R_conv-against-duty curve. Monotonically decreasing, so
+    // inverting it is a scan plus a linear interpolation — and monotone BY
+    // CONSTRUCTION, which a fitted model would not be. Both this and
+    // kHeatCapacity are the Hailo-8's; another card needs them re-measured.
+    //
+    // REFITTED 2026-11-24, and the three lowest nodes CHANGED A LOT -- up to
+    // 32 %. The earlier table took all nine nodes from the 22 Nov ladder's
+    // 59-tread R_conv column, and the bottom of that ladder is THROTTLED
+    // DATA: with the fan at 0-23.8 % the card sits on its thermal limit, so
+    // 100 % of those samples are below 400 MHz and the heatsink reading is
+    // pinned by the limit rather than set by the fan. Those treads measure the
+    // throttle, not the plant. The ladder is clean only from 30.2 % up, where
+    // it reads 0.0 % throttled, and the nodes at and above 30.2 % moved by at
+    // most 1.1 % as a result -- so this is a low-duty correction, not a
+    // re-measurement of the whole curve.
+    //
+    // Provenance node by node:
+    //   0.0        natural convection, the four fan-off brackets of the 11-23
+    //              three-arm run: 22.46 / 22.19 / 21.80 / 20.55, mean 21.75.
+    //              An 8.8 % spread across one afternoon -- this node drifts
+    //              more than any other, and it is measured at 0.86 W only.
+    //   9.5        the two settled 9.5 % blocks of the 11-22 four-setpoint run,
+    //              20.84 and 21.72. Also 0.87 W only. Note it lands within the
+    //              drift of the 0 node: at its 9.5 % floor the fan turns at
+    //              262 rpm and buys almost nothing over still air.
+    //   20.6       the one clean low-duty tread that exists -- T15 of the
+    //              11-23 fit run, 0.0 % throttled at 3.83 W. n=1, and the
+    //              weakest node in the table. Its three neighbours at the same
+    //              duty all throttled and read 15.05-15.15, which is what a
+    //              throttled tread looks like here: LOWER, not higher.
+    //   30.2-73.0  the 11-22 ladder's clean region, lag-corrected by the joint
+    //              fit below. Cross-checked against the fit run's own settled
+    //              asymptotes at 73.0 / 50.8 / 33.3 %: 6.67 / 9.75 / 12.40
+    //              against this curve's 6.73 / 9.77 / 12.40.
+    //   >73.0      flat, and verified so: the ladder's 18 levels from 73 to
+    //              100 % read 6.73-6.81 with no trend, agreeing with the tach.
+    //
+    // ALL NINE ARE AGAINST SIMULTANEOUS AIR -- the EMC2101's own reading at the
+    // same duty, which is what the board has at run time. That convention is
+    // load-bearing: the EMC2101 is itself cooled by the fan at -0.026 C per
+    // duty point, so pricing R_conv against air measured at a DIFFERENT duty
+    // folds a duty-dependent bias straight into the curve. The fit run's idles
+    // all sat at 73 % while its treads ran down to 20.6 %, so that mistake was
+    // available and worth 2 % at the bottom of the range.
     //
     // Function-local statics behind accessors so the header needs no
     // out-of-line definitions on a pre-C++17 core, and so the forward and
@@ -473,8 +628,8 @@ private:
         return d;
     }
     static const double* curve_rconv() {
-        static const double r[kCurveN] = {16.48, 16.17, 15.20, 12.97, 11.29,
-                                          9.88, 8.37, 7.11, 6.74};
+        static const double r[kCurveN] = {21.75, 21.28, 15.82, 12.97, 11.30,
+                                          9.77, 8.31, 7.07, 6.73};
         return r;
     }
 

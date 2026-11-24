@@ -317,9 +317,9 @@ Three layers, cleanly separated. Keep it that way.
   (`hailo.api`, `axelera.cores`, `qualcomm.perf`), plus an `accelerators =`
   whitelist.
 
-  **`fps = <n>` | `max` caps the frame rate from a plan** (2026-11-23), and it
-  is the one honest way to vary a card's POWER without changing anything else:
-  same model, same artifact, same layer mix, only the rate. Varying load by
+  **`fps = <n>` | `max` caps the frame rate from a plan** (2026-11-23). It is
+  the one honest way to vary a card's RATE without changing anything else:
+  same model, same artifact, same layer mix. Varying load by
   swapping models confounds it with where on the die the heat appears. Like the
   fan it is **not per-card** — `BenchEngine::start()` takes one cap for the
   whole run — so it sits beside `fan` in `AutomationSettings` and drives the
@@ -329,6 +329,38 @@ Three layers, cleanly separated. Keep it that way.
     *counting* until `FramePacer` landed; see **the frame-rate cap was cosmetic
     on three backends** below. Confirm the rail moved before trusting a capped
     figure.
+  - **IT IS NOT A LOAD KNOB ON HAILO-8 — this entry said it was, and the
+    measurement refuted it (2026-11-23/24).** The claim was that capping the
+    rate varies power; on a dataflow part it barely does. ResNet-50 at 73 %
+    duty, temperature-corrected to a common 52 °C:
+
+    | cap | fps | rail W | mJ/frame |
+    | --- | ---: | ---: | ---: |
+    | max | 1372.3 | 4.341 | 2.59 |
+    | 1000 | 1000.0 | 4.339 | 3.55 |
+    | 700 | 700.0 | 4.344 | 5.06 |
+    | 500 | 500.0 | 4.325 | 7.08 |
+    | 300 | 300.0 | 4.131 | 11.13 |
+    | 150 | 150.0 | 3.247 | 22.5 |
+
+    **500, 700, 1000 and max are the same wattage to 14 mW** — 2.7x the work
+    for 0.3 % more power. Power saturates by 500 fps and the whole usable range
+    is 3.25-4.34 W, 25 %, against the 6.9x that model identity gives. The
+    mechanism: on a dataflow architecture the configured network group lights
+    and clocks the fabric, so power is set by WHICH MODEL IS RESIDENT, not by
+    how many frames pass through it. A plan header that estimated a W ladder by
+    scaling linearly in frames (1000 -> 3.4 W, 500 -> 2.1, 150 -> 1.2) was
+    wrong by up to **2.7x**. If you need a load axis on this card, swap models;
+    if you need a *matched* load at low duty, the cap buys you 150 fps and
+    nothing between there and full rate.
+  - **UNDER A CAP, THE FRAME RATE CANNOT DETECT THROTTLING — only `_CLK` can.**
+    The exact inverse of the DX-M1 rule above, and for a reason that
+    generalises: a cap below what the card does when throttled makes the rate
+    blind. Measured on three treads at 20.6 % duty — 350 MHz for 63-67 % of
+    their samples, die at **104 °C**, all three clamped to 4.73 W — while
+    `hailo_fps` read exactly **500.0 / 700.0 / 300.0** the whole way. So
+    "confirm the rail moved" is necessary and not sufficient: on a capped
+    Hailo run, check `_CLK` per tread or the wattage is not a measure of work.
   - **The spin clamps at `kMaxFps` = 1000, silently.** The Hailo does 1372, so
     full rate is `fps = max` and never a number above 1000. The effective cap is
     in the CSV every tick as `bench_target_fps` (empty = max) — read that, not
@@ -1394,17 +1426,22 @@ disagrees exactly when a request was refused or a fallback fired.
 - **`ctl.nn` is gone and the command is REFUSED**, with a pointer to
   `ctl.tc off|real|model`. `ctl.model_ready` replaces the host-side guessing it
   enabled — see the `nn_available` entry under **Known issues**.
-- **There is no model yet.** The selector, the provenance plumbing and the
-  experiment landed first. `ctl.tc model` is accepted, answers `(no model
-  compiled in)`, and reports `ctl.model_ready = 0`, `ctl.src = 2` against
-  `ctl.tc = 2`, `ctl.state = 6` — so a run configured for the model can never
-  be read as one that got it.
-- **The firmware hook is `model_estimate()`, not `nn_*`.** The evidence says
-  the first fit should be a first-order thermal model with a learned time
-  constant — three or four physically interpretable parameters, monotone in
-  duty, which `invert_curve` provably is and a net is not. Naming a hook after
-  a technique has to be undone when the technique changes; naming it after the
-  role does not.
+- **THE MODEL IS FITTED (2026-11-24) and `ctl.model_ready` reports 1.** See
+  **The soft sensor** below for the fit and its error budget. Two consequences
+  for reading a log, both of which invalidate advice this file used to give:
+  `ctl.tc model` is now **honoured**, so `ctl.src` reports **1 modelled** and
+  `ctl.state` is a normal running state — a run asking for the model can no
+  longer be identified by its getting `src = 2` and `state = 6`. And the three
+  arms of `automation-thermal-hailo-tc.conf` are no longer two baselines plus a
+  repeat: arm 3 now measures what it was written to measure.
+- **The firmware hook is `model_estimate()`, not `nn_*` — and the fit
+  vindicated the name.** The prediction was that the first fit should be a
+  first-order thermal model with a learned time constant: three or four
+  physically interpretable parameters, monotone in duty, which `invert_curve`
+  provably is and a net is not. That is exactly what it turned out to be — one
+  pole on the existing curve plus one capacity, 0.52-0.87 °C held out. Naming a
+  hook after a technique has to be undone when the technique changes; naming it
+  after the role does not.
 - **Open loop reports `nan` for `ctl.in` and `ctl.err`**: nothing is measured,
   so quoting an error would invent one. `ctl.die_est` equals `ctl.target` by
   construction while unclamped, and diverges exactly when the fan saturates,
@@ -1620,6 +1657,139 @@ fan ladder characterises `Rconv(duty)` across 59 duty levels but at **one** load
   thermal plan** — the two design traps it encodes are that the heavy loads
   exist only at high duty, and that the ladder's own low-duty data is
   *throttled* data and so not a clean plant measurement.
+
+**MEASURED 2026-11-23/24, THE SOFT-SENSOR FITTING RUN — 24 treads, 4 h 08 m,
+four fixed duties.** Log `logs/mb-benchmark-20261123-205436.csv`, plan
+`config/automation-hailo-soft-sensor-fit.conf`. All 24 treads ran; the duties
+read back exactly, and `fan.idle = 73` held through the start pause, which
+closed the load probe's one methodological defect and made the drift bracket
+valid.
+
+- **The headline is a negative result about the plan's own design**: the fps
+  cap moved the rate and not the rail, so the intended 12-point matched-load
+  grid became a **replicate** grid. See the `fps` entry above. The 21 % segment
+  was capped-only precisely because the cap was supposed to make that duty
+  feasible; it ran at ~4.8 W and threw three throttled treads.
+- **`Rconv(duty)`, against SIMULTANEOUS air, from the exponential asymptotes:**
+
+  | duty | Rconv (°C/W) | n | tau (s) | C = tau/R |
+  | ---: | ---: | ---: | ---: | ---: |
+  | 73.00 % | **6.678 ± 0.011** | 6 | 70.5 ± 1.6 | 10.5 |
+  | 50.80 % | **9.770 ± 0.096** | 5 | 102.6 ± 19.3 | 10.5 |
+  | 33.30 % | **12.421 ± 0.103** | 5 | 159.4 ± 4.2 | 12.8 |
+  | 20.60 % | 15.816 | **1** | 177.0 | 11.2 |
+
+  Three independent sessions now agree at 73 %: ladder 6.746, load probe
+  6.63 ± 0.18, this run 6.678. **FIT THE EXPONENTIAL, DO NOT REGRESS THE
+  TAIL** — the load probe's hardest-won lesson, and it is why these are
+  asymptotes and not tail means.
+- **AIR MUST BE PRICED AT THE SAME DUTY AS THE TREAD.** The EMC2101 is cooled
+  by the fan at **−0.0261 °C per duty point** (R² 0.846 against duty; R²
+  **0.002** against card watts, so it is not contaminated by the card — it is
+  in the airstream). This run's idles all sat at 73 % while its treads ran down
+  to 20.6 %, so pricing `Rconv` against neighbouring idles folds a
+  duty-dependent bias into the curve worth ~2 % at the bottom of the range. The
+  first pass did exactly that and had to be redone. Good news for the model:
+  **the board knows duty, so this bias is correctable** — better than the
+  three-arm run's verdict that the EMC2101 bias is upstream of the estimate and
+  irreducible.
+- **`tc − air` is LINEAR IN W THROUGH THE ORIGIN, and the affine offset is
+  retired.** The load probe's tempting `c = +1.59 °C` reproduced here at
+  +1.62 °C and is an artifact: drop the two YOLO treads and it **collapses to
+  +0.213 °C**, with through-origin R = 6.7039 at 0.136 °C rms. The decisive
+  argument is that the deviation is **non-monotone in W** — YOLOv8m at 3.21 W
+  reads −1.60 %, SCRFD-10G at 5.04 W reads +0.04 %, YOLOv8s at 7.71 W reads
+  −3.43 %. Curvature cannot produce that pattern; model identity can.
+- **Model identity is real, and it is the YOLO family.** SCRFD-10G matches
+  ResNet-50 to **+0.04 %** at 73 % duty and **−0.03 %** at 50.8 % — two
+  different models across a 16-19 % load difference, against a 0.55 % noise
+  floor. The YOLO pair reads low (YOLOv8s −3.43 %, reproducing its load-probe
+  offset in a second session; YOLOv8m −1.60 %). Likely spatial: the
+  thermocouple reads one point between the fins, not the mean heatsink
+  temperature.
+- **Leakage reproduced independently: 17.89 mW/°C** (R² 0.869, n=16) against
+  this file's 18.68 — 4.2 % apart.
+- **The drift bracket is valid this time and 3x tighter than the load
+  probe's.** T1 vs T24, 4 h 01 m apart: W −0.19 %, `tc − air` −0.216 °C,
+  Rconv −0.55 %, tau 72 -> 69 s. That 0.55 % is the noise floor every other
+  number here inherits.
+- **The triangle was right.** ResNet-50 ran clean at 33.3 % (die 93.4 °C,
+  1.6 °C margin) and throttled at 20.6 % (104 °C); the envelope predicted a
+  floor of 27 %.
+
+**THE SOFT SENSOR IS FITTED (2026-11-24).** `model_estimate()` in
+`firmware/mb-probe-ra6m5/Control.h`, which carries the constants and the error
+budget; `docs/reports/ra6m5-loop/` scores it per arm.
+
+    tc_ss   = air + W * Rconv(duty)        the steady state
+    tau     = Rconv(duty) * kHeatCapacity  the pole, from the same curve
+    d tc/dt = (tc_ss - tc) / tau
+
+**It adds exactly ONE parameter to what the feedforward already knew**:
+`kHeatCapacity = 10.4 J/°C`, a lumped heatsink capacity, fitted jointly with
+the curve. It is the **same table** `invert_curve()` inverts, deliberately —
+one table, so the predictor and the observer cannot disagree about the plant.
+
+- **Fitted on 26 094 samples** (the 11-22 ladder's unthrottled region plus the
+  11-23 fitting run) to 0.51 °C rms, and **validated on 20 698 held out of the
+  fit entirely**: 0.52 °C rms (the 11-22 four-setpoint run) and 0.87 °C (the
+  11-23 three-arm run) on their loaded windows, bias +0.28 and −0.02.
+- **THE DYNAMICS ARE NOT OPTIONAL — do not "simplify" this to the algebraic
+  form.** The static version, `air + W*Rconv(duty)` evaluated fresh each step,
+  which is exactly what the open-loop branch's own `die_est` computes, scores
+  **rms 7.0-9.0 °C with excursions to 43 and 72 °C**. Same curve, one pole
+  added: 0.52-0.87 °C. A memoryless estimate of a 70-165 s plant is wrong by
+  the whole of whatever transient is in flight.
+- **C IS A CONSTANT.** `tau = R*C` holds to **0.1 %** between 50.8 and 73 %
+  duty. The apparent C = 12.8 J/°C at 33.3 % is an artifact of the per-tread
+  `tau/R` arithmetic, not a plant property: letting C vary as `(R/R73)^a` made
+  the held-out error strictly worse for every a > 0.
+- **WHAT IT IS WORTH**, by replaying the arm that ran closed on the real probe
+  and substituting the model: the loop commands a settled **37.29 % duty
+  against the firmware's own 37.72 %** — 0.43 duty points, ~0.6 °C of die.
+  That is the cost of losing the probe.
+- **THE ERROR BUDGET IS TWO-SIDED, and the cold side is the one that matters.**
+  Model identity is one-sided and safe: the curve is fitted to ResNet-50, which
+  has the HIGHEST convective resistance of the four loads measured, so every
+  other model reads hot (+0.30 SCRFD-10G, +0.43 YOLOv8m, +2.19 YOLOv8s) and
+  over-cools. **Session drift reads cold** — up to **−2.34 °C**, on 15.5 % and
+  60.0 % of the two held-out runs' loaded samples. The throttle boundary is
+  hysteretic and stochastic between 98.9 and 104.2 °C, as little as 3.9 °C
+  above `kAutoTarget`, so −2.3 °C is most of the margin. **Regulate on the
+  model at 90 °C, not at `ctl.target auto`.** The real probe earned 95 °C over
+  13 247 samples; the estimate has not.
+- **13 nodes were tried and REJECTED.** The 9-node table's interpolation error
+  is ±1.5 %, 0.72 % rms — worth 0.93 °C at 4.9 W — and four more nodes halve
+  it. But held-out error did not improve (the 11-22 run 0.521 -> 0.498, the
+  11-23 run 0.873 -> 0.876 with a worse bias), because session drift dominates
+  interpolation. Don't re-raise it without a run that moves the drift term.
+- **`ctl.die_est` should not be believed with the fan off.** The brackets score
+  0.55-2.24 °C, the model's weakest ground: the duty-0 node is natural
+  convection measured at **0.86 W only**, and natural convection is not linear
+  in ΔT, so one resistance cannot serve both idle and load. It does not matter
+  for control — the loop's floor is 9.5 % duty and any real load there throttles
+  the card long before the model's error does.
+
+**THE SAME REFIT CORRECTED THE FEEDFORWARD, and this invalidates the old
+curve's three lowest nodes.** `curve_rconv()` had taken all nine nodes from the
+fan ladder, and **the ladder's bottom treads are THROTTLED**: below 23.8 % duty
+the card sits on its thermal limit, so 100 % of those samples are under 400 MHz
+and the heatsink reading is pinned by the limit rather than set by the fan.
+They measure the throttle, not the plant.
+
+| duty | old | new | provenance of the new value |
+| ---: | ---: | ---: | --- |
+| 0 | 16.48 | **21.75** | natural convection, the 11-23 run's four fan-off brackets |
+| 9.5 | 16.17 | **21.28** | two settled 9.5 % blocks; at its floor the fan turns 262 rpm and buys almost nothing over still air |
+| 20.6 | 15.20 | **15.82** | the one unthrottled low-duty tread that exists, n=1 |
+| 30.2-73 | — | ≤1.1 % change | the ladder's clean region, lag-corrected by the joint fit |
+
+So the feedforward believed the fan was **half again as effective at its floor
+as it is**. Nothing at or above 30.2 % moved by more than 1.1 %, so any run
+held in the usual 32-61 % band is unaffected — but a pre-0.7.0 log of a
+*light-load* step was using a bad curve. Above 73 % the curve is flat and
+verified so: the ladder's 18 levels from 73 to 100 % read 6.73-6.81 with no
+trend, agreeing with the tach.
 
 **`ctl.rint` stays at 1.709 — the planned retune to 1.627 is REFUTED.** That
 figure came from a hand-driven session and the plan said to adopt it if it
@@ -2872,6 +3042,14 @@ INA228 **rail** power (`_INA228_POWER`), never the card's own `_POW`, which
 runs ~0.19 W low — the firmware's own estimate uses the rail, so it is the only
 basis on which the estimator can be scored.
 
+- **`ra6m5-report-loop.py` reads the soft sensor's constants out of
+  `Control.h` rather than carrying a copy** (2026-11-24), and raises if the
+  header is refactored. The page quotes `Rconv`, the heat capacity and the time
+  constants it implies, and a second copy here would be free to drift away from
+  the firmware that actually runs — which is the kind of disagreement a report
+  should catch, not create. Its model section scores the estimate on the
+  three-arm run, which is **held out of the fit**, so those numbers measure the
+  model and not its own residual.
 - **`ra6m5-report-loop.py` was rewritten 2026-11-23 for 0.6.0** and the old
   four-setpoint shape would have broken on the three-arm run in four places,
   each worth knowing: the changed enums; `nan` in `_CTL_IN`/`_CTL_ERR` for the

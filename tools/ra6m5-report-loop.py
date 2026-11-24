@@ -17,8 +17,16 @@ question and the shape of the data follows it: ONE setpoint (90 C), ONE load,
 three arms differing only in where the loop's single temperature comes from.
 
     arm 1   tc=on            closed loop on the physical thermocouple
-    arm 2   tc=off nn=off    open loop, the static feedforward alone
-    arm 3   tc=off nn=on     the learned estimate requested -- and absent
+    arm 2   thermocouple=off     open loop, the static feedforward alone
+    arm 3   thermocouple=model   the fitted estimate requested -- and absent
+
+TWO LOG SCHEMAS, and this script reads both.  Firmware <= 0.6.1 wrote `ctl.tc`
+and `ctl.nn` as EFFECTIVE booleans, which only restated `ctl.src`.  0.7.0
+replaced the pair with one three-valued REQUEST in `ctl.tc` (0 off, 1 real,
+2 model) plus `ctl.model_ready`, so `ctl.tc` and `ctl.src` now say different
+things -- asked-for against got.  The schema is detected from the presence of
+`_CTL_MODEL_READY`; `src = 1` means the same state under both and is spelled
+"modelled" throughout, 0.6.0 having called it "inferred".
 
 So the axes that mattered in the old report are gone (there is no setpoint
 ladder to fit a mW/C leakage slope against) and new ones appear:
@@ -70,11 +78,14 @@ rail power is below `--load-floor` are dropped from it: the engine's stop
 sample sits inside that window with the load already gone, and one such row
 moves the die mean by 0.3 C.
 """
-import argparse, csv, json, math, os, statistics as st
+import argparse, csv, json, math, os, re, statistics as st
 from datetime import datetime
 
 MODE = {0: 'off', 1: 'on'}
-SRC = {0: 'measured', 1: 'inferred', 2: 'none'}
+SRC = {0: 'measured', 1: 'modelled', 2: 'none'}
+# `ctl.tc` as the 0.7.0 request.  Under the old schema it is an effective bool
+# and is rendered as such instead -- see `Run.schema`.
+TCW = {0: 'off', 1: 'real', 2: 'model'}
 STATE = {0: 'idle', 1: 'settling', 2: 'holding', 3: 'floor', 4: 'ceiling',
          5: 'open', 6: 'degraded', 7: 'fault'}
 # The EMC2101 quantises duty to 1/63.  Two consecutive 1 % requests can land on
@@ -121,6 +132,107 @@ def div(a, b):
     return None if (a is None or not b) else a / b
 
 
+def read_model(path):
+    """Parse the soft sensor's constants out of firmware/.../Control.h.
+
+    READ, NEVER RETYPED. The page quotes R_conv, the heat capacity and the
+    time constants it implies, and a copy of those here would be free to drift
+    away from the firmware that actually runs -- which is exactly the kind of
+    disagreement a report is supposed to catch, not create. If the header is
+    refactored this raises rather than silently reporting stale constants.
+    """
+    src = open(path).read()
+
+    def arr(name):
+        m = re.search(name + r'\[kCurveN\]\s*=\s*\{([^}]*)\}', src)
+        if not m:
+            raise SystemExit(f"{path}: cannot find {name}[kCurveN] -- "
+                             "Control.h was refactored; fix read_model()")
+        return [float(x) for x in m.group(1).replace('\n', ' ').split(',') if x.strip()]
+
+    def const(name):
+        m = re.search(r'kHeatCapacity\s*=\s*([0-9.]+)' if name == 'kHeatCapacity'
+                      else r'double\s+' + name + r'\s*=\s*([0-9.]+)', src)
+        if not m:
+            raise SystemExit(f"{path}: cannot find {name}")
+        return float(m.group(1))
+
+    duty, rconv = arr('d'), arr('r')
+    if len(duty) != len(rconv):
+        raise SystemExit(f"{path}: curve_duty has {len(duty)} nodes, "
+                         f"curve_rconv has {len(rconv)}")
+    if any(b > a for a, b in zip(rconv, rconv[1:])):
+        raise SystemExit(f"{path}: curve_rconv is not monotone non-increasing")
+    return dict(duty=duty, rconv=rconv, C=const('kHeatCapacity'),
+                rint=const('rint'), ready='model_ready() const { return true; }' in src)
+
+
+def rconv_at(m, d):
+    duty, rc = m['duty'], m['rconv']
+    if d <= duty[0]:
+        return rc[0]
+    if d >= duty[-1]:
+        return rc[-1]
+    for i in range(1, len(duty)):
+        if d <= duty[i]:
+            f = (d - duty[i - 1]) / (duty[i] - duty[i - 1])
+            return rc[i - 1] + f * (rc[i] - rc[i - 1])
+    return rc[-1]
+
+
+def run_model(rows, m, seed=None):
+    """Integrate the soft sensor over `rows`, returning its estimate per row.
+
+    The firmware's own recurrence, at the log's 1 Hz rather than the loop's
+    250 ms -- against a 70-165 s pole that is still 70x oversampled. Inputs are
+    held forward exactly as `Control::freshen()` holds them, so a gap in the
+    CSV behaves here as it does on the board.
+    """
+    est, w, air, duty = [], None, None, None
+    tc_hat, prev_s = seed, None
+    for d in rows:
+        if d['p'] is not None:
+            w = d['p']
+        if d['air'] is not None:
+            air = d['air']
+        if d['duty'] is not None:
+            duty = d['duty']
+        if w is None or air is None or duty is None:
+            est.append(None)
+            continue
+        R = rconv_at(m, duty)
+        ss = air + w * R
+        if tc_hat is None:
+            tc_hat = d['hs'] if d['hs'] is not None else ss
+        elif prev_s is not None:
+            dt = min(max(d['s'] - prev_s, 0.0), 5.0)
+            tau = R * m['C']
+            if dt > 0 and tau > 0:
+                tc_hat += min(dt / tau, 1.0) * (ss - tc_hat)
+        prev_s = d['s']
+        est.append(tc_hat)
+    return est
+
+
+def score_est(rows, est, key='hs'):
+    """rms / bias / sd / worst, and which way the worst error pointed.
+
+    `cold` is the share of samples reading BELOW the probe. It is reported
+    because the two error terms are not symmetric in consequence: an estimate
+    that reads cold under-cools, and that is the only direction that can cost
+    throttle margin.
+    """
+    e = [a - d[key] for a, d in zip(est, rows)
+         if a is not None and d[key] is not None]
+    if not e:
+        return None
+    mu = sum(e) / len(e)
+    return dict(n=len(e), rms=r4(math.sqrt(sum(x * x for x in e) / len(e))),
+                bias=r4(mu), sd=r4(pstdev(e)),
+                worst_cold=r4(min(e)), worst_hot=r4(max(e)),
+                cold_pct=r4(100.0 * sum(1 for x in e if x < 0) / len(e)))
+
+
 class Run:
     def __init__(self, path):
         self.path = path
@@ -142,7 +254,8 @@ class Run:
                 p=c('_INA228_POWER'), pcard=c('_POW'), clk=c('_CLK'),
                 flow=c('_AIRFLOW'), rpm=c('_FAN_RPM'), duty=c('_FAN_DUTY'),
                 mode=c('_CTL_MODE'), src=c('_CTL_SRC'), state=c('_CTL_STATE'),
-                tc=c('_CTL_TC'), nn=c('_CTL_NN'), auto=c('_CTL_AUTO'),
+                tc=c('_CTL_TC'), nn=c('_CTL_NN', False),
+                model_ready=c('_CTL_MODEL_READY', False), auto=c('_CTL_AUTO'),
                 tgt=c('_CTL_TARGET'), inp=c('_CTL_IN'), die_est=c('_CTL_DIE_EST'),
                 err=c('_CTL_ERR'), cduty=c('_CTL_DUTY'), ff=c('_CTL_FF'),
                 integ=c('_CTL_INTEG'), sat=c('_CTL_SAT'),
@@ -153,11 +266,17 @@ class Run:
                      'msg': row[ix['message']]}
                 d['fps'] = num(row[ix['hailo_fps']])
                 for k, i in cols.items():
-                    d[k] = num(row[i])
+                    # An optional column resolves to None (a schema that does
+                    # not carry it); the field still exists, always empty, so
+                    # every consumer can ask for it without a guard.
+                    d[k] = None if i is None else num(row[i])
                 dies = [x for x in (d['ts0'], d['ts1']) if x is not None]
                 d['die'] = max(dies) if dies else None
                 d['drop'] = (d['die'] - d['hs']) if (d['die'] is not None and d['hs'] is not None) else None
                 self.rows.append(d)
+        # 0.7.0 removed `ctl.nn` and added `ctl.model_ready`; its absence is
+        # what identifies a pre-0.7.0 log, in which `ctl.tc` is a bool.
+        self.schema = 2 if cols.get('model_ready') is not None else 1
         self.t0 = self.rows[0]['t']
         for d in self.rows:
             d['s'] = (d['t'] - self.t0).total_seconds()
@@ -166,6 +285,7 @@ class Run:
                              "firmware 0.6.0 (kProtocol 2); _CTL_SRC in a 0.5.0 log "
                              "means die-vs-heatsink, not provenance, and must not be "
                              "read by this script")
+        # Nothing below reads `nn` under schema 2, nor `model_ready` under 1.
 
     # ---- window helpers -------------------------------------------------
     def blocks(self, pred, minlen=60):
@@ -274,6 +394,7 @@ def describe_arm(block, window, floor):
     src_mode = modal(srcs)
     tcs = hist(block, 'tc')
     nns = hist(block, 'nn')
+    mrs = hist(block, 'model_ready')
 
     # The arm's identity comes from the EFFECTIVE flags plus the state, because
     # the log records what the loop DID, never what the plan asked for.  State
@@ -308,9 +429,10 @@ def describe_arm(block, window, floor):
         label=label, kind=kind,
         mode=modal(hist(block, 'mode')), src=src_mode, state=st_mode,
         src_name=SRC.get(src_mode), state_name=STATE.get(st_mode),
-        states=states, srcs=srcs, tcs=tcs, nns=nns,
+        states=states, srcs=srcs, tcs=tcs, nns=nns, mrs=mrs,
         autos=hist(block, 'auto'),
-        tc=modal(tcs), nn=modal(nns), auto=modal(hist(block, 'auto')),
+        tc=modal(tcs), nn=modal(nns), model_ready=modal(mrs),
+        auto=modal(hist(block, 'auto')),
         # --- the regulated quantity, scored on the CARD's sensor ---
         n_settled=len(tl), n_window=len(tl_all),
         die=r4(mean(die)), die_sd=r4(pstdev(die)),
@@ -428,6 +550,12 @@ def main():
                          '(default 300). Shorter than --window on purpose: every bracket '
                          'but the first follows a hot soak, and 600 s reaches into the '
                          'cooling transient.')
+    ap.add_argument('--firmware', default=os.path.join(
+                        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        'firmware', 'mb-probe-ra6m5', 'Control.h'),
+                    help='Control.h, read for the soft sensor\'s constants. They are '
+                         'parsed rather than copied so the page cannot quote a model '
+                         'the firmware does not have.')
     ap.add_argument('--load-floor', type=float, default=4.7,
                     help='drop settled samples below this rail wattage (default 4.7 W). '
                          'The engine stop sample sits inside the window with the load '
@@ -448,8 +576,11 @@ def main():
     out['mins'] = round(R.rows[-1]['s'] / 60, 1)
     out['window'] = a.window
     out['load_floor'] = a.load_floor
-    out['fw'] = '0.6.0'
-    out['proto'] = 2
+    # Derived, not asserted: a schema-2 log can only have come from 0.7.0 or
+    # later. Hardcoding this made the page claim 0.6.0 for any run.
+    out['fw'] = '0.6.x' if R.schema == 1 else '>= 0.7.0'
+    out['proto'] = 2 if R.schema == 1 else 3
+    out['schema'] = R.schema
     out['arms'] = [describe_arm(b, a.window, a.load_floor) for b in arms]
     out['bracket_window'] = a.bracket_window
     out['brackets'] = [describe_bracket(b, a.bracket_window) for b in brks]
@@ -460,19 +591,22 @@ def main():
     # column that separates them, and the firmware had to be fixed on hardware
     # to make it do so (kOpen was unreachable because the NaN test sat after
     # the if/else instead of inside the kInferred branch).
-    chans = ['src', 'tc', 'nn', 'auto', 'state']
+    # `nn` only exists in a pre-0.7.0 log; `model_ready` only in a newer one.
+    chans = (['src', 'tc', 'nn', 'auto', 'state'] if R.schema == 1
+             else ['src', 'tc', 'model_ready', 'auto', 'state'])
     out['provenance'] = dict(
-        channels=chans,
+        schema=R.schema, channels=chans, tcw=TCW,
         rows=[dict(arm=i + 1, label=s['label'],
-                   src=s['srcs'], tc=s['tcs'], nn=s['nns'],
+                   src=s['srcs'], tc=s['tcs'], nn=s['nns'], mr=s['mrs'],
                    auto=s['autos'], state=s['states']) for i, s in enumerate(A)],
         # which channels actually differ between every pair of arms
         discriminators={},
     )
     for i in range(len(A)):
         for j in range(i + 1, len(A)):
-            d = [k for k in chans
-                 if modal(A[i][k + 's']) != modal(A[j][k + 's'])]
+            KEY = {'src': 'srcs', 'tc': 'tcs', 'nn': 'nns',
+                   'model_ready': 'mrs', 'auto': 'autos', 'state': 'states'}
+            d = [k for k in chans if modal(A[i][KEY[k]]) != modal(A[j][KEY[k]])]
             out['provenance']['discriminators'][f'{i+1}v{j+1}'] = d
 
     # ---- the headline: closed vs open at the same setpoint ----------------
@@ -702,7 +836,7 @@ def main():
     # ---- timeline --------------------------------------------------------
     S2 = {k: [] for k in ('t', 'die', 'hs', 'air', 'p', 'fps', 'clk', 'duty', 'rpm',
                           'af', 'tgt', 'inp', 'est', 'ff', 'integ', 'mode', 'state',
-                          'src', 'tc', 'nn')}
+                          'src', 'tc', 'nn', 'model_ready')}
     for i, d in enumerate(R.rows):
         if i % a.step:
             continue
@@ -711,9 +845,43 @@ def main():
                          ('fps', 'fps'), ('clk', 'clk'), ('duty', 'duty'), ('rpm', 'rpm'),
                          ('af', 'flow'), ('tgt', 'tgt'), ('inp', 'inp'), ('est', 'die_est'),
                          ('ff', 'ff'), ('integ', 'integ'), ('mode', 'mode'),
-                         ('state', 'state'), ('src', 'src'), ('tc', 'tc'), ('nn', 'nn')):
+                         ('state', 'state'), ('src', 'src'), ('tc', 'tc'),
+                         ('nn', 'nn'), ('model_ready', 'model_ready')):
             v = d[col]
             S2[key].append(None if v is None else round(v, 3))
+    # ---- the soft sensor, scored on this run -----------------------------
+    # THIS RUN IS HELD OUT OF THE FIT. The model was fitted on the 11-22 fan
+    # ladder's unthrottled region plus the 11-23 soft-sensor run; not one
+    # sample below entered it. That is what makes these numbers a measurement
+    # of the model rather than of its own residual -- and it is why this
+    # section belongs in THIS report, whose three arms are precisely the
+    # question "what does doing without the thermocouple cost?".
+    M = read_model(a.firmware)
+    out['model'] = dict(
+        ready=M['ready'], C=M['C'], rint=M['rint'],
+        nodes=[dict(duty=d, rconv=r, tau=r4(r * M['C']))
+               for d, r in zip(M['duty'], M['rconv'])],
+        arms=[], brackets=[], firmware=os.path.basename(a.firmware))
+    for i, blk in enumerate(arms, 1):
+        win = tail(blk, a.window, floor=a.load_floor)
+        dyn = run_model(blk, M)
+        # The static form is what the OPEN-LOOP branch's own die_est computes:
+        # the same curve with no memory of where the heatsink actually is.
+        sta = [(d['air'] + d['p'] * rconv_at(M, d['duty']))
+               if None not in (d['air'], d['p'], d['duty']) else None for d in blk]
+        k = {d['s']: e for d, e in zip(blk, dyn)}
+        out['model']['arms'].append(dict(
+            arm=i,
+            whole=score_est(blk, dyn), settled=score_est(win, [k[d['s']] for d in win]),
+            static_whole=score_est(blk, sta),
+            # what the loop would have regulated to, had this been its PV
+            die=score_est(blk, [None if e is None or d['p'] is None
+                                else e + M['rint'] * d['p'] for e, d in zip(dyn, blk)],
+                          key='die')))
+    for i, blk in enumerate(brks, 1):
+        out['model']['brackets'].append(dict(
+            bracket=i, whole=score_est(blk, run_model(blk, M))))
+
     out['series'] = S2
     out['events'] = [dict(s=round(d['s']), clock=d['t'].strftime('%H:%M:%S'), msg=d['msg'])
                      for d in R.rows if d['msg']]
@@ -747,11 +915,43 @@ def summarise(o):
     for r in o['provenance']['rows']:
         p(f"  arm {r['arm']}  {r['label']}")
         p(f"          src   {fmt(r['src'], SRC)}")
-        p(f"          tc {r['tc']}  nn {r['nn']}  auto {r['auto']}")
+        if o['provenance']['schema'] == 1:
+            p(f"          tc {r['tc']}  nn {r['nn']}  auto {r['auto']}"
+              f"   [pre-0.7.0: tc/nn are EFFECTIVE bools]")
+        else:
+            p(f"          tc (asked) {fmt(r['tc'], TCW)}  model_ready {r['mr']}"
+              f"  auto {r['auto']}")
         p(f"          state {fmt(r['state'], STATE)}")
     for pair, ch in o['provenance']['discriminators'].items():
         a_, b_ = pair.split('v')
         p(f"  arms {a_} vs {b_} differ in: {', '.join(ch) if ch else 'NOTHING -- indistinguishable!'}")
+
+    m = o['model']
+    p(f"\nSOFT SENSOR  fitted 2026-11-24, read from {m['firmware']} "
+      f"(model_ready={int(m['ready'])}, C={m['C']:.1f} J/C, rint={m['rint']:.3f})")
+    p( "            THIS RUN IS HELD OUT: the fit used the 11-22 ladder and the 11-23")
+    p( "            soft-sensor run, and not one sample below entered it.")
+    p( "            R_conv(duty) and the pole it implies:")
+    for nd in m['nodes']:
+        p(f"              {nd['duty']:5.1f} %   {nd['rconv']:6.2f} C/W   tau {nd['tau']:6.1f} s")
+    p( "            estimate vs the PROBE, per arm:")
+    for r in m['arms']:
+        w, se = r['whole'], r['settled']
+        p(f"              arm {r['arm']}  whole   rms {w['rms']:.3f} C  bias {w['bias']:+.3f}  "
+          f"sd {w['sd']:.3f}  cold on {w['cold_pct']:.1f} % of {w['n']}")
+        p(f"                     worst  cold {w['worst_cold']:+.2f} C   hot {w['worst_hot']:+.2f} C")
+        if se:
+            p(f"                     settled rms {se['rms']:.3f} C  bias {se['bias']:+.3f}  n={se['n']}")
+        st_ = r['static_whole']
+        p(f"                     STATIC form (no memory of the sink): rms {st_['rms']:.3f} C, "
+          f"worst {max(abs(st_['worst_cold']), abs(st_['worst_hot'])):.1f} C")
+        d_ = r['die']
+        p(f"                     as a DIE estimate vs the card's own sensor: "
+          f"rms {d_['rms']:.3f} C  bias {d_['bias']:+.3f}")
+    p( "            the fan-off brackets, where duty 0 is measured at 0.86 W only:")
+    for r in m['brackets']:
+        w = r['whole']
+        p(f"              bracket {r['bracket']}  rms {w['rms']:.3f} C  bias {w['bias']:+.3f}  n={w['n']}")
 
     p(f"\nsteady state = last {o['window']//60} min of each arm, "
       f"samples below {o['load_floor']:.1f} W dropped")

@@ -116,10 +116,11 @@ footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule);
   <div class="head"><h2>Did each arm run as configured?</h2>
     <p class="prose muted">This table comes first, not last. The log records what the loop <em>did</em>, never what the plan asked for, so <code>ctl.src</code> and <code>ctl.state</code> are the only evidence an arm was the arm it claims to be — and two of these three agree on every control channel but one.</p></div>
   <div class="tbl-wrap"><table id="prov">
-    <thead><tr><th>Arm</th><th><code>ctl.src</code></th><th><code>ctl.tc</code></th><th><code>ctl.nn</code></th><th><code>ctl.auto</code></th><th><code>ctl.state</code></th></tr></thead>
+    <thead><tr id="prov-head"></tr></thead>
     <tbody></tbody></table></div>
   <div class="prose" style="display:grid;gap:12px">
-    <p><b>Arms 2 and 3 are separated by <code>ctl.state</code> alone</b> — <code>5 open</code> against <code>6 degraded</code> — and that is deliberate. Arm 3 asked for the learned estimate; there is no model compiled in, so it did not get one. The firmware's rule is <em>never silently arm 2</em>: a run configured for the inferred source that fell through to open loop must be legible as exactly that. Every other channel reads identically in both, including <code>ctl.nn</code>, which reports the <b>effective</b> value and so reads 0 in arm 3.</p>
+    <p class="small" id="prov-note"></p>
+    <p><b>Arms 2 and 3 are separated by <code>ctl.state</code> alone</b> — <code>5 open</code> against <code>6 degraded</code> — and that is deliberate. Arm 3 asked for the learned estimate; there was no model compiled in when this run was taken, so it did not get one. The firmware's rule is <em>never silently arm 2</em>: a run configured for the inferred source that fell through to open loop must be legible as exactly that. Every other channel reads identically in both, including <code>ctl.nn</code>, which reports the <b>effective</b> value and so reads 0 in arm 3.</p>
     <p class="small"><b>That column had to be fixed on hardware, not in review.</b> As first written, the NaN check on the inferred estimate sat <em>after</em> the if/else rather than inside the inferred branch — and <code>pv_tc</code> is NaN in the <code>none</code> branch too, so the check fired unconditionally and every open-loop step reported <code>degraded</code>. <code>kOpen</code> was unreachable. A staged bench test caught it in one command; nothing in the code read wrong. Had it shipped, this run would have measured arm 2 three times and had no way to say so.</p>
   </div>
 </section>
@@ -153,7 +154,7 @@ footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule);
 
 <section id="believe">
   <div class="head"><h2>How much of that can we believe?</h2>
-    <p class="prose muted">Arms 2 and 3 both ran open, because there is no model yet. That was foreseen — the plan calls arm 3 <q>a second baseline sample, which is not wasted</q> — and it is the single most load-bearing measurement in the run: <b>no other difference here can be called real below it</b>.</p></div>
+    <p class="prose muted">Arms 2 and 3 both ran open, because there was no model yet <em>then</em> — one has since been fitted, and <a href="#softsensor">the last section</a> scores it against this run. That is a fair test precisely because this run was held out of the fit. That was foreseen — the plan calls arm 3 <q>a second baseline sample, which is not wasted</q> — and it is the single most load-bearing measurement in the run: <b>no other difference here can be called real below it</b>.</p></div>
   <div class="tbl-wrap"><table id="rep">
     <thead><tr><th>Quantity</th><th class="n">arm 2</th><th class="n">arm 3</th><th class="n">difference</th></tr></thead>
     <tbody></tbody></table></div>
@@ -213,7 +214,7 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
 
 <section>
   <div class="head"><h2>The feedforward, spot-checked</h2>
-    <p class="prose muted">The duty the loop asks for first comes from inverting a nine-point R<sub>conv</sub> table seeded from the 22 November fan ladder. This run re-measures it at <b>one</b> duty, so it is a spot check and not a recalibration — but it is a spot check taken with the plant at rest rather than five minutes into a tread.</p></div>
+    <p class="prose muted">The duty the loop asks for first comes from inverting a nine-point R<sub>conv</sub> table in <code>Control.h</code>. This run re-measures it at <b>one</b> duty, so it is a spot check and not a recalibration — but it is a spot check taken with the plant at rest rather than five minutes into a tread. <b>The table was refitted on 24 November</b>, after this run: its three lowest nodes came from the fan ladder's throttled treads and were wrong by up to 32 %. Nothing at or above 30.2 % duty moved by more than 1.1 %, and all three arms here sat near 37 %, so the spot check below is unaffected either way — see <a href="#softsensor">the soft sensor</a>.</p></div>
   <div class="chart-card"><h3>Seeded curve against the point this run re-measured</h3>
     <p class="sub">Line: the table in <code>Control.h</code>. Points: (heatsink − air) / rail watts in each arm's settled window.</p>
     <div id="ch-curve"></div></div>
@@ -221,6 +222,27 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
     <thead><tr><th class="n">duty</th><th class="n">measured R<sub>conv</sub></th><th class="n">seeded</th><th class="n">difference</th><th class="n">error</th></tr></thead>
     <tbody></tbody></table></div>
   <p class="prose" style="margin-top:4px" id="c-prose">—</p>
+</section>
+
+<section id="softsensor">
+  <div class="head"><h2>The soft sensor, fitted after the fact</h2>
+    <p class="prose muted">This run asked for a learned estimate of the thermocouple three times and got open loop, because none existed. One does now — fitted 24 November on the 22 November fan ladder and the 23 November soft-sensor run, and <b>not one sample of this run entered that fit</b>. So the arms below are a held-out test, and the question arm 3 could not answer is answerable: what <em>would</em> it have regulated on?</p></div>
+  <div class="tiles" id="m-tiles"></div>
+  <div class="chart-card"><h3>R<sub>conv</sub>(duty), and the pole it sets</h3>
+    <p class="sub">The same nine-point table the feedforward inverts, read out of <code>Control.h</code>. The soft sensor adds exactly one parameter to it: a lumped heat capacity, so that τ&nbsp;=&nbsp;R<sub>conv</sub>&nbsp;×&nbsp;C.</p>
+    <div id="ch-model"></div></div>
+  <div class="tbl-wrap"><table id="nodetbl">
+    <thead><tr><th class="n">duty</th><th class="n">R<sub>conv</sub></th><th class="n">τ = R<sub>conv</sub> × C</th><th>where the node comes from</th></tr></thead>
+    <tbody></tbody></table></div>
+  <div class="tbl-wrap"><table id="modeltbl">
+    <thead><tr><th>Arm</th><th>What the loop actually used</th><th class="n">rms</th><th class="n">bias</th><th class="n">sd</th><th class="n">reads cold</th><th class="n">worst cold</th><th class="n">settled rms</th><th class="n">static form</th></tr></thead>
+    <tbody></tbody></table></div>
+  <div class="prose" style="display:grid;gap:12px">
+    <p id="m-prose">—</p>
+    <p class="small" id="m-static">—</p>
+    <p class="small" id="m-cold">—</p>
+    <p class="small" id="m-brackets">—</p>
+  </div>
 </section>
 
 <section>
@@ -336,7 +358,7 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
   /* ---------- bindings ---------- */
   const A = LOOP.arms, P = LOOP.provenance, C = LOOP.compare, RP = LOOP.repeat,
         DR = LOOP.drift, KT = LOOP.ktrim, E = LOOP.estimator, CU = LOOP.curve,
-        T = LOOP.throughput, B = LOOP.brackets;
+        T = LOOP.throughput, B = LOOP.brackets, M = LOOP.model;
   const set = (id, html) => { const n = document.getElementById(id); if (n) n.innerHTML = html; };
   const pc = v => v == null ? '—' : v.toFixed(1) + ' %';
   const sgn = (v, d) => v == null ? '—' : (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(d);
@@ -393,7 +415,7 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
   {
     const WHAT = ['the reference — and the source of the other two arms’ training labels',
       'the baseline a learned estimate has to beat: pure feedforward, no feedback',
-      'the candidate — and, with no model compiled in, a second baseline sample'];
+      'the candidate — and, with no model compiled in at the time, a second baseline sample'];
     A.forEach((s, i) => row('#plan', [
       td('<b>' + (i + 1) + '</b>'),
       td(s.tc ? '<b>on</b>' : 'off'),
@@ -404,10 +426,28 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
   }
 
   /* ---------- provenance ---------- */
-  P.rows.forEach(r => row('#prov', [
-    td('<b>' + r.arm + '</b> <span class="muted small">' + r.label + '</span>'),
-    td(hbox(r.src, SRCN)), td(hbox(r.tc)), td(hbox(r.nn)), td(hbox(r.auto)),
-    td(hbox(r.state, STN))]));
+  {
+    /* The channel set differs by log schema: a pre-0.7.0 run carries `ctl.nn`
+       and an effective-boolean `ctl.tc`; 0.7.0 replaced the pair with a
+       three-valued REQUEST in `ctl.tc` plus `ctl.model_ready`. The table is
+       built from P.channels rather than typed, so it follows whichever. */
+    document.getElementById('prov-head').innerHTML =
+      '<th>Arm</th>' + P.channels.map(c => `<th><code>ctl.${c}</code></th>`).join('');
+    const NAMES = { src: SRCN, tc: P.schema === 2 ? P.tcw : null, state: STN };
+    const PICK = { src: 'src', tc: 'tc', nn: 'nn', model_ready: 'mr',
+                   auto: 'auto', state: 'state' };
+    P.rows.forEach(r => row('#prov', [
+      td('<b>' + r.arm + '</b> <span class="muted small">' + r.label + '</span>')
+    ].concat(P.channels.map(c => td(hbox(r[PICK[c]], NAMES[c]))))));
+    if (P.schema === 1) set('prov-note',
+      'This run predates firmware 0.7.0, so <code>ctl.tc</code> and '
+      + '<code>ctl.nn</code> are <b>effective</b> booleans — they restate '
+      + '<code>ctl.src</code> and add nothing. 0.7.0 replaced the pair with one '
+      + 'three-valued <em>request</em> in <code>ctl.tc</code> (0 off, 1 real, '
+      + '2 model) beside the unchanged <em>result</em> in <code>ctl.src</code>, '
+      + 'so "asked for the model, got none" became one row rather than an '
+      + 'inference from the state.');
+  }
 
   /* ---------- closed vs open ---------- */
   {
@@ -657,7 +697,101 @@ integ = clampd(integ, -kTrim - kp * err, kTrim - kp * err);     // give back wha
           + `thermocouple quantum, not a shape the ladder got wrong.`)
       + ` Note the x-axis: all three arms sit within `
       + `<b>${CU.duty_span.toFixed(2)} duty points</b> of each other, so this re-measures <em>one</em> point `
-      + `of a nine-point table. It is a consistency check on the seed, not a reason to change it.`);
+      + `of a nine-point table. It is a consistency check on the curve, not a reason to change it.`);
+  }
+
+  /* ---------- the soft sensor, fitted after this run ---------- */
+  if (M) {
+    const worstCold = Math.min(...M.arms.map(r => r.whole.worst_cold));
+    const bestSet = M.arms.reduce((a, b) => a.settled.rms < b.settled.rms ? a : b);
+    const worstSet = M.arms.reduce((a, b) => a.settled.rms > b.settled.rms ? a : b);
+    const statRms = M.arms.map(r => r.static_whole.rms);
+    const statWorst = Math.max(...M.arms.map(r =>
+      Math.max(Math.abs(r.static_whole.worst_cold), Math.abs(r.static_whole.worst_hot))));
+    document.getElementById('m-tiles').innerHTML = [
+      { num: worstSet.settled.rms.toFixed(2), unit: '°C',
+        t: 'worst settled error, held out',
+        s: `the estimate against the probe over the last 10 minutes of arm ${worstSet.arm}. `
+         + `The best arm reads ${bestSet.settled.rms.toFixed(2)} °C — the spread between them is `
+         + `the R<sub>conv</sub> curve's error at the duty each arm happened to hold` },
+      { num: '×' + (Math.min(...statRms) / worstSet.settled.rms).toFixed(0), unit: '',
+        t: 'worse without the pole',
+        s: `the same curve evaluated statically, which is what the open-loop branch's own `
+         + `<code>die_est</code> does: ${Math.min(...statRms).toFixed(1)}–${Math.max(...statRms).toFixed(1)} °C rms, `
+         + `excursions to ${statWorst.toFixed(0)} °C. A 70–165 s plant cannot be read by a memoryless estimate` },
+      { num: sgn(worstCold, 2), unit: '°C',
+        t: 'worst it reads cold',
+        s: 'the only direction that costs throttle margin: an estimate below the truth under-cools. '
+         + 'This is why the model should be regulated at 90 °C and not at the 95 °C the probe earned' },
+      { num: M.C.toFixed(1), unit: 'J/°C',
+        t: 'the one added parameter',
+        s: 'a lumped heatsink capacity, fitted jointly with the curve. Everything else the sensor '
+         + 'needs, the feedforward already knew' }
+    ].map(x => `<div class="tile"><div class="num">${x.num}<span class="unit">${x.unit}</span></div>`
+      + `<div class="t">${x.t}</div><div class="s">${x.s}</div></div>`).join('');
+
+    lines('ch-model', { h: 280, label: 'the fitted curve and its time constant',
+      x0: 0, x1: 76, y0: 6, y1: 22.5, xt: [0, 10, 20, 30, 40, 50, 60, 70],
+      yt: [8, 11, 14, 17, 20], yf: v => v.toFixed(0),
+      xname: 'fan duty (%) — board readback', x: M.nodes.map(p => p.duty),
+      series: [{ k: 'r', name: 'R_conv (°C/W) — the table Control.h carries', c: 's3', dots: true,
+                 y: M.nodes.map(p => p.rconv), tf: v => v.toFixed(2) + ' °C/W' }],
+      xtip: v => v.toFixed(1) + ' % duty' });
+    M.nodes.forEach(nd => row('#nodetbl', [
+      tn(nd.duty.toFixed(1) + ' %'), tn('<b>' + nd.rconv.toFixed(2) + '</b>'),
+      tn(nd.tau.toFixed(0) + ' s'),
+      td(nd.duty <= 9.5 ? 'natural convection / the fan\'s floor, measured at 0.86 W only'
+       : nd.duty <= 20.6 ? 'the one unthrottled low-duty tread that exists'
+       : 'the fan ladder\'s unthrottled region, lag-corrected by the joint fit')]));
+
+    M.arms.forEach((r, i) => {
+      const lab = E.by_arm[i] ? E.by_arm[i].label : '';
+      row('#modeltbl', [
+        td('<b>' + r.arm + '</b> <span class="muted small">' + lab + '</span>'),
+        td(E.by_arm[i] ? E.by_arm[i].kind : '—'),
+        tn('<b>' + r.whole.rms.toFixed(3) + '</b>'), tn(sgn(r.whole.bias, 3)),
+        tn(r.whole.sd.toFixed(3)), tn(r.whole.cold_pct.toFixed(1) + ' %'),
+        tn(sgn(r.whole.worst_cold, 2)),
+        tn(r.settled ? r.settled.rms.toFixed(3) : '—'),
+        tn(r.static_whole.rms.toFixed(1))]);
+    });
+
+    set('m-prose', `Over every loaded sample of all three arms the fitted estimate tracks the `
+      + `thermocouple it is standing in for to between <b>${Math.min(...M.arms.map(r => r.whole.rms)).toFixed(3)}</b> `
+      + `and <b>${Math.max(...M.arms.map(r => r.whole.rms)).toFixed(3)} °C</b> rms — on data it has never `
+      + `seen. Read as a <em>die</em> estimate against the card's own sensor, which is what the loop would `
+      + `actually regulate, the three arms give `
+      + M.arms.map(r => `${r.die.rms.toFixed(2)} °C`).join(', ')
+      + ` rms. For scale, the thermocouple-fed arm's own die estimate in the section above is `
+      + `${E.by_arm[0] ? E.by_arm[0].sd.toFixed(3) : '—'} °C of spread, so the sensor is not as good as the `
+      + `sensor — it is a stand-in, and it costs about half a degree.`);
+
+    set('m-static', `<b>The pole is doing nearly all the work, and that is the finding.</b> Strip the `
+      + `dynamics out and evaluate the identical curve as <code>air + W × R<sub>conv</sub>(duty)</code> `
+      + `fresh each step — exactly what <code>ctl.die_est</code> computes in open loop — and the error `
+      + `goes to ${Math.min(...statRms).toFixed(1)}–${Math.max(...statRms).toFixed(1)} °C rms with `
+      + `excursions to ${statWorst.toFixed(0)} °C, because a memoryless estimate of a 70–165 s plant is `
+      + `wrong by the whole of whatever transient is in flight. One first-order state, and one fitted `
+      + `capacity, is the difference between those two columns.`);
+
+    set('m-cold', `<b>Where it goes wrong, and which way.</b> Two terms push oppositely. Model identity `
+      + `is one-sided and safe: the curve is fitted to ResNet-50, which has the highest convective `
+      + `resistance of the four loads measured, so every other model reads hot and over-cools. Session `
+      + `drift is the other way — the plant's own R<sub>conv</sub> moved 0.96 % across these three arms, `
+      + `and the estimate reads cold on `
+      + M.arms.map(r => r.whole.cold_pct.toFixed(0) + ' %').join(' / ')
+      + ` of each arm's samples, worst <b>${sgn(worstCold, 2)} °C</b>. Per-arm bias is in fact entirely `
+      + `the curve's error at the duty held: the arms sat at `
+      + CU.measured.map(x => x[0].toFixed(1) + ' %').join(', ')
+      + ` duty, and their biases follow in lockstep.`);
+
+    set('m-brackets', `<b>The fan-off brackets are the model's weakest ground, and honestly so.</b> `
+      + M.brackets.map(r => `${r.whole.rms.toFixed(2)} °C`).join(', ')
+      + ` rms across the four. At 0 % duty the curve's node is natural convection measured at `
+      + `0.86 W only — and natural convection is not linear in ΔT, so one resistance cannot serve both `
+      + `idle and load. It does not matter for control: the loop's floor is 9.5 % duty and any real load `
+      + `at those duties throttles the card long before the model's error matters. It does mean `
+      + `<code>ctl.die_est</code> should not be believed with the fan off.`);
   }
 
   /* ---------- throughput ---------- */
